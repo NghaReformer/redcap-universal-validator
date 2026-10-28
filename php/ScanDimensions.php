@@ -307,6 +307,32 @@ final class ScanDimensions
     }
 
     /**
+     * A copy holding only the fields a rule names: what planning stores
+     * (review rv11a2-7).
+     *
+     * Every findings page and every export reads its run's snapshot whole, and
+     * the snapshot held every dictionary field's label: 5,000 fields, 150 of
+     * them descriptive text, were 5,181 rows and 4.9 MB, read in 11
+     * statements on each Next. A finding is always about a field of the rule
+     * that made it (each mode reports on `fields`), so the fields the rules
+     * name are every field a report can label; the identifier flags are kept
+     * for the same fields, which are every field whose value a report shows.
+     */
+    public function ruleFieldsOnly()
+    {
+        $keep = [];
+        foreach ($this->rules as $r) {
+            if (!isset($r['fields']) || !is_array($r['fields'])) continue;
+            foreach ($r['fields'] as $f) $keep[(string) $f] = true;
+        }
+        $d = clone $this;
+        $d->fieldLabels = array_intersect_key($this->fieldLabels, $keep);
+        $d->fieldForms = array_intersect_key($this->fieldForms, $keep);
+        if (is_array($this->identifiers)) $d->identifiers = array_intersect_key($this->identifiers, $keep);
+        return $d;
+    }
+
+    /**
      * This object as uv_scan_dim rows (M5, W7-R11): what a report on a stored
      * run is labelled with, as the project was when the run was planned.
      *

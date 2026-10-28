@@ -36,6 +36,8 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
     require_once __DIR__ . '/support/ArrayScanStore.php';
     require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
+    // W5F-N4 reads the active findings back, which findings() shapes.
+    require_once __DIR__ . '/../php/Scan/FindingRowMapper.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -439,6 +441,21 @@ namespace INSPIRE\UniversalValidator\Scan {
             check('proved: a group run finished ' . $t . ' with a target fence ' . ($want ? 'has' : 'has not'),
                 ScanAuthorization::scopeProved(array_merge($r, ['phase' => 'terminal', 'terminal' => $t])) === $want);
         }
+        // rvf1-1: a run that left catch-up says so in its row, and keeps its
+        // proof whatever ends it; without a target fence it has none to keep.
+        $left = array_merge($r, ['catchup_dirty' => (string) ScanStore::CAUGHT_UP]);
+        check('proved rvf1-1: a group run that left catch-up and is now stopping has',
+            ScanAuthorization::scopeProved(array_merge($left, ['phase' => 'cancelling'])) === true);
+        foreach ([ScanOutcome::CANCELLED, ScanOutcome::FAILED, ScanOutcome::EXPIRED] as $t) {
+            check('proved rvf1-1: a group run that left catch-up and then ended ' . $t . ' has',
+                ScanAuthorization::scopeProved(array_merge($left, ['phase' => 'terminal', 'terminal' => $t])) === true);
+        }
+        check('proved rvf1-1: but not without a target fence, whatever the row says of catch-up',
+            ScanAuthorization::scopeProved(array_merge($left, ['fence_target' => null, 'phase' => 'terminal',
+                'terminal' => ScanOutcome::CANCELLED])) === false);
+        check('proved rvf1-1 control: and a row still in catch-up\'s own states has not',
+            ScanAuthorization::scopeProved(array_merge($r, ['catchup_dirty' => '1', 'phase' => 'terminal',
+                'terminal' => ScanOutcome::CANCELLED])) === false);
 
         // A DAG run may only START where membership changes are provable.
         check('dag-start: refused when the server cannot prove DAG changes',
@@ -647,9 +664,10 @@ namespace INSPIRE\UniversalValidator\Scan {
      * R2O-1  EVERY RECORD DELETED, CHECKED OR NOT
      *
      * Since OC-1 an empty scope means no record is left `done`. Catch-up
-     * tombstones a record deleted after it was EXAMINED, and its findings stay
-     * active - so the commonest way in stored "no record was examined" beside a
-     * findings count that examination produced. Both shapes are driven through
+     * tombstones a record deleted after it was EXAMINED, and its findings
+     * stayed active (until W5F-N4 closed them with it) - so the commonest way
+     * in stored "no record was examined" beside a findings count that
+     * examination produced. Both shapes are driven through
      * the real store and the real promotion: records examined (with a finding
      * each) and then deleted, and records deleted before anything read them.
      * The classification must be the same - never clean, never complete - and
@@ -684,19 +702,16 @@ namespace INSPIRE\UniversalValidator\Scan {
             // The store path CatchUp::step() takes for a record the project no
             // longer has, whatever state it is in.
             $store->advancePhase($runId, $epoch, ScanPhase::CATCH_UP);
-            $gone = $store->tombstone($runId, $epoch, ['A', 'B']);
-            // What the rollup would have summarised: one active finding per
-            // examined record, on every axis.
-            if ($examineFirst) {
-                foreach (RollupBuilder::KINDS as $k) {
-                    $store->addAggregate($runId, $k, 'x', '', 2);
-                }
-            }
+            $gone = $store->tombstone($runId, $epoch, [$h('A'), $h('B')]);
+            // The rollup summarises ACTIVE findings, and since W5F-N4 the
+            // tombstone closed the examined records' findings with them, so
+            // it has none to summarise and adds no row.
+            $active = count($store->findings($pid, $gen, ['dag' => null], [], 0, 100));
             $p = ScanPromotion::promote($store, $pid, $runId,
                 ['uniqueDone' => true, 'rollupDone' => true]);
             $run = $store->run($pid, $runId);
             return ['p' => $p, 'run' => $run, 'gone' => $gone, 'detail' => (int) $run['detail_rows'],
-                    'found' => ScanPromotion::findingsOf($store, $run)];
+                    'active' => $active, 'found' => ScanPromotion::findingsOf($store, $run)];
         };
         foreach (['examined, then deleted' => true, 'deleted before it was read' => false] as $how => $first) {
             $s = $shape($first);
@@ -719,7 +734,9 @@ namespace INSPIRE\UniversalValidator\Scan {
         }
         $ex = $shape(true);
         check('R2O-1: the examined shape really did examine and find - this is the case the sentence lied about',
-            $ex['detail'] === 2 && $ex['found'] === 2);
+            $ex['detail'] === 2);
+        check('W5F-N4: and the tombstones closed both findings, so the finished run counts none of them',
+            $ex['active'] === 0 && $ex['found'] === 0);
         check('R2O-1: and its reason accounts for those findings instead of denying the examination',
             strpos($ex['run']['terminal_reason'], 'any findings it kept are on deleted records') !== false);
     }
@@ -863,6 +880,10 @@ namespace INSPIRE\UniversalValidator\Scan {
             ScanPolicy::tightened(['valueDays' => 30], ['valueDays' => 7]) === true);
         check('policy: switching to hashed record ids counts as tightened',
             ScanPolicy::tightened(['hashRecordIds' => false], ['hashRecordIds' => true]) === true);
+        // rvc1-1: a policy frozen before the posture was (the v5 build) states none.
+        check('policy rvc1-1: a frozen policy that states no record-id posture has not tightened it',
+            ScanPolicy::tightened(['valueMode' => 'raw', 'valueDays' => 30],
+                                  ['valueMode' => 'raw', 'valueDays' => 30, 'hashRecordIds' => true]) === false);
         check('policy: an unchanged policy has not tightened',
             ScanPolicy::tightened(['valueMode' => 'raw', 'valueDays' => 30],
                                   ['valueMode' => 'raw', 'valueDays' => 30]) === false);
@@ -871,6 +892,20 @@ namespace INSPIRE\UniversalValidator\Scan {
             ScanPolicy::budgetSpent(['maxFindings' => 10, 'maxBytes' => 1000], 10, 0) === true
             && ScanPolicy::budgetSpent(['maxFindings' => 10, 'maxBytes' => 1000], 0, 1000) === true
             && ScanPolicy::budgetSpent(['maxFindings' => 10, 'maxBytes' => 1000], 9, 999) === false);
+
+        // W7-R6: the expiry is compared with ScanRetention::now() and the
+        // mapper's `now`, both UTC. Written in the server's zone, a preview
+        // outlived its window east of Greenwich and lost it early to the west.
+        // The suite's own zone is UTC on CI, which is why the zone is set here.
+        $zone = date_default_timezone_get();
+        $jan1 = 1767225600;   // 2026-01-01 00:00:00 UTC
+        foreach (['Pacific/Auckland', 'America/Los_Angeles'] as $tz) {
+            date_default_timezone_set($tz);
+            check('W7-R6 (' . $tz . '): a value preview expires its window after the write, in UTC',
+                ScanPolicy::valueExpiry(['valueDays' => 7], $jan1) === '2026-01-08 00:00:00'
+                && ScanPolicy::valueExpiry([], $jan1) === '2026-01-31 00:00:00');
+        }
+        date_default_timezone_set($zone);
     }
 
     /* =====================================================================

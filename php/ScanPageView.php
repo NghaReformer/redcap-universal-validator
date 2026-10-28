@@ -128,17 +128,23 @@ class ScanPageView
      * before it is a performance one, and no amount of guarding inside the loop
      * changes the shape.
      *
-     * The rebuild plan's Task 1 requires exactly this: disable the production
+     * The rebuild plan's Task 1 required exactly this: disable the production
      * synchronous scan and the export-by-rerun control, and say plainly that the
      * durable scan is unavailable until the worker exists. A notice is the
      * honest interface for a feature that cannot keep its promise; a scan that
      * sometimes finishes is worse, because the times it does teach people to
      * trust the times it does not.
+     *
+     * THE WORKER EXISTS NOW (wave 12 review). The notice still said the scan
+     * was being rebuilt and would come "when that lands", which was no longer
+     * true of any build that shows it. It is shown whenever
+     * Scan\ScanService::available() refuses, and both of its switches are off
+     * by default, so it says what turns the scan on; the page prints the
+     * refusal itself below it.
      */
-    const UNAVAILABLE = 'The project-wide validation scan is temporarily unavailable. It is being '
-        . 'rebuilt to run as a resumable background job that can cover a project of any size and '
-        . 'record exactly what it covered; until that lands, this page will not start a scan. '
-        . 'Live form validation and the post-save audit are unaffected and continue to run.';
+    const UNAVAILABLE = 'The project-wide validation scan cannot be started here. It stays switched off '
+        . 'until it is turned on for the server and for this project, and the reason below says what '
+        . 'stops it now. Live form validation and the post-save audit are unaffected and continue to run.';
 
     // WHETHER A RESULT MAY BE CALLED CLEAN IS NOT DECIDED HERE ANY MORE. This
     // class held verdict(), a second implementation of that question written
@@ -213,10 +219,12 @@ class ScanPageView
             // scope, which is false of a run whose records were all deleted.
             // It then opened "Nothing was checked", which is false of the
             // commonest of those (review R2O-1): records checked and THEN
-            // deleted, whose findings stay counted - so the panel said nothing
+            // deleted, whose findings stayed counted - so the panel said nothing
             // was checked above "2 findings so far". No record being left is
             // true of all three, and the findings line is accounted for in the
-            // sentence that sits beside it.
+            // sentence that sits beside it. Since W5F-N4 a deleted record's
+            // findings are closed with it, and the sentence still has to read
+            // true over a run stored before that.
             Scan\ScanOutcome::EMPTY_SCOPE => 'This scan has no record left to report on: none was in '
                                            . 'scope, or every one was deleted while it ran, whether '
                                            . 'or not it had been checked. Any findings it counted '
@@ -294,20 +302,94 @@ class ScanPageView
                            . 'this Data Access Group, so it is not a complete picture of the group.';
 
     /**
-     * The coverage half of a finished run's sentence: STOPPED_WITHHELD for a
-     * withheld run that was stopped or expired, coverageSentence() for every
-     * other. js/scan.js decides the same way.
+     * The coverage sentence of a group-scoped run that was stopped (or
+     * expired) AFTER it proved its scope (review rvfix-N2). It shows its
+     * counts (rvf1-1), and the `partial` sentence under them spoke of the
+     * project and said records could not be checked, which is false of a
+     * run stopped while it looked for duplicates after checking every one.
+     * This says the counts are the group's, as confirmed, and why the
+     * result is not the whole picture. No apostrophes.
+     */
+    const STOPPED_PROVED = 'This scan was stopped after it confirmed which records belong to this '
+                         . 'Data Access Group, so its counts are for the group. It ended before every '
+                         . 'check had run, so it is not a complete picture of the group.';
+
+    /**
+     * The ending of a run an upgrade of this module ended (review W12-N4).
+     * Its stored reason (Scan\ScanPromotion::ENGINE_UPGRADED) was never shown:
+     * the request that ended it said so, and every status and panel after it
+     * said only that the scan failed and describes nothing, which reads as a
+     * broken installation. The work answer is this sentence too
+     * (Scan\ScanService::ENGINE_CHANGED). No apostrophes.
+     */
+    const UPGRADED = 'This module was upgraded while this scan was running, and the new version judges '
+                   . 'some values differently, so the scan was ended rather than finished half under each '
+                   . 'version. Start a new scan.';
+
+    /**
+     * The empty-scope sentence of a group-scoped run whose records left the
+     * group while it ran (review rvf1-2). EMPTY_SCOPE says none was in scope
+     * or every one was deleted, and of a run whose whole group moved to
+     * another group neither is true. The second is for a run where some moved
+     * and the rest were deleted. No apostrophes.
+     */
+    const EMPTY_SCOPE_LEFT = 'This scan has no record left to report on: every record it listed moved '
+                           . 'to another Data Access Group while it ran. Any findings it counted are '
+                           . 'on records no longer in the group. This result says nothing about the group.';
+    const EMPTY_SCOPE_LEFT_DELETED = 'This scan has no record left to report on: every record it listed '
+                           . 'moved to another Data Access Group or was deleted while it ran. Any findings '
+                           . 'it counted are on records no longer in the group. This result says nothing '
+                           . 'about the group.';
+
+    /**
+     * The coverage half of a finished run's sentence: UPGRADED for a run an
+     * upgrade of the module ended, STOPPED_WITHHELD for a withheld run that
+     * was stopped or expired, STOPPED_PROVED for a group-scoped one that was
+     * stopped or expired with its counts shown, EMPTY_SCOPE_LEFT or
+     * EMPTY_SCOPE_LEFT_DELETED for an empty scope that records left,
+     * coverageSentence() for every other. js/scan.js decides the same way.
      */
     public static function endedSentence($status)
     {
         $t = (is_array($status) && isset($status['terminal'])) ? (string) $status['terminal'] : '';
-        if (!empty($status['withheld'])
-                && ($t === Scan\ScanOutcome::CANCELLED || $t === Scan\ScanOutcome::EXPIRED)) {
+        if (!empty($status['upgraded']) && $t === Scan\ScanOutcome::FAILED) {
+            return isset($status['detail']) && (string) $status['detail'] === Scan\ScanOutcome::DETAIL_TRUNCATED
+                ? self::UPGRADED . ' ' . self::DETAIL_TRUNCATED : self::UPGRADED;
+        }
+        $stopped = ($t === Scan\ScanOutcome::CANCELLED || $t === Scan\ScanOutcome::EXPIRED);
+        if (!empty($status['withheld']) && $stopped) {
             return self::STOPPED_WITHHELD;
         }
-        return self::coverageSentence(isset($status['coverage']) ? $status['coverage'] : '',
-                                      isset($status['detail']) ? $status['detail'] : null);
+        $coverage = isset($status['coverage']) ? $status['coverage'] : '';
+        $detail = isset($status['detail']) ? $status['detail'] : null;
+        if ($stopped && isset($status['scope']) && $status['scope'] === 'group'
+                && $coverage === Scan\ScanOutcome::COV_PARTIAL) {
+            return (string) $detail === Scan\ScanOutcome::DETAIL_TRUNCATED
+                ? self::STOPPED_PROVED . ' ' . self::DETAIL_TRUNCATED : self::STOPPED_PROVED;
+        }
+        if ($coverage === Scan\ScanOutcome::EMPTY_SCOPE && !empty($status['leftGroup'])) {
+            $s = (isset($status['removed']) && (int) $status['removed'] > 0)
+                ? self::EMPTY_SCOPE_LEFT_DELETED : self::EMPTY_SCOPE_LEFT;
+            return (string) $detail === Scan\ScanOutcome::DETAIL_TRUNCATED ? $s . ' ' . self::DETAIL_TRUNCATED : $s;
+        }
+        return self::coverageSentence($coverage, $detail);
     }
+    /**
+     * The day a run's date rules were judged as of (W10BF-3). A durable run
+     * freezes it when it is planned, so a record read after midnight is
+     * judged as of the same day as the rest; a run whose rules read no clock
+     * has none, and says nothing.
+     */
+    const JUDGED_AS_OF = 'Dates were judged as of {date}.';
+
+    /** JUDGED_AS_OF for this status, or null. js/scan.js decides the same way. */
+    public static function asOfText($status)
+    {
+        $d = (is_array($status) && isset($status['asOf']) && is_string($status['asOf'])) ? $status['asOf'] : '';
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $d)) return null;
+        return str_replace('{date}', $d, self::JUDGED_AS_OF);
+    }
+
     const RULE_PROBLEM  = '1 rule could not be evaluated, so this result does not certify the '
                         . 'project.';
     const RULE_PROBLEMS = '{n} rules could not be evaluated, so this result does not certify the '
@@ -318,12 +400,19 @@ class ScanPageView
      *
      * Null only for a run that is still going, and for a finished one whose
      * stored decision is exactly 1. js/scan.js decides the same way.
+     *
+     * NO DECISION IS "NOT CERTIFIED", AND ITS COUNTS ARE NOT COUNTS (W7-N10).
+     * A run the reaper expired, and every run finished before the decision
+     * was stored, has `clean` NULL and a rule-problem count of 0 that nobody
+     * measured. The count is read only beside a stored 0; a run with no
+     * decision gets the plain sentence whatever its counters hold.
      */
     public static function verdictText($status)
     {
         if (!is_array($status) || empty($status['terminal'])) return null;
         $c = array_key_exists('clean', $status) ? $status['clean'] : null;
         if ($c === 1 || $c === '1' || $c === true) return null;
+        if (!($c === 0 || $c === '0' || $c === false)) return self::NOT_CERTIFIED;
         $n = isset($status['ruleProblems']) ? (int) $status['ruleProblems'] : 0;
         if ($n === 1) return self::RULE_PROBLEM;
         if ($n > 1) return str_replace('{n}', (string) $n, self::RULE_PROBLEMS);
@@ -368,6 +457,12 @@ class ScanPageView
      * line is then exactly what it was before these existed.
      */
     const COUNT_PLAIN    = '{done} of {total} records';
+    /**
+     * The progress line of a FINISHED run with no record left in its total
+     * (review rvf1-2): a group whose every record moved away. It read
+     * "Preparing", the line of a run that has not listed its records yet.
+     */
+    const COUNT_NONE     = '0 records';
     const COUNT_CHECKED  = '{done} of {total} records checked';
     const COUNT_EXCLUDED = '{n} could not be checked';
     const COUNT_REMOVED  = '{n} deleted during the scan';
@@ -397,6 +492,102 @@ class ScanPageView
     const STORED        = 'Stored: {rows}';
     const STORED_VALUES = 'Stored: {rows}, with {size} of values';
 
+    /**
+     * THE FINDINGS PANEL (B5): a finished run's report, a keyset page at a
+     * time. The rows' own words are the report's (ScanReport through
+     * scan-findings); these are the panel's. No apostrophes, for the reason
+     * given at STALLED.
+     *
+     * {page} counts the pages this reader has turned, not a position in the
+     * report: a keyset page has no number of its own.
+     */
+    const REPORT_CAPTION   = 'Findings of this scan, page {page}';
+    const REPORT_LOADING   = 'Loading the findings.';
+    /** {findings} is "1 finding" or "1,234 findings": the reader's whole report, unfiltered. */
+    const REPORT_COUNT     = 'This report holds {findings}.';
+    const REPORT_NONE      = 'This scan stored no findings.';
+    const REPORT_EMPTY     = 'No findings match these filters.';
+    const REPORT_NO_MORE   = 'No further findings match these filters.';
+    /**
+     * A page can come back empty while later pages hold matches (review
+     * rv11a2-6): with two filters the server reads the first filter's key a
+     * window at a time. The panel reads on a few pages, saying REPORT_LOOKING,
+     * and then says REPORT_SEARCHING and leaves the next press to the reader.
+     * Neither is ever "no findings".
+     */
+    const REPORT_LOOKING   = 'Looking further for findings that match these filters.';
+    const REPORT_SEARCHING = 'Still looking: the pages read so far held no finding that matches these '
+                           . 'filters, and there are more to read. Press Next page to keep looking.';
+    const REPORT_RETRY     = 'Trying again shortly.';
+    const REPORT_FAILED    = 'The findings of this scan could not be read just now.';
+    const FILTER_ALL       = 'All';
+    /**
+     * The third of README's three marks of an incomplete report, said beside
+     * the download (item 10): the banner and the terminal row are on the page
+     * and in the file, and the suffix is in the file's name. {suffix} is the
+     * run's (ScanService::incompleteMarks()), e.g. _INCOMPLETE_CANCELLED.
+     */
+    const REPORT_SUFFIX    = 'Its file name ends in {suffix}, so the file says it is incomplete wherever it is saved.';
+
+    /**
+     * WHICH REPORT THE PANEL OPENS ON (reviews rv11b1-1, rv11b2-1, rv11b2-5;
+     * ScanService::finishedRun()). A group whose last report a whole-project
+     * scan replaced has nothing left to open, and is told so rather than shown
+     * an empty report. A newer run that did not complete is named beside the
+     * current report, with a control that opens it ({run} and {current} are
+     * run ids). A report that counts findings none of whose rows can be read
+     * is never "stored no findings".
+     */
+    const REPORT_REPLACED      = 'A scan of the whole project has replaced the last report of this Data Access '
+                               . 'Group. Start a scan of the group to see its current findings.';
+    const REPORT_NEWER         = 'Scan {run} started after this one and did not complete, so this report is '
+                               . 'still the current one.';
+    const REPORT_SHOW_NEWER    = 'Show what scan {run} found';
+    const REPORT_VIEWING_NEWER = 'This is scan {run}, which did not complete. The current report is scan {current}.';
+    const REPORT_SHOW_CURRENT  = 'Show the current report';
+    const REPORT_MISSING       = 'This report counts findings that could not be read now. It may have been '
+                               . 'replaced since this page was opened; reload the page to open the current report.';
+
+    /**
+     * Said in the report summary of a run over one group (review rv11b1-2),
+     * as the file says it after its coverage line (ScanService::GROUP_ONLY,
+     * the same sentence with %s): {group} is the run's scope label, e.g.
+     * "Data Access Group site_b". An unrestricted reader who watched a group
+     * run to its end read "Every record was checked" above a count of the
+     * group's findings, with nothing saying the other groups were not read.
+     */
+    const REPORT_GROUP_ONLY    = 'This scan covered {group} only, not the whole project.';
+
+    /**
+     * The download button (review rv11b1-5). It sat beside a filtered table
+     * as "Download these findings as a CSV file" and gave the whole report:
+     * three rows shown, 1,203 in the file. The file is the whole report, and
+     * the button says so with the report's count ({findings} as the count
+     * line words it); the plain form is the markup's, for a report whose
+     * count is not known. The filters stay a way to read the table: a file
+     * of one filter would need its own expected count and its own end check
+     * (ScanService::streamFindings()), which the report's summary does not
+     * give for two filters at once.
+     */
+    const REPORT_DOWNLOAD       = 'Download the whole report as a CSV file ({findings})';
+    const REPORT_DOWNLOAD_PLAIN = 'Download the whole report as a CSV file';
+
+    /**
+     * The framework's CSRF token for the download's POST (W11F-N5), or '' when
+     * the framework gives none or fails: the page then offers no download,
+     * since pages/export.php answers only a POST the framework has checked.
+     */
+    public static function csrfToken($module)
+    {
+        if (!is_object($module) || !is_callable([$module, 'getCSRFToken'])) return '';
+        try {
+            $t = $module->getCSRFToken();
+        } catch (\Throwable $e) {
+            return '';
+        }
+        return is_string($t) ? $t : '';
+    }
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -421,6 +612,33 @@ class ScanPageView
             'withheld'        => Scan\ScanAuthorization::WITHHELD,
             'withheldEnded'   => Scan\ScanAuthorization::WITHHELD_ENDED,
             'stoppedWithheld' => self::STOPPED_WITHHELD,
+            'stoppedProved'   => self::STOPPED_PROVED,
+            'upgraded'        => self::UPGRADED,
+            'emptyLeft'       => self::EMPTY_SCOPE_LEFT,
+            'emptyLeftDeleted' => self::EMPTY_SCOPE_LEFT_DELETED,
+            'none'            => self::COUNT_NONE,
+            'asOf'            => self::JUDGED_AS_OF,
+            'reportCaption'   => self::REPORT_CAPTION,
+            'reportLoading'   => self::REPORT_LOADING,
+            'reportCount'     => self::REPORT_COUNT,
+            'reportNone'      => self::REPORT_NONE,
+            'reportEmpty'     => self::REPORT_EMPTY,
+            'reportNoMore'    => self::REPORT_NO_MORE,
+            'reportLooking'   => self::REPORT_LOOKING,
+            'reportSearching' => self::REPORT_SEARCHING,
+            'reportRetry'     => self::REPORT_RETRY,
+            'reportFailed'    => self::REPORT_FAILED,
+            'filterAll'       => self::FILTER_ALL,
+            'reportSuffix'    => self::REPORT_SUFFIX,
+            'reportReplaced'  => self::REPORT_REPLACED,
+            'reportNewer'     => self::REPORT_NEWER,
+            'reportShowNewer' => self::REPORT_SHOW_NEWER,
+            'reportViewingNewer' => self::REPORT_VIEWING_NEWER,
+            'reportShowCurrent'  => self::REPORT_SHOW_CURRENT,
+            'reportMissing'   => self::REPORT_MISSING,
+            'reportGroupOnly' => self::REPORT_GROUP_ONLY,
+            'reportDownload'  => self::REPORT_DOWNLOAD,
+            'reportDownloadPlain' => self::REPORT_DOWNLOAD_PLAIN,
         ];
     }
 
@@ -526,7 +744,7 @@ class ScanPageView
                 ? Scan\ScanAuthorization::WITHHELD : Scan\ScanAuthorization::WITHHELD_ENDED;
         }
         $total = $i('total');
-        if ($total <= 0) return 'Preparing';
+        if ($total <= 0) return empty($status['terminal']) ? 'Preparing' : self::COUNT_NONE;
         $done = $i('done');
         $excluded = $i('excluded');
         $removed = $i('removed');
@@ -627,10 +845,12 @@ class ScanPageView
             'found'  => self::foundText($status),
             'stored' => self::storedText($status),
             'pct'    => $pct,
-            // ONE STRING, coverage then decision - see verdictText().
+            // ONE STRING, coverage then decision - see verdictText() - then
+            // the day dates were judged as of (asOfText()).
             'done'   => empty($status['terminal']) ? null
                 : self::endedSentence($status)
-                  . (self::verdictText($status) === null ? '' : ' ' . self::verdictText($status)),
+                  . (self::verdictText($status) === null ? '' : ' ' . self::verdictText($status))
+                  . (self::asOfText($status) === null ? '' : ' ' . self::asOfText($status)),
             'active' => !empty($status['active']),
         ];
     }

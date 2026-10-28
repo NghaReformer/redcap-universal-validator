@@ -1131,7 +1131,48 @@ final class ScanPlanner
         if (isset($req['engine']) && is_string($req['engine']) && $req['engine'] !== '') {
             $policy['engine'] = $req['engine'];
         }
+        // THE CLOCK EVERY RECORD OF THE RUN IS JUDGED BY (W10BF-3): the
+        // planning request's day and time in the window time zone, given
+        // only when a rule reads the clock. Not a fingerprint input: it is
+        // the run's, and no request has another to compare it with.
+        // ScanService hands it back to the evaluator on every request
+        // (frozenClock()).
+        $clock = self::clockOf(isset($req['asOf']) ? $req['asOf'] : null);
+        if ($clock !== null) $policy['asOf'] = $clock;
         return $policy;
+    }
+
+    /**
+     * A clock as a run keeps it, ['today' => 'Y-m-d', 'now' => 'Y-m-d H:i:s']
+     * with the day the time's own, or null for anything else (W10BF-3).
+     */
+    public static function clockOf($clock)
+    {
+        if (!is_array($clock) || !isset($clock['today'], $clock['now'])
+                || !is_string($clock['today']) || !is_string($clock['now'])) {
+            return null;
+        }
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/D', $clock['today'])
+                || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $clock['now'])
+                || strncmp($clock['today'], $clock['now'], 10) !== 0) {
+            return null;
+        }
+        return ['today' => $clock['today'], 'now' => $clock['now']];
+    }
+
+    /** The clock a run froze at planning (W10BF-3), from its stored policy, or null. */
+    public static function frozenClock(array $run)
+    {
+        $raw = isset($run['policy_json']) && is_string($run['policy_json']) ? $run['policy_json'] : null;
+        $p = $raw === null ? null : json_decode($raw, true);
+        return (is_array($p) && isset($p['asOf'])) ? self::clockOf($p['asOf']) : null;
+    }
+
+    /** That clock's day, 'Y-m-d': what a status or a report says the run was judged as of. */
+    public static function frozenDay(array $run)
+    {
+        $c = self::frozenClock($run);
+        return $c === null ? null : $c['today'];
     }
 
     // -- fingerprint ---------------------------------------------------------

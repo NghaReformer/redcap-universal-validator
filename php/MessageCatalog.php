@@ -12,6 +12,11 @@ require_once __DIR__ . '/Faults.php';
  * the scan report tells whoever cleans the data afterwards. Re-implementing the
  * browser's strings in PHP would be drift by construction.
  *
+ * js/engine.js does not read the file yet: it carries its own sentences, and
+ * most of them differ from the catalogue's. tests/messages_fixture.json holds
+ * both sides for every key, and the two tests that read it fail when either
+ * side changes without it.
+ *
  * Resolution ALWAYS terminates and never returns nothing:
  *
  *   1. the rule author's own message   — only they can word what a rule means

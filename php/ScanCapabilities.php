@@ -143,17 +143,22 @@ final class ScanCapabilities
         // One bounded query answers it. A project with rows and a readable
         // maximum ordering value has a fence; anything else does not, and says
         // which part failed.
+        //
+        // THE MAXIMUM ALONE (W8-N11). A COUNT(*) beside it read every one of
+        // the project's log entries on every plan build, each status poll
+        // included, to print a number in `via`. MAX() is NULL exactly when
+        // the project has no entries, so the answer is the one the count gave,
+        // read from the end of the project's key instead of the whole of it.
         try {
             $q = $module->query(
-                'SELECT MAX(log_event_id), COUNT(*) FROM ' . $tbl . ' WHERE project_id = ?', [$pid]);
+                'SELECT MAX(log_event_id) FROM ' . $tbl . ' WHERE project_id = ?', [$pid]);
             if (!$q) return self::no('the change log ' . $tbl . ' could not be queried, so a '
                 . 'record cannot be proved unchanged across a read');
             $row = self::fetchRow($q);
             if (!$row) return self::no('the change log ' . $tbl . ' returned no result, so a '
                 . 'record cannot be proved unchanged across a read');
             $maxId = isset($row[0]) ? $row[0] : null;
-            $rows  = isset($row[1]) ? (int) $row[1] : 0;
-            if ($rows === 0 || $maxId === null || $maxId === '') {
+            if ($maxId === null || $maxId === '') {
                 // Not an error, and not a fence either. A project with no log
                 // history cannot be fenced, and saying so is the point.
                 return self::no('the change log ' . $tbl . ' holds no entries for this project, so '
@@ -163,11 +168,34 @@ final class ScanCapabilities
                 return self::no('the change log ' . $tbl . ' has no usable monotonic ordering '
                     . '(log_event_id was not numeric), so reads cannot be fenced');
             }
-            return self::yes($tbl . ' (fenced on log_event_id, ' . $rows . ' entries)');
+            return self::yes($tbl . ' (fenced on log_event_id)');
         } catch (\Throwable $e) {
             return self::no('probing the change log ' . $tbl . ' failed (' . get_class($e)
                 . '), so a record cannot be proved unchanged across a read');
         }
+    }
+
+    /**
+     * sourceFence()'s answer from a change log already opened as a fence this
+     * request (Scan\SourceFence::forProject()), so a work request does not
+     * open it twice (W10AF-N4). The same question by the same statements:
+     * the allowlisted table, and whether its top for the project is a log
+     * position. Only a refusal is worded as the fence words it, and a log
+     * that could not be read is unavailable here as it was when the probe
+     * caught the failure itself.
+     *
+     * @param array $opened forProject()'s answer
+     * @return array{state:string, via:?string, why:?string}
+     */
+    public static function sourceFenceFrom(array $opened)
+    {
+        $fence = isset($opened['fence']) ? $opened['fence'] : null;
+        if (!empty($opened['ok']) && is_object($fence) && is_callable([$fence, 'table'])) {
+            return self::yes($fence->table() . ' (fenced on log_event_id)');
+        }
+        $why = (isset($opened['why']) && is_string($opened['why']) && $opened['why'] !== '') ? $opened['why']
+             : 'the change log could not be opened, so a record cannot be proved unchanged across a read';
+        return self::no($why);
     }
 
     /**

@@ -232,9 +232,15 @@ final class ScanAuthorization
      * is behind the run: it is in a finalizer phase, or promotion finished it
      * (`complete` or `partial`, the two terminals only promotion writes after
      * the finalizers - and the planner's empty-scope finish, which runs before
-     * any fence, leaves `fence_target` empty). A run stopped, failed or
-     * expired, or still cancelling, cannot say whether catch-up finished, so
-     * it has not proved it.
+     * any fence, leaves `fence_target` empty).
+     *
+     * A RUN THAT LEFT CATCH-UP STAYS PROVED (review rvf1-1). Stop moves the
+     * phase to `cancelling`, and expiry and failure write `terminal`, so a run
+     * stopped in a finalizer phase lost its counts and was told it had not
+     * confirmed its group. The store writes down that the run left catch-up
+     * (ScanStore::CAUGHT_UP), and a run carrying that and a target fence has
+     * proved its scope whatever ended it. One stopped, failed or expired
+     * before then has not.
      */
     public static function scopeProved(array $run)
     {
@@ -244,8 +250,11 @@ final class ScanAuthorization
         }
         $phase = isset($run['phase']) ? (string) $run['phase'] : '';
         if ($phase === ScanPhase::UNIQUE || $phase === ScanPhase::ROLLUP) return true;
-        return $phase === ScanPhase::TERMINAL && isset($run['terminal'])
-            && in_array($run['terminal'], [ScanOutcome::COMPLETE, ScanOutcome::PARTIAL], true);
+        if ($phase === ScanPhase::TERMINAL && isset($run['terminal'])
+                && in_array($run['terminal'], [ScanOutcome::COMPLETE, ScanOutcome::PARTIAL], true)) {
+            return true;
+        }
+        return isset($run['catchup_dirty']) && (int) $run['catchup_dirty'] === ScanStore::CAUGHT_UP;
     }
 
     /** What a status of a run that has not proved its scope says in place of its counts. */
@@ -254,10 +263,11 @@ final class ScanAuthorization
 
     /**
      * The same, for a run that has ENDED without proving it (review rv5b-2):
-     * stopped, failed, expired, finished over a change log that could not
-     * prove the window, or over an empty group. WITHHELD promised the counts
-     * later, and for a finished run there is no later. No apostrophes: the
-     * page prints it through json_encode with JSON_HEX_APOS.
+     * stopped, failed or expired before it left catch-up, finished over a
+     * change log that could not prove the window, or over an empty group.
+     * WITHHELD promised the counts later, and for a finished run there is no
+     * later. No apostrophes: the page prints it through json_encode with
+     * JSON_HEX_APOS.
      */
     const WITHHELD_ENDED = 'This scan covers one Data Access Group and ended before it confirmed '
         . 'which records belong to that group, so its counts cannot be shown.';
@@ -285,8 +295,13 @@ final class ScanAuthorization
         // a statement about how many it found: a stopped run read "Some
         // findings were not kept, because the scan reached the limit" while
         // its counts were withheld.
+        // `asOf` is the day the run's date rules are judged as of (W10BF-3): a
+        // fact of the run's configuration, counting nothing. `upgraded` says
+        // an upgrade of the module ended it (W12-N4), which counts nothing
+        // either.
         $keep = ['ok', 'run_id', 'phase', 'terminal', 'coverage', 'values', 'scope',
-                 'active', 'mayCancel', 'stalled', 'paused', 'stopping', 'idleSeconds', 'clean', 'why'];
+                 'active', 'mayCancel', 'stalled', 'paused', 'stopping', 'idleSeconds', 'clean', 'why',
+                 'asOf', 'upgraded'];
         $out = [];
         foreach ($keep as $k) if (array_key_exists($k, $status)) $out[$k] = $status[$k];
         // Stated positively so a caller cannot mistake the absence of counts for

@@ -35,6 +35,31 @@ namespace {
     }
 
     /**
+     * Mark every change of version $from and later as already made, so a
+     * scenario about an earlier version sees only its own statements.
+     */
+    function uv_later_versions_applied(FakeModule $m, $from)
+    {
+        // Version 6 creates its tables IF NOT EXISTS and is never skipped.
+        if ($from <= 7) {
+            $m->columns[] = 'uv_finding.justified';
+            $m->columns[] = 'uv_scan_run.detail_justified';
+        }
+        if ($from <= 8) {
+            $m->columns[] = 'uv_scan_record.unstored';
+            $m->columns[] = 'uv_scan_run.open_unstored';
+            $m->columns[] = 'uv_scan_record.stored_findings';
+            $m->columns[] = 'uv_scan_run.open_findings';
+            $m->columns[] = 'uv_scan_record.stored_justified';
+            $m->columns[] = 'uv_scan_record.unstored_justified';
+            $m->columns[] = 'uv_scan_run.open_justified';
+            $m->columns[] = 'uv_scan_run.open_unstored_justified';
+            $m->columns[] = 'uv_unique_candidate.branch';
+            $m->indexes[] = 'uv_unique_candidate.ix_record';
+        }
+    }
+
+    /**
      * A framework stand-in whose query() can be told to fail, and which records
      * every statement it was given. Nothing here pretends to be a database: the
      * point is what the MIGRATOR does with the answers, not what MySQL does.
@@ -64,6 +89,16 @@ namespace {
         public $tableListAnswer = null;
         /** Answer health()'s table read in upper case, as a case-folding server may. */
         public $upperNames = false;
+        /**
+         * Version 6's data step (rvfix-N1): the run ids that left catch-up and
+         * are not marked, the highest run id, runs that turn up unmarked when
+         * the check first looks (a run the previous build moved after the
+         * step), and an UPDATE that marks nothing.
+         */
+        public $unmarkedRuns = [];
+        public $runTop = 0;
+        public $lateUnmarked = [];
+        public $stubbornRuns = false;
 
         /**
          * Model the DDL rather than merely record it.
@@ -84,8 +119,9 @@ namespace {
             }
             if (!preg_match('/^ALTER TABLE (\w+)/', $sql, $m)) return;
             $t = $m[1];
-            if (preg_match('/ADD COLUMN (\w+)/', $sql, $c)) {
-                $this->columns[] = $t . '.' . $c[1];
+            // Every column of the statement: version 6 adds two in one ALTER.
+            if (preg_match_all('/ADD COLUMN (\w+)/', $sql, $c)) {
+                foreach ($c[1] as $col) $this->columns[] = $t . '.' . $col;
             }
             if (preg_match('/MODIFY COLUMN (\w+)[^,]*NOT NULL/i', $sql, $c)) {
                 $this->notNull[] = $t . '.' . $c[1];
@@ -98,9 +134,18 @@ namespace {
             }
         }
 
+        /**
+         * Every statement with its parameters, for the checks that read a
+         * bound value; kept only when asked for, because the stubborn-rows
+         * scenario sends hundreds of thousands of statements.
+         */
+        public $recordCalls = false;
+        public $calls = [];
+
         public function query($sql, $params = []) {
             if ($this->noQuery) throw new \RuntimeException('no query()');
             $this->sql[] = $sql;
+            if ($this->recordCalls) $this->calls[] = [$sql, $params];
             $this->applyDdl($sql);
             if (strpos($sql, 'DELETE FROM uv_') === 0 && !$this->stubbornRows) {
                 $this->unattributed = 0;
@@ -158,6 +203,27 @@ namespace {
                 $t = isset($params[0]) ? $params[0] : '';
                 $i = isset($params[1]) ? $params[1] : '';
                 return [[in_array($t . '.' . $i, $this->indexes, true) ? 1 : 0]];
+            }
+            // Version 6's data step and its check: the highest run id, one
+            // primary-key page of marks, and how many runs are still unmarked.
+            if (strpos($sql, 'SELECT MAX(run_id) FROM uv_scan_run') === 0) {
+                return [[max(array_merge([$this->runTop], $this->unmarkedRuns))]];
+            }
+            if (strpos($sql, 'UPDATE uv_scan_run SET catchup_dirty = ?') === 0) {
+                if (!$this->stubbornRuns) {
+                    $lo = (int) $params[1];
+                    $hi = (int) $params[2];
+                    $this->unmarkedRuns = array_values(array_filter($this->unmarkedRuns,
+                        function ($id) use ($lo, $hi) { return $id <= $lo || $id > $hi; }));
+                }
+                return [];
+            }
+            if (strpos($sql, 'SELECT COUNT(*) FROM uv_scan_run WHERE catchup_dirty <> ?') === 0) {
+                if ($this->lateUnmarked) {
+                    $this->unmarkedRuns = array_merge($this->unmarkedRuns, $this->lateUnmarked);
+                    $this->lateUnmarked = [];
+                }
+                return [[count($this->unmarkedRuns)]];
             }
             // "How many rows still belong to no project" - asked by the data
             // step while it pages, and again by the verification afterwards.
@@ -228,6 +294,14 @@ namespace INSPIRE\UniversalValidator\Scan {
         $created = $runDdl !== '';
         // the ALTERs of every later version (version 6 adds detail_justified)
         for ($v = 2; $v <= Schema::VERSION; $v++) {
+            foreach (Schema::statements($v) as $item) {
+                $sql = is_array($item) ? $item['sql'] : $item;
+                if (strpos($sql, 'ALTER TABLE ' . $runTable . ' ') === 0) $runDdl .= ' ;; ' . $sql;
+            }
+        }
+        // And every later version's: version 6 adds open_unstored and
+        // open_findings (rvf1-3, W5F-N2).
+        for ($v = 3; $v <= Schema::VERSION; $v++) {
             foreach (Schema::statements($v) as $item) {
                 $sql = is_array($item) ? $item['sql'] : $item;
                 if (strpos($sql, 'ALTER TABLE ' . $runTable . ' ') === 0) $runDdl .= ' ;; ' . $sql;
@@ -346,7 +420,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v3: an installation at version 2 applies the as_of column',
             $r['ok'] === true && $r['from'] === 2 && $r['to'] === Schema::VERSION
             && $r['applied'] === count(Schema::statements(3)) + count(Schema::statements(4)) + count(Schema::statements(5))
-                + count(Schema::statements(6)) + count(Schema::statements(7))
+                + count(Schema::statements(6)) + count(Schema::statements(7)) + count(Schema::statements(8))
             && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE uv_finding ADD COLUMN as_of') === 0; }));
         check('v3: and records version 3', (bool) array_filter($m->sql, function ($q) {
             return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
@@ -356,7 +430,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $r = Schema::migrate($m);
         check('v3: a column already there is not added twice', $r['ok'] === true
             && $r['applied'] === count(Schema::statements(4)) + count(Schema::statements(5)) + count(Schema::statements(6))
-                + count(Schema::statements(7))
+                + count(Schema::statements(7)) + count(Schema::statements(8))
             && !array_filter($m->sql, function ($q) { return strpos($q, 'ADD COLUMN as_of') !== false; }));
         $m = new \FakeModule();
         $m->version = '2';
@@ -420,6 +494,20 @@ namespace INSPIRE\UniversalValidator\Scan {
         $r2c = Schema::migrate($m2c);
         check('migrate: a schema that is genuinely complete still does nothing',
             $r2c['applied'] === 0);
+        // W8-N11: found complete in two statements, the version and one read
+        // of every table at once, where it was one read per table.
+        check('migrate W8-N11: and finds it complete in two statements, not one per table',
+            count($m2c->sql) === 2 && count(array_filter($m2c->sql, function ($s) {
+                return strpos($s, 'information_schema') !== false; })) === 1);
+        // And a table the server holds only in another case is missing to
+        // migrate() as it is to health() (R8-2), so it is created as named.
+        $m2e = new \FakeModule();
+        $m2e->version = Schema::VERSION;
+        $m2e->upperNames = true;
+        $r2e = Schema::migrate($m2e);
+        check('migrate W8-N11: a table held only in another case is created as the module names it',
+            $r2e['applied'] > 0 && count(array_filter($m2e->sql, function ($s) {
+                return strpos($s, 'CREATE TABLE IF NOT EXISTS uv_finding') === 0; })) === 1);
 
         // "Could not ask" is not "nothing is missing". A probe that throws must
         // not be read as a healthy schema, and must not be read as a broken one
@@ -585,8 +673,8 @@ namespace INSPIRE\UniversalValidator\Scan {
 
         $have = new \FakeModule();
         $have->version = '3';
-        $have->columns = ['uv_unique_candidate.lookup', 'uv_finding.z_score', 'uv_finding.growth_reference', 'uv_finding.justified',
-            'uv_scan_run.detail_justified'];
+        uv_later_versions_applied($have, 6);
+        $have->columns = array_merge($have->columns, ['uv_unique_candidate.lookup', 'uv_finding.z_score', 'uv_finding.growth_reference']);
         $rh = Schema::migrate($have);
         check('v4: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === count(Schema::statements(6))
@@ -612,6 +700,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     {
         $m = new \FakeModule();
         $m->version = '4';
+        uv_later_versions_applied($m, 6);
         $r = Schema::migrate($m);
         $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v5: an installation at version 4 moves past version 5',
@@ -625,14 +714,16 @@ namespace INSPIRE\UniversalValidator\Scan {
             (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $have = new \FakeModule();
         $have->version = '4';
-        $have->columns = ['uv_finding.z_score', 'uv_finding.growth_reference', 'uv_finding.justified', 'uv_scan_run.detail_justified'];
+        uv_later_versions_applied($have, 6);
+        $have->columns = array_merge($have->columns, ['uv_finding.z_score', 'uv_finding.growth_reference']);
         $rh = Schema::migrate($have);
         check('v5: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === count(Schema::statements(6))
             && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         $half = new \FakeModule();
         $half->version = '4';
-        $half->columns = ['uv_finding.z_score', 'uv_finding.justified', 'uv_scan_run.detail_justified'];
+        uv_later_versions_applied($half, 6);
+        $half->columns = array_merge($half->columns, ['uv_finding.z_score']);
         $rh = Schema::migrate($half);
         $alters = array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v5: with z_score there, only growth_reference is added (got ' . json_encode($alters) . ')',
@@ -640,6 +731,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             && $alters === ['ALTER TABLE uv_finding ADD COLUMN growth_reference VARCHAR(64) NULL']);
         $inert = new \FakeModule();
         $inert->version = '4';
+        uv_later_versions_applied($inert, 6);
         $inert->inertAlter = 'ADD COLUMN z_score';
         $ri = Schema::migrate($inert);
         check('v5: an ALTER that did not take is not recorded', $ri['ok'] === false
@@ -647,6 +739,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $inert = new \FakeModule();
         $inert->version = '4';
+        uv_later_versions_applied($inert, 6);
         $inert->inertAlter = 'ADD COLUMN growth_reference';
         $ri = Schema::migrate($inert);
         check('v5: ... the second ALTER too, and the refusal names its column', $ri['ok'] === false
@@ -680,7 +773,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $r = Schema::migrate($m);
         check('v6: an installation at version 5 takes those four statements on its way to the current version',
             $r['ok'] === true && $r['from'] === 5 && $r['to'] === Schema::VERSION
-            && $r['applied'] === 4 + count(Schema::statements(7))
+            && $r['applied'] === 4 + count(Schema::statements(7)) + count(Schema::statements(8))
             && !array_diff($creates, $m->sql) && !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0; }));
         check('v6: and records version 6',
             (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
@@ -701,14 +794,16 @@ namespace INSPIRE\UniversalValidator\Scan {
      * Whether a reason (@UVJUSTIFY) stands for the finding, and how many of
      * a run's stored rows carry it. 0 for every existing row, which is what
      * every finding stored before the tag existed was, so no data step.
+     * Version 8 is marked as made, so each scenario sees version 7 alone.
      * ===================================================================== */
     {
         $m = new \FakeModule();
         $m->version = '6';
+        uv_later_versions_applied($m, 8);
         $r = Schema::migrate($m);
         $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
-        check('v7: an installation at version 6 moves to version 7',
-            $r['ok'] === true && $r['from'] === 6 && $r['to'] === 7 && Schema::VERSION === 7);
+        check('v7: an installation at version 6 moves past version 7',
+            $r['ok'] === true && $r['from'] === 6 && $r['to'] === Schema::VERSION && Schema::VERSION >= 7);
         check('v7: by two ALTERs that add uv_finding.justified and uv_scan_run.detail_justified, 0 for every existing row (got ' . json_encode($alters) . ')',
             $alters === ['ALTER TABLE uv_finding ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0',
                          'ALTER TABLE uv_scan_run ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0']);
@@ -717,14 +812,16 @@ namespace INSPIRE\UniversalValidator\Scan {
             (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $have = new \FakeModule();
         $have->version = '6';
-        $have->columns = ['uv_finding.justified', 'uv_scan_run.detail_justified'];
+        uv_later_versions_applied($have, 8);
+        $have->columns = array_merge($have->columns, ['uv_finding.justified', 'uv_scan_run.detail_justified']);
         $rh = Schema::migrate($have);
         check('v7: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === 0
             && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         $half = new \FakeModule();
         $half->version = '6';
-        $half->columns = ['uv_finding.justified'];
+        uv_later_versions_applied($half, 8);
+        $half->columns = array_merge($half->columns, ['uv_finding.justified']);
         $rh = Schema::migrate($half);
         $alters = array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v7: with the finding column there, only the run column is added (got ' . json_encode($alters) . ')',
@@ -732,6 +829,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             && $alters === ['ALTER TABLE uv_scan_run ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0']);
         $inert = new \FakeModule();
         $inert->version = '6';
+        uv_later_versions_applied($inert, 8);
         $inert->inertAlter = 'ADD COLUMN justified';
         $ri = Schema::migrate($inert);
         check('v7: an ALTER that did not take is not recorded', $ri['ok'] === false
@@ -740,6 +838,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $inert = new \FakeModule();
         $inert->version = '6';
+        uv_later_versions_applied($inert, 8);
         $inert->inertAlter = 'ADD COLUMN detail_justified';
         $ri = Schema::migrate($inert);
         check('v7: ... the second ALTER too, and the refusal names the run table and its column', $ri['ok'] === false
@@ -748,6 +847,155 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v7: a fresh install ends with both columns',
             strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN justified TINYINT UNSIGNED NOT NULL DEFAULT 0') !== false
             && strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0') !== false);
+    }
+
+    /* =====================================================================
+     * V8  what a run holds open (reviews rvf1-3, W5F-N2, rvc1-3)
+     *
+     * uv_scan_record.unstored and .stored_findings, 0 on every row already
+     * there, in one ALTER; uv_scan_run.open_unstored and .open_findings, NULL
+     * with no default, in one ALTER: NULL on every run already there and on
+     * every run the previous build starts mid-migration (counted the old
+     * way), and written 0 by this build's startRun() (review rvc1-3); the
+     * branch of the rule that offered a uniqueness candidate (rv11a2-2); and
+     * the candidate index by record that catch-up deletes through (W5F-N1).
+     * Each count's justified part (@UVJUSTIFY) sits in the same ALTER as the
+     * count. Built as version 8 on the scan branch, renumbered when it joined
+     * main, where versions 6 and 7 were already taken.
+     * ===================================================================== */
+    {
+        $v8 = ['ALTER TABLE uv_scan_record ADD COLUMN unstored INT UNSIGNED NOT NULL DEFAULT 0, '
+               . 'ADD COLUMN stored_findings INT UNSIGNED NOT NULL DEFAULT 0, '
+               . 'ADD COLUMN stored_justified INT UNSIGNED NOT NULL DEFAULT 0, '
+               . 'ADD COLUMN unstored_justified INT UNSIGNED NOT NULL DEFAULT 0',
+               'ALTER TABLE uv_scan_run ADD COLUMN open_unstored BIGINT UNSIGNED NULL, '
+               . 'ADD COLUMN open_findings BIGINT UNSIGNED NULL, '
+               . 'ADD COLUMN open_justified BIGINT UNSIGNED NULL, '
+               . 'ADD COLUMN open_unstored_justified BIGINT UNSIGNED NULL',
+               'ALTER TABLE uv_unique_candidate ADD COLUMN branch TINYINT UNSIGNED NULL',
+               'ALTER TABLE uv_unique_candidate ADD KEY ix_record (project_id, generation_id, record_hash)'];
+        $m = new \FakeModule();
+        $m->version = '7';
+        $r = Schema::migrate($m);
+        $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        check('v8: an installation at version 7 moves to version 8',
+            $r['ok'] === true && $r['from'] === 7 && $r['to'] === 8 && Schema::VERSION === 8);
+        check('v8: by adding each table\'s columns in one ALTER, then the index (got '
+            . json_encode($alters) . ')', $alters === $v8);
+        check('rvc1-3: and no default is set on the run counts, so a run the previous build starts mid-migration stays NULL',
+            !array_filter(Schema::plan(7), function ($q) { return stripos($q, 'DEFAULT 0') !== false
+                && stripos($q, 'open_') !== false; }));
+        check('v8: with no run to mark, the data step writes nothing, and version 8 is recorded',
+            !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0 || strpos($q, 'UPDATE uv_') === 0; })
+            && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        $before = count($m->sql);
+        $again = Schema::migrate($m);
+        check('v8: run again, it issues no ALTER: the columns and the index are there',
+            $again['ok'] === true && $again['applied'] === 0
+            && !array_filter(array_slice($m->sql, $before), function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        $half = new \FakeModule();
+        $half->version = '7';
+        $half->columns = ['uv_scan_record.unstored', 'uv_scan_record.stored_findings',
+                          'uv_scan_record.stored_justified', 'uv_scan_record.unstored_justified'];
+        $rh = Schema::migrate($half);
+        check('v8: interrupted after the record columns, the resumed run adds the rest and nothing else',
+            $rh['ok'] === true && $rh['applied'] === 3
+            && array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }))
+               === [$v8[1], $v8[2], $v8[3]]);
+        $odd = new \FakeModule();
+        $odd->version = '7';
+        $odd->columns = ['uv_scan_record.unstored', 'uv_scan_record.stored_findings'];
+        $ro = Schema::migrate($odd);
+        check('v8: a record table with the counts and not their justified parts is not recorded, and the refusal names the column',
+            $ro['ok'] === false && strpos((string) $ro['why'], 'scan_record table has no stored_justified column') !== false
+            && !array_filter($odd->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        foreach (['ADD COLUMN unstored' => 'scan_record table has no unstored column',
+                  'ADD COLUMN open_unstored' => 'scan_run table has no open_unstored column',
+                  'ADD COLUMN branch' => 'unique_candidate table has no branch column',
+                  'ADD KEY ix_record' => 'unique_candidate table has no ix_record index'] as $frag => $why) {
+            $inert = new \FakeModule();
+            $inert->version = '7';
+            $inert->inertAlter = $frag;
+            $ri = Schema::migrate($inert);
+            check('v8: an ALTER that did not take is not recorded, and the refusal names its column (' . $frag . ')',
+                $ri['ok'] === false && strpos((string) $ri['why'], 'version 8 did not verify') !== false
+                && strpos((string) $ri['why'], $why) !== false
+                && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        }
+        check('v8: a fresh install ends with all four statements, in order',
+            strpos(implode(' ;; ', Schema::plan(0)), implode(' ;; ', $v8)) !== false);
+
+        // THE DATA STEP (review rvfix-N1). Runs that left catch-up under the
+        // previous build carry no mark, so a stopped group-scoped run was
+        // withheld for good. The step marks them by primary-key page.
+        $pages = function ($mod) {
+            $out = [];
+            foreach ($mod->calls as $c) {
+                if (strpos($c[0], 'UPDATE uv_scan_run SET catchup_dirty = ?') === 0) {
+                    $out[] = [$c[1][0], $c[1][1], $c[1][2]];
+                }
+            }
+            return $out;
+        };
+        $counts = function ($mod) {
+            return count(array_filter($mod->sql, function ($q) {
+                return strpos($q, 'SELECT COUNT(*) FROM uv_scan_run WHERE catchup_dirty <> ?') === 0; }));
+        };
+        $d = new \FakeModule();
+        $d->version = '7';
+        $d->recordCalls = true;
+        $d->runTop = 12000;
+        $d->unmarkedRuns = [3, 5001, 11999];
+        $rd = Schema::migrate($d);
+        check('rvfix-N1: the runs that left catch-up are marked, and version 8 is recorded',
+            $rd['ok'] === true && $d->unmarkedRuns === []
+            && (bool) array_filter($d->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        check('rvfix-N1: in primary-key pages of ' . Schema::DATA_V8_PAGE . ' runs, each writing the caught-up mark (got '
+            . json_encode($pages($d)) . ')',
+            $pages($d) === [[ScanStore::CAUGHT_UP, 0, 5000], [ScanStore::CAUGHT_UP, 5000, 10000],
+                            [ScanStore::CAUGHT_UP, 10000, 15000]]);
+        $upd = array_values(array_filter($d->calls, function ($c) {
+            return strpos($c[0], 'UPDATE uv_scan_run SET catchup_dirty = ?') === 0; }));
+        check('rvfix-N1: matching only unmarked runs in a finalizer phase, or stopped or ended after the summary began',
+            isset($upd[0]) && strpos($upd[0][0], 'catchup_dirty <> ? AND (phase IN (?, ?) OR (phase IN (?, ?) AND rollup_cursor > 0))') !== false
+            && array_slice($upd[0][1], 3) === [ScanStore::CAUGHT_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP,
+                                               ScanPhase::CANCELLING, ScanPhase::TERMINAL]);
+        check('rvfix-N1: and the check after it reads once, finding none left',
+            $counts($d) === 1);
+        $before = count($d->sql);
+        $d->version = '8';
+        Schema::migrate($d);
+        check('rvfix-N1: once version 8 is recorded the step is not run again',
+            !array_filter(array_slice($d->sql, $before), function ($q) { return strpos($q, 'UPDATE uv_') === 0; }));
+
+        $late = new \FakeModule();
+        $late->version = '7';
+        $late->recordCalls = true;
+        $late->runTop = 4000;
+        $late->unmarkedRuns = [7];
+        $late->lateUnmarked = [4001];
+        $rl = Schema::migrate($late);
+        check('rvfix-N1: a run the previous build moves out of catch-up after the step is marked by one more pass',
+            $rl['ok'] === true && $late->unmarkedRuns === [] && count($pages($late)) === 2 && $counts($late) === 2);
+
+        $stub = new \FakeModule();
+        $stub->version = '7';
+        $stub->runTop = 10;
+        $stub->unmarkedRuns = [10];
+        $stub->stubbornRuns = true;
+        $rs = Schema::migrate($stub);
+        check('rvfix-N1: a mark that does not take is not recorded as version 8, and says why',
+            $rs['ok'] === false && strpos((string) $rs['why'], 'version 8 did not verify') !== false
+            && strpos((string) $rs['why'], 'still not marked') !== false
+            && !array_filter($stub->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+
+        $blind = new \FakeModule();
+        $blind->version = '7';
+        $blind->failOn = 'SELECT MAX(run_id)';
+        $rb = Schema::migrate($blind);
+        check('rvfix-N1: a data step that cannot read the runs is not recorded as version 8, and says so',
+            $rb['ok'] === false && strpos((string) $rb['why'], 'version 8 was installed but its data could not be brought forward') !== false
+            && !array_filter($blind->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
     }
 
     /* =====================================================================
@@ -773,7 +1021,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v2: and applies only the versions after 1, not version 1 again',
             $r['applied'] === count(Schema::statements(2)) + count(Schema::statements(3))
                              + count(Schema::statements(4)) + count(Schema::statements(5))
-                             + count(Schema::statements(6)) + count(Schema::statements(7)));
+                             + count(Schema::statements(6)) + count(Schema::statements(7)) + count(Schema::statements(8)));
 
         foreach ($m->sql as $q) if (strpos($q, 'DELETE FROM uv_') === 0) $deletes++;
         // Four tables gain a project_id their existing rows cannot be given.
@@ -820,7 +1068,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v2: and skips exactly the statements already applied',
             $rh['applied'] === count(Schema::statements(2)) - 3 + count(Schema::statements(3))
                                + count(Schema::statements(4)) + count(Schema::statements(5))
-                               + count(Schema::statements(6)) + count(Schema::statements(7)));
+                               + count(Schema::statements(6)) + count(Schema::statements(7)) + count(Schema::statements(8)));
 
         // THE VERIFICATION IS NOT DECORATION. migrate() used to report ok on the
         // strength of having executed statements without an error; with
@@ -853,6 +1101,44 @@ namespace INSPIRE\UniversalValidator\Scan {
             empty($h['ok']));
         check('v2: and the diagnostic names the version it expected',
             strpos(strtolower((string) $h['why']), 'version') !== false);
+    }
+
+    /* =====================================================================
+     * W7-N13  the stamps migrate() writes are UTC, whatever the server's zone
+     * ===================================================================== */
+    {
+        // Every store write is gmdate() and progressOf() reads run stamps as
+        // UTC. The version row and the run the version-2 data step retires
+        // were written with date(), hours off on a server east or west of
+        // Greenwich. CI runs in UTC, where the two agree, so the zone is set.
+        $zone = date_default_timezone_get();
+        foreach (['Pacific/Auckland', 'America/Los_Angeles'] as $tz) {
+            date_default_timezone_set($tz);
+            $m = new \FakeModule();
+            $m->version = '1';
+            $m->recordCalls = true;
+            $before = time();
+            $r = Schema::migrate($m);
+            $after = time();
+            $stamps = [];
+            foreach ($m->calls as $c) {
+                if (strpos($c[0], 'INSERT IGNORE INTO uv_schema_version') === 0) {
+                    $stamps['version ' . $c[1][0]] = $c[1][1];
+                } elseif (strpos($c[0], 'UPDATE uv_scan_run') === 0 && strpos($c[0], 'terminal_reason') !== false) {
+                    $stamps['retired run'] = $c[1][count($c[1]) - 1];
+                }
+            }
+            $inUtc = function ($s) use ($before, $after) {
+                $d = \DateTime::createFromFormat('Y-m-d H:i:s', (string) $s, new \DateTimeZone('UTC'));
+                return $d !== false && $d->getTimestamp() >= $before && $d->getTimestamp() <= $after;
+            };
+            check('W7-N13 (' . $tz . '): an upgrade from version 1 writes every version row and retires the old runs',
+                // Versions 2 to VERSION, one row each, and the retired runs.
+                $r['ok'] === true && isset($stamps['retired run']) && count($stamps) === (Schema::VERSION - 1) + 1);
+            check('W7-N13 (' . $tz . '): every one of those stamps is the time of the write in UTC',
+                $stamps !== [] && count(array_filter($stamps, $inUtc)) === count($stamps));
+        }
+        date_default_timezone_set($zone);
     }
 
     echo "scan_schema_php: $n checks, $fail failure(s)\n";

@@ -133,6 +133,9 @@ $NEIGHBOUR = uv_neighbour($PID);
             $st->bind_param('iisssss', $pid, $gen, $ident, $rh, $rid_bin, $rev, $grp);
             $st->execute();
         }
+        // Counted as the finalizer counts what it publishes, in the publish
+        // transaction (ScanStore::notePublished(), reviews rvc2-2, CONS-N1).
+        if ($dupes > 0) $store->notePublished($rid, $dupes, 0);
         foreach (array(\INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP,
                        \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE,
                        \INSPIRE\UniversalValidator\Scan\ScanPhase::ROLLUP) as $ph) {
@@ -204,7 +207,8 @@ $NEIGHBOUR = uv_neighbour($PID);
             // empty scope, and the one the stored sentence denied. Each record
             // is read and stored DONE with a finding, then catch-up finds it
             // gone and tombstones it through the store path CatchUp::step()
-            // takes. The findings stay active, so the summary counts them.
+            // takes. Since W5F-N4 that closes the findings, so the summary
+            // has none of them to count.
             $claimed = $store->claim($rid, 'w', $epoch, 5);
             $batch = array('bytes' => 0, 'records' => array(), 'findings' => array());
             foreach ($claimed as $c) {
@@ -221,7 +225,7 @@ $NEIGHBOUR = uv_neighbour($PID);
             }
             $store->commitBatch($rid, 'w', $epoch, $batch);
             $store->advancePhase($rid, $epoch, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
-            $store->tombstone($rid, $epoch, array('G1', 'G2'));
+            $store->tombstone($rid, $epoch, array(hash('sha256', 'G1', true), hash('sha256', 'G2', true)));
         } else {
             $A->query('DELETE FROM ' . Schema::table('scan_record') . ' WHERE run_id = ' . $rid);
         }
@@ -253,12 +257,17 @@ $NEIGHBOUR = uv_neighbour($PID);
         (int) $raw[2] === 0 && (int) $raw[3] === 0);
 
     // A RUN CANCELLED DURING UNIQUE-FINALIZE (review OC-4). The finalizer has
-    // written two duplicates as active findings, the counter it never moves
-    // reads 0, and no summary was built. The page read that 0 as "Nothing found
-    // yet"; what it is told now is that the findings were not counted.
+    // written two duplicates as active findings, the counter reads 0, and no
+    // summary was built. The page read that 0 as "Nothing found yet"; what it
+    // is told now is that the findings were not counted. A RUN FROM BEFORE
+    // SCHEMA VERSION 8 (both counts NULL), whose finalizer moved no count; a
+    // later run's publish counts its duplicates (notePublished(), reviews
+    // rvc2-2, CONS-N1), and cases/counting.php stops one in unique-finalize.
     $r = $store->startRun(954, array('created_by' => 'alice', 'fence_open' => '10'));
     $rid = (int) $r['run']['run_id'];
     $gen = (int) $r['run']['generation_id'];
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . ' SET open_unstored = NULL, open_findings = NULL WHERE run_id = ' . $rid);
     $store->writeManifest($rid, array(
         array('id_bin' => 'D1', 'hash' => hash('sha256', 'D1', true), 'dag' => null),
         array('id_bin' => 'D2', 'hash' => hash('sha256', 'D2', true), 'dag' => null)));
@@ -318,7 +327,8 @@ $NEIGHBOUR = uv_neighbour($PID);
     }
     $okU = $store->commitBatch($rid, 'w', $epoch, array('bytes' => 0, 'findings' => array(), 'records' => $rows,
                                                         'unstored' => $left));
-    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET detail_rows = 3 WHERE run_id = ' . $rid);
+    // Both counters: every row written, and (W5F-N2) the rows the run holds.
+    $A->query('UPDATE ' . Schema::table('scan_run') . ' SET detail_rows = 3, open_findings = 3 WHERE run_id = ' . $rid);
     check('detail budget: the commit holding a record left out 2 of its findings',
         $okU === true && count($claimed) === 1);
     check('rv10b1-3: a run still working counts the 2 left out with the 3 stored',
@@ -345,8 +355,14 @@ $NEIGHBOUR = uv_neighbour($PID);
     $run957 = $store->run(957, $rid957);
     check('R2O-1: the fixture examined both records, stored a finding for each, then deleted both',
         $states === array(\INSPIRE\UniversalValidator\Scan\ScanStore::REC_TOMBSTONE => 2)
-        && (int) $run957['detail_rows'] === 2
-        && \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($store, $run957) === 2);
+        && (int) $run957['detail_rows'] === 2);
+    // W5F-N4: deleting them closed both findings, so the summary the real
+    // rollup built counts none, and nothing of theirs is still active.
+    $active957 = $A->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = 957 AND active_slot = 1')->fetch_row()[0];
+    check('W5F-N4: the tombstones closed both findings, and the finished run counts none of them',
+        (int) $active957 === 0
+        && \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($store, $run957) === 0);
     check('R2O-1: it is an empty scope, partial, stored NOT clean',
         $p['promoted'] === true && $raw[0] === 'partial' && $raw[1] === 'empty-scope'
         && (int) $raw[2] === 0 && (int) $raw[3] === 0);

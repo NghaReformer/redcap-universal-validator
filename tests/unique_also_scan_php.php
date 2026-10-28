@@ -120,7 +120,9 @@ namespace {
     $db->emit = [[11, str_repeat("\1", 32), '9', 351, 1, 'reg', 'typed_id', 'annotation:typed', $rev]];
     $fin = new UniqueFinalizer($db, ['pid' => 149, 'hmacKey' => $key, 'seq' => 1]);
     $g = ['group_id' => 5, 'group_hmac' => str_repeat("\3", 32), 'candidate_epoch' => 2, 'emit_cursor' => 0];
-    $r = $fin->emit(1, $g, 100);
+    // A page as long as asked for, so the group may have more and only the
+    // cursor moves (a shorter one is the last and publishes, W10BF-5).
+    $r = $fin->emit(1, $g, 1);
     $emitSql = '';
     foreach ($db->selects as $s) if (strpos($s[0], 'rule_source_id, rule_revision') !== false) $emitSql = $s[0];
     check('emit: the page is read without lookups', strpos($emitSql, 'AND lookup = 0') !== false);
@@ -129,6 +131,15 @@ namespace {
         && in_array('typed_id', $inserts[0][1], true) && in_array('9', $inserts[0][1], true));
     $cursor = array_values(array_filter($db->writes, function ($w) { return strpos($w[0], 'SET emit_cursor') !== false; }));
     check('emit: the cursor moves to the last finding', $cursor && $cursor[0][1][0] === 11);
+    $db = new AlsoRecordingDb();
+    $db->emit = [[11, str_repeat("\1", 32), '9', 351, 1, 'reg', 'typed_id', 'annotation:typed', $rev]];
+    $fin = new UniqueFinalizer($db, ['pid' => 149, 'hmacKey' => $key, 'seq' => 1]);
+    $r = $fin->emit(1, $g, 100);
+    $pubRow = array_values(array_filter($db->writes, function ($w) {
+        return strpos($w[0], 'SET phase = ?, published_epoch = ?, staged_epoch = ?, emit_cursor = ?') !== false;
+    }));
+    check('emit: a last page shorter than asked for publishes the group, its cursor with it (W10BF-5)',
+        $r['emitted'] === 1 && $r['published'] === true && $pubRow && $pubRow[0][1][3] === 11);
     $db = new AlsoRecordingDb();
     $fin = new UniqueFinalizer($db, ['pid' => 149, 'hmacKey' => $key, 'seq' => 1]);
     $r = $fin->emit(1, $g, 100);
@@ -193,10 +204,17 @@ namespace {
              'group_hmac' => str_repeat("\1", 32), 'scope_key' => 'project', 'record_hash' => str_repeat("\5", 32),
              'record_id_bin' => '1', 'event_id' => 351, 'instance' => 1, 'host_form' => 'reg', 'field' => 'scan_id'];
     $insert->invoke($store, $cand + ['lookup' => 1]);
-    $insert->invoke($store, $cand);
-    check('store: the lookup column is written', strpos($db->writes[0][0], 'version_scanned, lookup)') !== false
+    $insert->invoke($store, $cand + ['branch' => 3]);
+    // The lookup flag is the second-last value; the rule's branch (review
+    // rv11a2-2) is the last.
+    $lookupOf = function (array $args) { return $args[count($args) - 2]; };
+    check('store: the lookup column is written', strpos($db->writes[0][0], 'version_scanned, lookup, branch)') !== false
         && strpos($db->writes[0][0], 'lookup = VALUES(lookup)') !== false);
-    check('store: 1 for a lookup, 0 for a checked value', end($db->writes[0][1]) === 1 && end($db->writes[1][1]) === 0);
+    check('store: 1 for a lookup, 0 for a checked value',
+        $lookupOf($db->writes[0][1]) === 1 && $lookupOf($db->writes[1][1]) === 0);
+    check('store: the branch is written, NULL for a candidate with none',
+        strpos($db->writes[0][0], 'branch = VALUES(branch)') !== false
+        && end($db->writes[0][1]) === null && end($db->writes[1][1]) === 3);
 
     // ---- the re-read compares values the way their group was keyed ----
     $p = ['uniqueExact' => ['typed_id' => true, 'scan_id' => true], 'numberMarks' => ['n_a' => 'point', 'n_b' => 'point']];

@@ -75,6 +75,17 @@ final class ScanPhase
      */
     private static $working = [self::SCANNING, self::CATCH_UP, self::UNIQUE, self::ROLLUP];
 
+    /**
+     * The phases whose progress is read from `updated_at` as well as
+     * `progress_at`, the later of the two: their work moves the first and not
+     * the second (ScanService::PHASES_ON_THE_UPDATE_CLOCK says why these
+     * three). Kept here, beside the phases, because two readers must agree on
+     * it: the status page (ScanService::progressOf()) and the reaper
+     * (ScanStore::expireAbandoned() and the cron's census). A run the page
+     * calls working was a run the reaper called abandoned (review rv10a1-1).
+     */
+    const ON_THE_UPDATE_CLOCK = [self::CATCH_UP, self::UNIQUE, self::ROLLUP];
+
     /** Every phase, for callers that must handle all of them. */
     public static function all()
     {

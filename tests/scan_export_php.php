@@ -226,6 +226,21 @@ namespace INSPIRE\UniversalValidator\Scan {
             $x['lines'][count($x['lines']) - 2] === $rep->csvNoticeLine(ScanService::LOST_LABEL, ScanService::ROWS_LOST));
         check('lost: the reason never reaches the file', strpos($x['text'], 'gone away') === false);
 
+        // rv11a2-4: a STOPPED run's file that also lost rows keeps the
+        // terminal row that says the scan was incomplete. It carried only
+        // INCOMPLETE EXPORT, so with the comment lines deleted nothing said
+        // the scan itself had been stopped.
+        $second->calls = 0;
+        $stoppedMarks = ScanService::incompleteMarks(['terminal' => ScanOutcome::CANCELLED,
+            'coverage' => ScanOutcome::COV_PARTIAL, 'detail' => ScanOutcome::DETAIL_COMPLETE, 'clean' => null]);
+        $sx = xstream($second, $rep, XPID, $p['gen'], ['dag' => null], true, $stoppedMarks);
+        $data = array_values(array_filter($sx['lines'], function ($l) { return strpos($l, '"# ') !== 0; }));
+        $scanRow = $rep->csvNoticeLine(ScanService::INCOMPLETE_LABEL, $stoppedMarks['row']);
+        check('rv11a2-4: a stopped run\'s file that lost rows still says, in a data row, that the scan was incomplete',
+            $sx['out']['ok'] === false && in_array($scanRow, $data, true)
+            && $sx['lines'][count($sx['lines']) - 3] === $scanRow
+            && $sx['lines'][count($sx['lines']) - 2] === $rep->csvNoticeLine(ScanService::LOST_LABEL, ScanService::ROWS_LOST));
+
         $stuck = new class($inner) extends FaultyStore {
             public function findings($projectId, $generationId, array $scope, array $filter, $afterId, $limit,
                                      &$through = null)

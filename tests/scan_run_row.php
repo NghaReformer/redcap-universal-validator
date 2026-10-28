@@ -40,6 +40,11 @@ if (!function_exists('uv_run_row')) {
             'rule_problem_count' => '0', 'not_examined' => '0',
             // A run that recorded it looks nothing up in another project.
             'policy_json' => '{"crossLookups":[]}',
+            'catchup_dirty' => '0',
+            // Schema version 8: a run created at it starts with nothing left
+            // out and nothing stored, with a reason or without.
+            'open_unstored' => '0', 'open_findings' => '0',
+            'open_justified' => '0', 'open_unstored_justified' => '0',
         ];
         $missing = array_diff($columns, array_keys($defaults));
         if ($missing) {

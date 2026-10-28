@@ -165,10 +165,44 @@ interface ScanStore
         // other projects the run looked values up in from it (review R3U-N1):
         // the reader's plan can no longer say once the rule is gone.
         'policy_json',
-        // Of detail_rows, the ones a reason (@UVJUSTIFY) stands for (schema 6),
+        // Of detail_rows, the ones a reason (@UVJUSTIFY) stands for (schema version 7),
         // so a run still working counts them apart from its open findings.
         'detail_justified',
+        // Whether the run got past catch-up (CAUGHT_UP), which its phase
+        // stops saying once it is stopped or ends (review rvf1-1).
+        'catchup_dirty',
+        // The findings the detail budget left out of readings the run still
+        // holds (schema version 8, review rvf1-3). NULL on a run that began
+        // before the column existed, and that run is counted the old way.
+        'open_unstored',
+        // The findings the run shows (schema version 8, reviews W5F-N2,
+        // rvc2-2): those stored by the readings it holds, and the
+        // duplicate-value findings it has published. Always the run's active
+        // findings, so its page, its file and its summary count the same
+        // rows. NULL on a run that began before the column, as above.
+        'open_findings',
+        // Of open_findings and open_unstored, the ones a reason (@UVJUSTIFY)
+        // stands for (schema version 8), kept with them, so a run that keeps
+        // its counts says its open findings and the justified ones apart
+        // without reading its aggregates. NULL as those are.
+        'open_justified',
+        'open_unstored_justified',
     ];
+
+    /**
+     * catchup_dirty of a run that has left catch-up for the phase after it
+     * (review rvf1-1).
+     *
+     * 0 and 1 are catch-up's own "this round changed nothing" and "it
+     * changed something", and nothing reads them once the phase has moved
+     * on. So the column carries the one fact that outlives the phase: the run
+     * walked its window to the target fence. Stop moves the phase to
+     * `cancelling`, and expiry and failure write `terminal`, so without this a
+     * group-scoped run stopped in unique-finalize read as one that had never
+     * confirmed which records belong to its group, and lost its counts.
+     * advancePhase() writes it with the phase change, and nothing sets it back.
+     */
+    const CAUGHT_UP = 2;
 
     /**
      * The keys every finding handed to commitBatch() must carry, non-null.
@@ -271,8 +305,21 @@ interface ScanStore
      */
     public function startRun($pid, array $run);
 
-    /** One run by id, bound to $pid, or null. The id is a locator, not a right. */
+    /**
+     * One run by id, bound to $pid, or null. The id is a locator, not a right.
+     *
+     * NULL FOR A RUN BEING REMOVED (review rv10a1-3). ScanRetention::purgeRuns()
+     * takes a large run apart a page per call across cron passes, its run row
+     * last; it marks the row with REMOVING_WHY before anything goes. Read in
+     * between, the run said `complete` with 0 records done and 0 findings
+     * while its findings were still stored: a report that silently lost rows.
+     * Every reader comes through here, so from the first page on they all
+     * answer as they will once the row is gone.
+     */
     public function run($pid, $runId);
+
+    /** terminal_reason of a finished run that retention has begun removing; see run(). */
+    const REMOVING_WHY = 'this scan was kept longer than its project keeps scans, and is being removed';
 
     /**
      * Freeze the manifest: write every in-scope record id with its ordinal, then
@@ -537,6 +584,26 @@ interface ScanStore
      * `unstored`; those are added under the axis UNSTORED_JUSTIFIED and the
      * rest under ''.
      *
+     * AND PER RECORD (reviews rvf1-3, W5F-N2). A held record committed done
+     * keeps its left-out count on its manifest row, and the run's
+     * open_unstored grows by it, in the same transaction; any other committed
+     * state keeps 0. Every held record keeps the count of findings it stored
+     * the same way (`stored_findings`), and open_findings grows by the batch's stored
+     * total. The ones of each a reason stands for are kept beside them the
+     * same way (`stored_justified`, `unstored_justified`, open_justified,
+     * open_unstored_justified). The rows' counts are what tombstone() and
+     * depart() take back from the run when the record leaves, so a finding
+     * of a reading the run no longer holds is no longer counted.
+     *
+     * A COMMIT REPLACES THE READING A REQUEUED RECORD STILL HOLDS (reviews
+     * rvc2-2, rvc1-2). requeue() leaves a record its reading, its counts and
+     * its rows. A held record committed in any terminal state - done, gone,
+     * or not examined (unreadable, unstable, unstored) - has that reading's
+     * active non-staged rows closed at the run's sequence and its counts
+     * taken back from the run, in the same transaction as the new ones are
+     * added. One written back below done keeps it. So open_findings is
+     * always the number of the run's active non-staged rows.
+     *
      * @return true|string true when it committed; otherwise the sentence to
      *         show, and the caller must discard everything it buffered.
      */
@@ -547,6 +614,12 @@ interface ScanStore
      * because its detail budget was spent (H9). ScanPromotion::tally() adds it
      * to what the summary counts, so `violations` is every finding; a run with
      * any is `truncated`, and one with none is not.
+     *
+     * RUN-WIDE AND ONLY EVER ADDED TO, so it cannot take back a record that
+     * left the run (review rvf1-3). A run row that keeps its counts (every
+     * run created at schema version 8 or later, ScanPromotion::kept()) is
+     * judged on open_unstored instead; this aggregate is read only for a run
+     * that began before it.
      */
     const DETAIL_UNSTORED = 'detail-unstored';
 
@@ -613,6 +686,13 @@ interface ScanStore
      * @param int   $exhausted    the terminal state for rows that reach it -
      *                            REC_UNSTORED for a refused commit,
      *                            REC_UNREADABLE for a failed read
+     *
+     * A RETIRED RECORD GIVES UP A READING IT HELD (review rvc1-2): one
+     * requeued after an earlier reading and then retired here has that
+     * reading's rows closed and its counts taken back, in this transaction,
+     * as commitBatch() does for a record committed not examined. So does a
+     * row claimPending() retires.
+     *
      * @return array{counted:int, retired:int, released:int}
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
@@ -648,6 +728,10 @@ interface ScanStore
      * answered false over a failed write would certify a project on the
      * strength of a transaction that never ran.
      *
+     * LEAVING CATCH-UP IS WRITTEN DOWN (review rvf1-1). The move from catch-up
+     * to the phase after it also sets catchup_dirty to CAUGHT_UP, in the same
+     * write, so a run stopped or ended later still says it got that far.
+     *
      * @return bool false when the transition was refused or the fence had moved
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
@@ -661,7 +745,20 @@ interface ScanStore
      */
     public function finish($runId, array $outcome);
 
-    /** Request cancellation: sets the flag, the phase, and bumps the lease epoch. */
+    /**
+     * Request cancellation: sets the flag, the phase, and bumps the lease
+     * epoch, and audits who asked.
+     *
+     * A RUN ALREADY STOPPING IS NOT STOPPED AGAIN (review rvfix-N3): false,
+     * with nothing written and nothing audited. A disable reads the run, then
+     * cancels it as the system's; a user's Stop that landed between the two
+     * was audited twice and the run ended on the disable's sentence instead
+     * of the user's stop. False here tells that caller the stop was somebody
+     * else's. A caller that only wants the run stopped reads the run again
+     * and finishes a `cancelling` one as it would its own.
+     *
+     * @return bool whether this call moved the run to `cancelling`
+     */
     public function cancel($pid, $runId, $actor);
 
     /**
@@ -672,6 +769,17 @@ interface ScanStore
      * project's one active slot for nobody: its tab closed, its worker died or
      * its request was killed. It becomes terminally `expired` and the slot is
      * free.
+     *
+     * THE CLOCK IS THE ONE THE STATUS PAGE READS (ScanService::progressOf()).
+     * In the phases of ScanPhase::ON_THE_UPDATE_CLOCK it is the later of the
+     * progress clock and updated_at, because their work moves only the second;
+     * judged by progress_at alone, a run finalising for longer than the window
+     * was reaped while the page showed it working (review rv10a1-1).
+     *
+     * NOT A RUN SOMEBODY STOPPED. A run left `cancelling` ends as cancelled,
+     * by ScanPromotion::finishCancelled() (Start's reap and the cron's), never
+     * as expired: an expiry wrote "abandoned" over the user's stop and over
+     * the reason a disable gave (review rv10a1-2).
      *
      * ONE STATEMENT DOES ALL OF IT, under the predicate, and three things are
      * in it on purpose:
@@ -872,6 +980,25 @@ interface ScanStore
      */
     public function supersedePrevious($pid, $runId, $limit);
 
+    /**
+     * The run whose completion replaces this run's report, or null (reviews
+     * rv11a1-5, rv11a2-1): the earliest run of the same project, in a later
+     * generation, that ended `complete` over the whole project. Such a run
+     * closes this run's generation through supersedePrevious(), at once or at
+     * the next cron pass, so from the moment it exists this run's report is
+     * losing its rows, and read later it is empty. A group-scoped run
+     * supersedes nothing and is never the answer. A run being removed by
+     * retention still counts: what it closed stays closed.
+     *
+     * Read through the project's own run keys, as olderGeneration() is: a
+     * handful of runs per project, never the findings.
+     *
+     * @return int|null the replacing run's id; null when $runId is not a run of
+     *         $pid, or nothing has replaced it
+     * @throws ScanStoreUnavailable when the storage failed
+     */
+    public function supersededBy($pid, $runId);
+
     /** Why a scan of one data access group closed nothing. See supersedePrevious(). */
     const SUPERSEDE_SCOPED = 'this scan covered one data access group, so it supersedes nothing: the '
                            . 'previous reports stay current until a scan of the whole project completes';
@@ -925,8 +1052,23 @@ interface ScanStore
      * The attempt counter is NOT reset: a record that keeps being edited must
      * still reach its attempt limit and become a blocking exclusion, or a
      * project someone is actively working in could hold a run open forever.
+     *
+     * By RECORD HASH (W5F-N3), as depart() is: uq_run_record (run_id,
+     * record_hash) finds the rows, where record_id_bin has no index and a
+     * filter on it reads every row of the run.
+     *
+     * THE RECORD KEEPS ITS READING UNTIL THE NEXT ONE REPLACES IT (reviews
+     * rvc2-2, rvc1-2). Its counts (commitBatch(), rvf1-3, W5F-N2) and its
+     * active rows stay as they are, so the report is never blank for a
+     * record still being checked, and the run's count is its rows: the next
+     * commit of the record closes those rows and takes the counts back as it
+     * adds its own, whatever state it commits. This took the counts back at
+     * once and left the rows active, so a run stopped before the re-read
+     * showed rows its count did not hold.
+     *
+     * @param string[] $hashes raw record hashes
      */
-    public function requeue($runId, $epoch, array $recordIds);
+    public function requeue($runId, $epoch, array $hashes);
 
     /**
      * Mark records that no longer exist in the project.
@@ -934,8 +1076,19 @@ interface ScanStore
      * A deleted record can never reach `done`, so without a terminal state of
      * its own it would hold the run incomplete forever - the mirror of the
      * false-complete case, and the reason C3 called it worse.
+     *
+     * ITS FINDINGS GO WITH IT (W5F-N4). In one transaction, each row not
+     * already a tombstone becomes one, and the record's active findings in
+     * this run's generation are closed at the run's sequence, as depart()
+     * and a worker's tombstone commit close them: the run reports on records
+     * the project holds, and counts a deleted one as removed. Duplicate-value
+     * findings (staged) are the finalizer's and are not touched. Its
+     * stored and left-out counts are taken back from the run and zeroed.
+     *
+     * @param string[] $hashes raw record hashes, as requeue() takes them
+     * @return int rows that became tombstones
      */
-    public function tombstone($runId, $epoch, array $recordIds);
+    public function tombstone($runId, $epoch, array $hashes);
 
     /**
      * Take records that left the run's group out of the run (review rv5b-1).
@@ -946,7 +1099,9 @@ interface ScanStore
      * and the record's active findings in this run's generation are closed
      * at the run's sequence, as a re-examination closes them. A deleted
      * record stays a tombstone: gone is the stronger fact. Duplicate-value
-     * findings (staged) are the finalizer's and are not touched.
+     * findings (staged) are the finalizer's and are not touched. Its stored
+     * and left-out counts are taken back from the run and zeroed (rvf1-3,
+     * W5F-N2).
      *
      * Catch-up phase and current lease epoch only, like the other
      * reconciliation writes. A record departing while the worker reads it
@@ -972,8 +1127,16 @@ interface ScanStore
     /** How many manifest rows are in each state. The input to the coverage predicate. */
     public function recordStates($runId);
 
-    /** The source version each named record was last scanned at, keyed by id. */
-    public function scannedVersions($runId, array $recordIds);
+    /**
+     * The source version and state of each named record, keyed by raw hash.
+     *
+     * By record hash for the reason requeue() gives (W5F-N3). A hash the
+     * run's manifest does not hold is absent from the answer.
+     *
+     * @param string[] $hashes raw record hashes
+     * @return array<string,array{version:?string,state:int}>
+     */
+    public function scannedVersions($runId, array $hashes);
 
     /** Where reconciliation and rollup had reached. Survives the request. */
     public function progressState($runId);
@@ -1063,6 +1226,25 @@ interface ScanStore
      * @return true|string
      */
     public function holdRun($runId, $epoch, $phase);
+
+    /**
+     * Count a duplicate group's publish in the run's open_findings (reviews
+     * rvc2-2, CONS-N1): $opened rows the publish made active, less $closed
+     * rows of an earlier staging of the group it closed.
+     *
+     * CALLED INSIDE THE PUBLISH TRANSACTION, after holdRun(), by
+     * UniqueFinalizer, so the count moves with the rows it counts and a
+     * publish that rolls back moves neither. A duplicate was counted from the
+     * finalizer's summary only, so a run stopped after some groups were
+     * published showed their rows on its page and in its file and not in its
+     * count. Never below 0, and NULL stays NULL (a run from before schema
+     * version 8 is counted the old way).
+     *
+     * @param int $runId
+     * @param int $opened rows made active
+     * @param int $closed rows closed
+     */
+    public function notePublished($runId, $opened, $closed);
 
     /**
      * Add to a counted aggregate.

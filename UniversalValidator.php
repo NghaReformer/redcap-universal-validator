@@ -3640,8 +3640,13 @@ class UniversalValidator extends AbstractExternalModule
         // today or now, and notPast. Each saved value is judged against the day
         // it was saved (valueSavedAt), so re-saving another field never turns an
         // old date into a finding. notFuture moves to that day too; where the
-        // day is not known it is judged against today, which can only miss a
-        // date that was in the future then, never invent one.
+        // day is not known it is judged against a day no earlier than the one
+        // the value was saved on: today, or in a durable run the day the run
+        // froze, for a record that has not changed since the run was planned.
+        // That can only miss a date that was in the future then, never invent
+        // one. A date after the frozen day that today passes, on a record not
+        // known to be unchanged, may have been saved after that day, so it is
+        // not checked (review rvc2-1).
         $todayRelative = $clockAnchor || $spec['notPast'];
         $asked = $todayRelative || $spec['notFuture'];
         // The extended path marks a "from" that resolved to the field itself, in
@@ -3670,11 +3675,39 @@ class UniversalValidator extends AbstractExternalModule
                     $asOf = $st['at'];
                     $clock = ['today' => substr($asOf, 0, 10), 'now' => $asOf];
                 } elseif ($st['why'] !== null) {
-                    if ($spec['notFuture']) $clock = $server;
+                    // THE ONE PART JUDGED AGAINST TODAY, and in a durable run
+                    // the today it froze (W10BF-3): a run that read this value
+                    // either side of midnight gave two answers in one report.
+                    // windowDayFree() above keeps the request's clock: its
+                    // answer is the same against any day up to it, and a
+                    // value saved after the run's frozen day is still one.
+                    //
+                    // THE FROZEN DAY ONLY WHERE THE VALUE WAS THERE BY THEN
+                    // (review rvc2-1). A value saved after planning and read
+                    // later by the worker or catch-up - a pause across
+                    // midnight - with a log that could not show its day was
+                    // judged against the frozen day, and a date of the day it
+                    // was saved became "Date in the future". Judged against
+                    // the frozen day it is the future where the request's
+                    // clock is not: on a record not known to be unchanged
+                    // since planning ($judgedSettled), that part is not
+                    // checked, and says why as the parts below do.
+                    $notChecked = $todayRelative;
+                    if ($spec['notFuture']) {
+                        $clock = $this->judgedClock !== null ? $this->judgedClock : $server;
+                        if ($this->judgedClock !== null && !$this->judgedSettled
+                                && self::futureAgainst($spec, (string) $value, $this->judgedClock)
+                                && !self::futureAgainst($spec, (string) $value, $server)) {
+                            $vspec['notFuture'] = false;
+                            $notChecked = true;
+                        }
+                    }
                     if ($todayRelative) {
                         // Not checked: the parts that need the day it was saved.
                         $vspec['notPast'] = false;
                         if ($clockAnchor) { $vspec['lo'] = null; $vspec['hi'] = null; $vspec['period'] = null; }
+                    }
+                    if ($notChecked) {
                         $out['unconfigurable'][] = ['fields' => [$field],
                             'why' => 'the day this value was saved is not known (' . $st['why'] . ') — it was not checked against that day'];
                     }
@@ -3700,9 +3733,10 @@ class UniversalValidator extends AbstractExternalModule
             $r = TemporalLogic::windowVerdictSpread($vspec, (string) $value, 'ymd', $vanchor, $vanchorHi, 'ymd', $clock);
             if ($r['verdict'] === 'unknown') {
                 $readable = TemporalValue::parse(trim((string) $value, " \t\r\n"), $spec['type'], 'ymd')['state'] === 'ok';
-                // The parts judged against the clock alone, which passed.
-                $held = $clock === null ? '' : ($spec['notFuture'] && $vspec['notPast'] ? ' (the date is neither in the future nor in the past)'
-                    : ($spec['notFuture'] ? ' (the date is not in the future)' : ($vspec['notPast'] ? ' (the date is not in the past)' : '')));
+                // The parts judged against the clock alone, which passed. $vspec:
+                // a part not checked (rvc2-1) did not pass.
+                $held = $clock === null ? '' : ($vspec['notFuture'] && $vspec['notPast'] ? ' (the date is neither in the future nor in the past)'
+                    : ($vspec['notFuture'] ? ' (the date is not in the future)' : ($vspec['notPast'] ? ' (the date is not in the past)' : '')));
                 if ($fromWhy !== null && $readable) {
                     $why = $fromWhy . ' — the window was not checked' . $held;
                 } elseif ($fromWhy !== null) {
@@ -3776,6 +3810,19 @@ class UniversalValidator extends AbstractExternalModule
             return $date ? strcmp($v['value'], (string) $clock['today']) >= 0 : $v['seconds'] >= $now['seconds'];
         }
         return false;
+    }
+
+    /**
+     * Whether notFuture finds $value in the future against $clock: asked of
+     * TemporalLogic itself, with the slack findingsWindow() gives a date and
+     * time, so the answer is the one the verdict would give (review rvc2-1).
+     */
+    private static function futureAgainst(array $spec, $value, array $clock)
+    {
+        if ($spec['type'] !== 'date') $clock = TemporalLogic::clockSlack($clock, TemporalLogic::AFTER_SAVE_SLACK_S);
+        $r = TemporalLogic::windowVerdict(['notFuture' => true, 'type' => $spec['type']], (string) $value, 'ymd',
+                                          null, 'ymd', $clock);
+        return $r['verdict'] === 'future';
     }
 
     /** The project's log reader (ValueStamps), once per request; null when the log cannot be resolved. */
@@ -4410,7 +4457,7 @@ class UniversalValidator extends AbstractExternalModule
             // the browser's trim set (QRID_whenTrim): \v or \0 is not whitespace there
             $read[$k] = self::isMissingCode($v, $codes) ? '' : trim($v, " \t\r\n");
         }
-        $dir = $this->referenceDir();
+        $dir = $this->referenceDir($pid);
         $entry = GrowthReference::entry($rule['rangeReference'], $dir);
         if ($entry === null) {
             $why = GrowthReference::unavailableWhy($rule['rangeReference'], $dir);
@@ -4430,16 +4477,35 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * The folder of extra growth references an administrator named in the
      * system setting "reference-data-dir", or null (the bundled ones only).
+     *
+     * A SETTING THAT COULD NOT BE READ IS NOTED for $pid (W10BF-4): the
+     * answer is then "the bundled ones only", which judges a rule against a
+     * table the administrator may have replaced, and a scan must ask again
+     * rather than judge by it (R5-4).
+     *
+     * READ ONCE PER REQUEST, when the read works. The rules are checked
+     * against the folder when they are compiled, and a scan request then
+     * judges its records with them; a second read that failed between the
+     * two judged those records against the bundled tables, with nothing to
+     * say so. A failed read is not kept, so the next asks again.
      */
-    private function referenceDir()
+    private function referenceDir($pid = null)
     {
+        if (array_key_exists('dir', $this->referenceDirMemo)) return $this->referenceDirMemo['dir'];
         try {
             $dir = $this->getSystemSetting('reference-data-dir');
         } catch (\Throwable $e) {
+            if ($pid !== null) $this->noteConfigUnread($pid, self::REFERENCES_UNREAD);
             return null;
         }
-        return (is_string($dir) && trim($dir) !== '') ? trim($dir) : null;
+        return $this->referenceDirMemo['dir'] = (is_string($dir) && trim($dir) !== '') ? trim($dir) : null;
     }
+
+    /** @var array ['dir' => ?string] once "reference-data-dir" was read this request */
+    private $referenceDirMemo = [];
+
+    /** What CONFIG_UNREAD names when the growth references could not be read (W10BF-4). */
+    const REFERENCES_UNREAD = 'the growth reference folder';
 
     /** @var array|null a pinned clock (tests); null reads the real one */
     private $clockOverride = null;
@@ -4457,6 +4523,16 @@ class UniversalValidator extends AbstractExternalModule
     private $valueStampsMemo = [];
     /** @var array zone name ('' = the server's own) => that clock, read once per request */
     private $clockMemo = [];
+    /**
+     * @var ?array the clock a durable run froze at planning (W10BF-3), while
+     * one of its records is judged (durableEvaluateRecord()); null otherwise
+     */
+    private $judgedClock = null;
+    /**
+     * @var bool the record judged now has not changed since its run was
+     * planned (review rvc2-1), set and cleared with judgedClock
+     */
+    private $judgedSettled = false;
 
     /**
      * Today and now for the @UVWINDOW "notFuture" check, read once per request
@@ -4615,15 +4691,33 @@ class UniversalValidator extends AbstractExternalModule
 
     // -- logging ------------------------------------------------------------
 
-    /** The project's log-privacy mode, resolved with the explicit hook PID. */
+    /** The four "log-values" modes config.json offers. */
+    const LOG_MODES = ['hashed', 'none', 'raw', 'off'];
+
+    /**
+     * The project's log-privacy mode, resolved with the explicit hook PID.
+     * THE ONE READER of "log-values": the save audit, the cross-project
+     * lookup log and the reports' record-id posture (hashesRecordIds()) all
+     * ask here.
+     *
+     * A SETTING THAT CANNOT BE READ IS "none" (review CFXB-N3). This answered
+     * a read that throws with "hashed", the default mode, which keeps values
+     * out of the log but writes the record id raw; so for that request a
+     * "none" project, whose record ids identify its participants, logged
+     * them raw in every detection, not-evaluated and audit-error entry. A
+     * read that throws, and a stored value this build does not know, are
+     * "none" now: the record id goes in as its keyed hash and no value is
+     * logged. An unset setting is the default mode, "hashed", as before.
+     */
     private function logMode($pid)
     {
         try {
             $mode = $this->getProjectSetting('log-values', $pid);
-            return ($mode === null || $mode === '') ? 'hashed' : $mode;
         } catch (\Throwable $e) {
-            return 'hashed'; // never let a settings read decide between logging raw and not logging
+            return 'none';
         }
+        if ($mode === null || $mode === '') return 'hashed';
+        return in_array($mode, self::LOG_MODES, true) ? $mode : 'none';
     }
 
     /** Whether verbose diagnostic detail may be logged (admin opt-in per project). */
@@ -4751,6 +4845,15 @@ class UniversalValidator extends AbstractExternalModule
      * under log-values = none, where the record id itself identifies the
      * participant. ONE PLACE, read by the legacy report's plan and by the
      * stored report's posture alike (W7-R2).
+     *
+     * A SETTING THAT CANNOT BE READ HASHES (review rvc2-4). logMode()
+     * answered a read that throws with "hashed", which means raw record ids,
+     * so for that one request a "none" project's report and its file named
+     * every record raw. rvc2-4 gave this method a reading of its own; since
+     * CFXB-N3 logMode() itself answers "none" for a read that throws and for
+     * a stored value this build does not know, and this asks it, so the log
+     * and the reports cannot disagree. An unset setting is the default mode
+     * ("hashed"), which names records raw, as before.
      */
     private function hashesRecordIds($pid)
     {
@@ -4783,6 +4886,31 @@ class UniversalValidator extends AbstractExternalModule
                 : null,
             'recordIdField' => (string) $this->recordIdFieldOf($pid),
         ];
+    }
+
+    /**
+     * Every instrument of $pid, from its data dictionary, or null when the
+     * dictionary cannot be read or names a field with no instrument (review
+     * rvc2-3). The durable scan's Stop asks a reader about these when no scan
+     * context can be built for the run (Scan\ScanService::cancelAuth()).
+     *
+     * @return string[]|null
+     */
+    public function scanProjectInstruments($pid)
+    {
+        try {
+            $dd = $this->dataDictionary($pid);
+        } catch (\Throwable $e) {
+            $dd = null;
+        }
+        if (!is_array($dd) || !$dd) return null;
+        $forms = [];
+        foreach ($dd as $meta) {
+            $f = (is_array($meta) && isset($meta['form_name'])) ? (string) $meta['form_name'] : '';
+            if ($f === '') return null;
+            $forms[$f] = true;
+        }
+        return array_map('strval', array_keys($forms));
     }
 
     /**
@@ -8602,10 +8730,16 @@ class UniversalValidator extends AbstractExternalModule
         if (!isset($frag['rangeReference'])) return $frag;
         $refuse = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_RANGE]; };
         $id = $frag['rangeReference'];
-        $dir = $this->referenceDir();
+        $dir = $this->referenceDir($pid);
         $catalog = GrowthReference::catalog($dir);
         $entry = GrowthReference::entry($id, $dir);
         $gone = GrowthReference::unavailableWhy($id, $dir);
+        // A REFUSAL RESTING ON A FOLDER THAT COULD NOT BE READ IS NOTED
+        // (W10BF-4, review R5-4). It stays a refusal - the rule cannot be
+        // checked - but the project has no such configuration error, and a
+        // scan run on with the rule as one reports a problem the next read
+        // may not have. durableScanContext() hands it back as `unread`.
+        if ($entry === null && $catalog['unread'] !== null) $this->noteConfigUnread($pid, self::REFERENCES_UNREAD);
         if ($entry === null && $gone !== null) {
             // meant to be there: the extra folder cannot be read, or its entry for this id is broken
             return $refuse('"reference" "' . $id . '" cannot be used: ' . $gone);
@@ -8625,6 +8759,8 @@ class UniversalValidator extends AbstractExternalModule
                 'hard' => [$lim('rangeHardLo'), $lim('rangeHardHi')],
             ]);
         } catch (\Throwable $e) {
+            // A table file that would not open, as the folder above (W10BF-4).
+            if ($e->getCode() === GrowthReference::E_UNREAD) $this->noteConfigUnread($pid, self::REFERENCES_UNREAD);
             return $refuse('"reference" "' . $id . '" cannot be used: ' . $e->getMessage());
         }
         if ($out !== null) return $refuse('"reference" "' . $id . '": ' . $out);
@@ -10302,6 +10438,17 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_system_enable($version = null)
     {
+        // THE ENABLE MARKER FIRST (review rv10a2-3): Start and work refuse
+        // while the disable marker is newer than this one
+        // (ScanService::disabling()), so an enable after a disable is what
+        // lets scans run again at once.
+        try {
+            $this->setSystemSetting(self::SCAN_ENABLED_AT, Scan\ScanService::markerNow());
+        } catch (\Throwable $e) {
+            // Logged, never thrown; without it the refusal ends on its own
+            // after ScanService::DISABLING_SECONDS.
+            $this->scanDisableFailed('enable-marker', $e);
+        }
         // See the note in redcap_module_save_configuration(): the throttle's
         // table is not the scan's, and is installed either way.
         Scan\Schema::ensureRateBucket($this);
@@ -10373,14 +10520,16 @@ class UniversalValidator extends AbstractExternalModule
      *
      *   1. THE STOP MARKER, first and alone: SCAN_DISABLED_AT, the time. A
      *      maintenance pass that began at or before it stops at its next unit
-     *      (scanMaintenance()'s `stopped`). The framework starts no new pass
-     *      for a disabled module.
-     *   2. EVERY WORKER SLOT RELEASED AND EVERY ACTIVE RUN STOPPED, as
-     *      cancelled with ScanMaintenance::DISABLED_WHY by the finisher Stop
-     *      uses. Only where the scan is switched on and its tables are
-     *      healthy, the crons' own gates: with the switch off no worker runs
-     *      and Start refuses, and an installation that never turned the scan
-     *      on has its schema inspected by nobody.
+     *      (scanMaintenance()'s `stopped`), and Start and work refuse from
+     *      here on (ScanService::disabling()). The framework starts no new
+     *      pass for a disabled module.
+     *   2. EVERY ACTIVE RUN STOPPED, THEN EVERY WORKER SLOT RELEASED
+     *      (ScanMaintenance::disable()): each run cancelled with
+     *      ScanMaintenance::DISABLED_WHY, and as many as its budget allows
+     *      finished by the finisher Stop uses. Only where the scan is switched
+     *      on and its tables are healthy, the crons' own gates: with the switch
+     *      off no worker runs and Start refuses, and an installation that never
+     *      turned the scan on has its schema inspected by nobody.
      *   3. NOTHING DELETED, unless the installation opted in with
      *      SCAN_DROP_ON_DISABLE (off by default). Then every table the module
      *      created is dropped, the version table last, and the crons' saved
@@ -10391,23 +10540,15 @@ class UniversalValidator extends AbstractExternalModule
     public function redcap_module_system_disable($version = null)
     {
         try {
-            $this->setSystemSetting(self::SCAN_DISABLED_AT, (string) time());
+            $this->setSystemSetting(self::SCAN_DISABLED_AT, Scan\ScanService::markerNow());
         } catch (\Throwable $e) {
             $this->scanDisableFailed('marker', $e);
         }
         try {
-            $sys = $this->scanSystemPolicy();
-            $m = new Scan\ScanMaintenance(new Scan\ModuleDb($this), [
-                'policy' => function ($pid) use ($sys) { return $this->scanPolicyOf($pid, $sys); },
-                'log'    => function ($event, array $context) {
-                    $this->log($event, array_merge(['what' => 'disable'], $context));
-                },
-            ]);
-            $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
-            if (!($on === true || $on === 1 || $on === '1' || $on === 'true')) {
-                $this->log('scan-disable', ['stopped' => 0, 'why' => 'the durable scan is not enabled here']);
-            } elseif (!is_callable([$this, 'query']) || empty(Scan\Schema::health($this)['ok'])) {
-                $this->log('scan-disable', ['stopped' => 0, 'why' => 'the scan tables are not ready']);
+            $m = $this->scanDisabler('disable');
+            $why = $this->scanDisableGate();
+            if ($why !== null) {
+                $this->log('scan-disable', ['stopped' => 0, 'why' => $why]);
             } else {
                 $this->log('scan-disable', $m->disable());
             }
@@ -10423,6 +10564,89 @@ class UniversalValidator extends AbstractExternalModule
         }
     }
 
+    /**
+     * The module disabled for one project (review rv10a2-7). That project's
+     * active run is stopped, the slots held for it freed, and the run
+     * finished as cancelled with ScanMaintenance::PROJECT_DISABLED_WHY
+     * (ScanMaintenance::disableProject()). Before this the run held the
+     * project's slot until the reaper expired it, staleHours later, as
+     * abandoned. Under the system disable's gates; nothing deleted; never
+     * thrown.
+     *
+     * THE PROJECT'S STOP MARKER FIRST (review rvf2-1), as the system hook
+     * writes its own: PROJECT_DISABLED_AT, the time, before the project's
+     * active run is read. From then on Start refuses for the project, and a
+     * Start already past that check ends the run it made
+     * (ScanService::disabling()), so no run is made behind the one read.
+     */
+    public function redcap_module_project_disable($version = null, $project_id = null)
+    {
+        try {
+            $pid = (int) $project_id;
+            if ($pid < 1) return;
+            try {
+                $this->setProjectSetting(Scan\ScanService::PROJECT_DISABLED_AT, Scan\ScanService::markerNow(), $pid);
+            } catch (\Throwable $e) {
+                $this->scanDisableFailed('project-marker', $e);
+            }
+            $why = $this->scanDisableGate();
+            if ($why !== null) {
+                $this->log('scan-project-disable', ['project_id' => $pid, 'stopped' => 0, 'why' => $why]);
+                return;
+            }
+            $this->log('scan-project-disable',
+                ['project_id' => $pid] + $this->scanDisabler('disable-project')->disableProject($pid));
+        } catch (\Throwable $e) {
+            $this->scanDisableFailed('project-disable', $e);
+        }
+    }
+
+    /**
+     * The module enabled for one project: its enable marker, so a Start right
+     * after a project disable and enable is not refused for
+     * ScanService::DISABLING_SECONDS (review rvf2-1). Never thrown.
+     */
+    public function redcap_module_project_enable($version = null, $project_id = null)
+    {
+        $pid = (int) $project_id;
+        if ($pid < 1) return;
+        try {
+            $this->setProjectSetting(Scan\ScanService::PROJECT_ENABLED_AT, Scan\ScanService::markerNow(), $pid);
+        } catch (\Throwable $e) {
+            $this->scanDisableFailed('project-enable-marker', $e);
+        }
+    }
+
+    /**
+     * Why a disable hook may not touch the scan tables, or null when it may:
+     * the crons' own gates. With the scan switched off no worker runs and
+     * Start refuses, and an installation that never turned the scan on has
+     * its schema inspected by nobody.
+     */
+    private function scanDisableGate()
+    {
+        $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
+        if (!($on === true || $on === 1 || $on === '1' || $on === 'true')) {
+            return 'the durable scan is not enabled here';
+        }
+        if (!is_callable([$this, 'query']) || empty(Scan\Schema::health($this)['ok'])) {
+            return 'the scan tables are not ready';
+        }
+        return null;
+    }
+
+    /** The maintenance a disable hook works through, its log entries marked $what. */
+    private function scanDisabler($what)
+    {
+        $sys = $this->scanSystemPolicy();
+        return new Scan\ScanMaintenance(new Scan\ModuleDb($this), [
+            'policy' => function ($pid) use ($sys) { return $this->scanPolicyOf($pid, $sys); },
+            'log'    => function ($event, array $context) use ($what) {
+                $this->log($event, array_merge(['what' => (string) $what], $context));
+            },
+        ]);
+    }
+
     /** The disable hook's failure, logged as class and redacted detail, never thrown. */
     private function scanDisableFailed($step, \Throwable $e)
     {
@@ -10435,7 +10659,10 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /** The system setting the disable hook writes its time to (M17). */
-    const SCAN_DISABLED_AT = 'scan-disabled-at';
+    const SCAN_DISABLED_AT = Scan\ScanService::DISABLED_AT;
+
+    /** The system setting the enable hook writes its time to (review rv10a2-3). */
+    const SCAN_ENABLED_AT = Scan\ScanService::ENABLED_AT;
 
     /** The opt-in that lets the disable hook drop the module's tables. Off by default. */
     const SCAN_DROP_ON_DISABLE = 'scan-system-drop-tables-on-disable';
@@ -10540,7 +10767,8 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * Free what is stuck: abandoned runs, worker slots above the limit, and
-     * the previous reports of every project whose latest scan completed.
+     * the previous reports of every project whose latest whole-project run
+     * finished complete.
      *
      * php/Scan/ScanRetention.php held the reaper for releases before anything
      * called it (H-2): a run whose browser closed kept its project's one scan
@@ -10683,7 +10911,7 @@ class UniversalValidator extends AbstractExternalModule
         'temporalPid', 'temporalBudget', 'temporalResolver', 'temporalUniqueIndex', 'temporalShapes',
         'conditionNumbersCache', 'branchingCache', 'choicesMemo', 'valueHistoryMemo', 'roleBookMemo',
         'clockZoneMemo', 'loggedBefore', 'deltaTagsMemo', 'deltaHeldMemo', 'lookupIndexer', 'fieldValuesReader',
-        'temporalOptionsMemo',
+        'temporalOptionsMemo', 'referenceDirMemo',
     ];
 
     /**
@@ -10692,12 +10920,15 @@ class UniversalValidator extends AbstractExternalModule
      * roleBookOverride), the record save in progress (returnQueue,
      * returnBarred, surveySave, auditPid, uniqueAuditPlan, uniqueAuditReads)
      * and the legacy scan's count (scanJustified), which a cron pass is never
-     * inside, and whether this request has logged the missing PHP extensions
-     * (missingLogged), which is said of the server, not of a project.
+     * inside, whether this request has logged the missing PHP extensions
+     * (missingLogged), which is said of the server, not of a project, and the
+     * clock of the scan record being judged and whether it changed since
+     * planning (judgedClock, judgedSettled), which durableEvaluateRecord()
+     * sets and clears around that one record.
      */
     const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave',
         'returnBarred', 'valueHistoryOverride', 'roleBookOverride', 'auditPid', 'uniqueAuditPlan', 'uniqueAuditReads',
-        'scanJustified', 'missingLogged'];
+        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled'];
 
     /** Every SCAN_MEMOS property back to its declared default. */
     private function resetScanMemos()
@@ -10772,7 +11003,16 @@ class UniversalValidator extends AbstractExternalModule
                 return 'the scan tables are not ready; nothing was done';
             }
             $key = 'scan-cron-state-' . $what;
-            $save = function (array $state) use ($key) {
+            $began = time();
+            $save = function (array $state) use ($key, $began) {
+                // NOT OVER A DISABLE THAT CAME AFTER THE PASS BEGAN (review
+                // rv10a2-4). A disable that drops the tables empties this
+                // cursor with them; a pass that read its census before the
+                // drop wrote its own back over it. The marker is read here
+                // every time, not every few seconds as `stopped` reads it,
+                // since a save is the last thing a pass does.
+                $at = $this->getSystemSetting(self::SCAN_DISABLED_AT);
+                if (is_numeric($at) && (int) $at >= $began) return;
                 $this->setSystemSetting($key, json_encode($state));
             };
             $sys = $this->scanSystemPolicy();
@@ -10782,7 +11022,7 @@ class UniversalValidator extends AbstractExternalModule
                     $this->log($event, array_merge(['what' => (string) $what], $context));
                 },
                 'save'   => $save,
-                'stopped' => $this->scanStopMarker(time()),
+                'stopped' => $this->scanStopMarker($began),
                 // A FRESH START FOR EVERY PROJECT (MEMO LIFETIME). The passes
                 // build no ScanService: every statement goes through the store
                 // or ScanRetention, which keep nothing between calls. What

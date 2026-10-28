@@ -62,9 +62,19 @@ final class RollupBuilder
     /**
      * One bounded page of summarising.
      *
+     * $byGroup: A GROUP RUN'S COUNTS ARE KEPT PER GROUP (review rv11a1-4).
+     * The instrument, reason and check axes of a group-scoped run carry each
+     * finding's group in axis2, so its reader's filters can count only rows
+     * filed under their group - which their pages hold to. A duplicate the
+     * finalizer emits after a record moved carries the group it moved to,
+     * and those axes counted it for a reader whose pages never show it. The
+     * group axis needs no split (its axis1 is the group). Only a group run is
+     * split: no group reader may read a whole-project run, and splitting one
+     * would multiply its summary by the project's group count for nobody.
+     *
      * @return array{done:bool, rows:int, why:?string}
      */
-    public function step($projectId, $runId, $epoch, $generationId, $limit = 1000)
+    public function step($projectId, $runId, $epoch, $generationId, $limit = 1000, $byGroup = false)
     {
         $limit = max(1, min(10000, (int) $limit));
         $st = $this->store->progressState($runId);
@@ -95,9 +105,11 @@ final class RollupBuilder
         $last = $after;
         foreach ($rows as $r) {
             $last = (int) $r[0];
+            $group = $byGroup ? ($r[3] === null ? '' : (string) $r[3]) : null;
             foreach (self::axes($r) as $kind => $axis) {
-                $k = $kind . "\0" . (string) $axis;
-                if (!isset($tally[$k])) $tally[$k] = ['kind' => $kind, 'axis' => $axis, 'n' => 0];
+                $by = $kind === self::K_DAG ? null : $group;
+                $k = $kind . "\0" . (string) $axis . "\0" . (string) $by;
+                if (!isset($tally[$k])) $tally[$k] = ['kind' => $kind, 'axis' => $axis, 'by' => $by, 'n' => 0];
                 $tally[$k]['n']++;
             }
         }
@@ -127,7 +139,7 @@ final class RollupBuilder
                 return ['done' => false, 'rows' => 0, 'why' => null];
             }
             foreach ($tally as $t) {
-                $this->store->addAggregate($runId, $t['kind'], $t['axis'], null, $t['n']);
+                $this->store->addAggregate($runId, $t['kind'], $t['axis'], $t['by'], $t['n']);
             }
             // AND THE PROGRESS CLOCK, in the same fenced write (W7-N9). A page
             // summarised is the run moving forward; without it a long rollup

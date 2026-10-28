@@ -35,7 +35,7 @@ final class Schema
      * case untouched. An installation reports the version it is AT; migrate()
      * applies each missing version in order.
      */
-    const VERSION = 7;
+    const VERSION = 8;
 
     // VERSION 1 IS FROZEN, BYTE FOR BYTE, FOREVER.
     //
@@ -144,6 +144,7 @@ final class Schema
      */
     public static function statements($version)
     {
+        if ((int) $version === 8) return self::statementsV8();
         if ((int) $version === 7) return self::statementsV7();
         if ((int) $version === 6) return self::statementsV6();
         if ((int) $version === 5) return self::statementsV5();
@@ -811,6 +812,180 @@ final class Schema
     }
 
     /**
+     * Version 8: what a run holds open (reviews rvf1-3, W5F-N2, W5F-N1).
+     *
+     * uv_scan_record.unstored is how many findings the detail budget left out
+     * of the record's latest examination in the run, and
+     * uv_scan_record.stored_findings how many it stored. They are set when the
+     * record is committed done, kept when catch-up sends it back to be read
+     * again (its findings stay active until a new reading replaces them,
+     * review rvc1-2), replaced by the next reading's or withdrawn when that
+     * reading ends unread, and zeroed when the record is deleted, leaves the
+     * run's group or is retired. 0 on every row that exists when they are added,
+     * which is what those rows hold under the old counting too, since nothing
+     * read them per record.
+     *
+     * uv_scan_run.open_unstored and uv_scan_run.open_findings are the run's
+     * sums of them, kept in the same transactions. NULL, WITH NO DEFAULT, and
+     * written 0 by this build's startRun() (review rvc1-3). A NULL run is
+     * counted the old way (the run-wide detail-unstored aggregate and
+     * detail_rows), because it did not keep the counts from its start: every
+     * run that exists at the upgrade, and every run the previous build starts
+     * while the upgrade runs. The previous build passes health() until the
+     * version row is written, and its INSERT names neither column, so a
+     * DEFAULT 0 set mid-migration (as this version first did) made such a run
+     * read as one that kept counts no commit of its build maintained.
+     *
+     * uv_scan_record.stored_justified and uv_scan_record.unstored_justified
+     * are how many of those two a reason (@UVJUSTIFY) stands for, and
+     * uv_scan_run.open_justified and uv_scan_run.open_unstored_justified the
+     * run's sums of them. They are written in the same statements as the
+     * columns they qualify and sit in the same two ALTERs, NULL and 0 as
+     * those are, so a run that keeps counts says its open findings and the
+     * ones saved with a reason apart without reading its aggregates
+     * (ScanPromotion::findingsOf, justifiedOf).
+     *
+     * ONE ALTER PER TABLE for the counts, so MySQL 5.7, which rebuilds a
+     * table for every ADD COLUMN, rebuilds uv_scan_record once; 8.0 and
+     * MariaDB add the columns in place either way. Each is skipped when its
+     * first column is there: the columns of one ALTER arrive together or not
+     * at all.
+     *
+     * uv_unique_candidate.branch is the branch of the @UVUNIQUE rule that
+     * offered the candidate, NULL for a rule with none (review rv11a2-2).
+     * UniqueFinalizer writes a duplicate's reason_bits from it, as every other
+     * writer does from its finding's branch; with no column it wrote 0, and a
+     * branched rule's duplicate read with the rule's top-level wording.
+     *
+     * uv_unique_candidate.ix_record (project_id, generation_id, record_hash)
+     * is what lets catch-up delete the candidates of a record it sends back
+     * to be read again, deletes or takes out of the run's group (W5F-N1):
+     * record_hash is a prefix of neither uq_candidate_v2 nor ix_group_v2, so
+     * without it that DELETE reads every candidate of the generation. An
+     * index only; skipped once it exists. Its own statement, not the branch
+     * column's: 8.0 adds the column in place and builds the index online,
+     * where one ALTER holding both would rebuild the table.
+     *
+     * The data step after these is upgradeDataV8().
+     *
+     * VERSION 8 STAYS OPEN until the release that ships it, then freezes as
+     * 1 and 2 did. scan/finish first wrote these changes as version 6, which
+     * 2.3.0-rc.3 shipped as the lookup index, and version 7 is @UVJUSTIFY's,
+     * so they are version 8. A test database made on that branch says
+     * version 6, has these columns and no lookup tables: drop it and create
+     * it again.
+     *
+     * @return array[] each ['sql' => string, 'skipIf' => ?array]
+     */
+    private static function statementsV8()
+    {
+        $run = self::table('scan_run');
+        $rec = self::table('scan_record');
+        $uc  = self::table('unique_candidate');
+        return [['sql' => 'ALTER TABLE ' . $rec . ' ADD COLUMN unstored INT UNSIGNED NOT NULL DEFAULT 0, '
+                        . 'ADD COLUMN stored_findings INT UNSIGNED NOT NULL DEFAULT 0, '
+                        . 'ADD COLUMN stored_justified INT UNSIGNED NOT NULL DEFAULT 0, '
+                        . 'ADD COLUMN unstored_justified INT UNSIGNED NOT NULL DEFAULT 0',
+                 'skipIf' => ['column', $rec, 'unstored']],
+                ['sql' => 'ALTER TABLE ' . $run . ' ADD COLUMN open_unstored BIGINT UNSIGNED NULL, '
+                        . 'ADD COLUMN open_findings BIGINT UNSIGNED NULL, '
+                        . 'ADD COLUMN open_justified BIGINT UNSIGNED NULL, '
+                        . 'ADD COLUMN open_unstored_justified BIGINT UNSIGNED NULL',
+                 'skipIf' => ['column', $run, 'open_unstored']],
+                ['sql' => 'ALTER TABLE ' . $uc . ' ADD COLUMN branch TINYINT UNSIGNED NULL',
+                 'skipIf' => ['column', $uc, 'branch']],
+                ['sql' => 'ALTER TABLE ' . $uc . ' ADD KEY ix_record (project_id, generation_id, record_hash)',
+                 'skipIf' => ['index', $uc, 'ix_record']]];
+    }
+
+    /** The scan_run rows one page of upgradeDataV8() covers, by run_id. */
+    const DATA_V8_PAGE = 5000;
+
+    /**
+     * Version 8's data step (review rvfix-N1): a run that left catch-up
+     * before this build is marked as having left it.
+     *
+     * advancePhase() writes catchup_dirty = ScanStore::CAUGHT_UP with the
+     * move out of catch-up (rvf1-1), because a group-scoped run stopped,
+     * expired or failed later shows its counts only with that mark
+     * (ScanAuthorization::scopeProved()). The previous build did not write
+     * it, so a run in unique-finalize or rollup-finalize at the upgrade, and
+     * stopped or ended after it, was withheld for good.
+     *
+     * WHAT THE ROW CAN TELL. A run in either finalizer has left catch-up. So
+     * has a stopped or ended run whose rollup cursor moved: only the summary
+     * phase moves it (RollupBuilder). A stopped or ended run whose cursor did
+     * not move cannot say which phase it stopped in (a summary with nothing
+     * to page never moves it either), so it is left as it is: withheld, the
+     * weaker claim. A run that finished complete or partial is proved by its
+     * terminal and needs no mark.
+     *
+     * IDEMPOTENT AND BOUNDED: a row already marked is not matched, and the
+     * table is walked by primary-key range, DATA_V8_PAGE runs a statement.
+     */
+    private static function upgradeDataV8($module)
+    {
+        $t = self::table('scan_run');
+        $q = $module->query('SELECT MAX(run_id) FROM ' . $t, []);
+        $row = $q ? self::firstRow($q) : null;
+        if ($row === null) throw new \RuntimeException('could not read how many scan runs there are');
+        $top = (int) (isset($row[0]) ? $row[0] : 0);
+        list($where, $args) = self::leftCatchUpWhere();
+        for ($from = 0; $from < $top; $from += self::DATA_V8_PAGE) {
+            $module->query('UPDATE ' . $t . ' SET catchup_dirty = ? WHERE run_id > ? AND run_id <= ? AND '
+                . $where, array_merge([ScanStore::CAUGHT_UP, $from, $from + self::DATA_V8_PAGE], $args));
+        }
+    }
+
+    /**
+     * upgradeDataV8()'s rows: runs the row shows left catch-up, not yet marked.
+     *
+     * @return array{0:string, 1:array}
+     */
+    private static function leftCatchUpWhere()
+    {
+        return ['catchup_dirty <> ? AND (phase IN (?, ?) OR (phase IN (?, ?) AND rollup_cursor > 0))',
+                [ScanStore::CAUGHT_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP,
+                 ScanPhase::CANCELLING, ScanPhase::TERMINAL]];
+    }
+
+    /**
+     * Prove version 8 is on the server before saying so: its columns, its
+     * index, and no run left unmarked that the data step marks.
+     *
+     * A run the previous build moves out of catch-up after the data step,
+     * before the version row ends that build's work, is unmarked; the step
+     * is run again once for it, and only a run still unmarked after that
+     * fails the check.
+     *
+     * @return ?string null when everything holds, otherwise what does not
+     */
+    private static function verifyV8($module)
+    {
+        foreach ([['scan_record', 'unstored'], ['scan_run', 'open_unstored'],
+                  ['scan_record', 'stored_findings'], ['scan_run', 'open_findings'],
+                  ['scan_record', 'stored_justified'], ['scan_record', 'unstored_justified'],
+                  ['scan_run', 'open_justified'], ['scan_run', 'open_unstored_justified'],
+                  ['unique_candidate', 'branch']] as $tc) {
+            if (!self::alreadyApplied($module, ['column', self::table($tc[0]), $tc[1]])) {
+                return 'the ' . $tc[0] . ' table has no ' . $tc[1] . ' column';
+            }
+        }
+        if (!self::alreadyApplied($module, ['index', self::table('unique_candidate'), 'ix_record'])) {
+            return 'the unique_candidate table has no ix_record index';
+        }
+        list($where, $args) = self::leftCatchUpWhere();
+        for ($try = 0; $try < 2; $try++) {
+            $q = $module->query('SELECT COUNT(*) FROM ' . self::table('scan_run') . ' WHERE ' . $where, $args);
+            $row = $q ? self::firstRow($q) : null;
+            if ($row === null) return 'the scan runs could not be checked for the mark the data step writes';
+            if ((int) (isset($row[0]) ? $row[0] : 0) === 0) return null;
+            if ($try === 0) self::upgradeDataV8($module);
+        }
+        return 'a scan run that left catch-up is still not marked as having left it';
+    }
+
+    /**
      * Every statement needed to bring an installation from $from to VERSION.
      *
      * Separate from statements() so a caller can see the whole plan before
@@ -1050,9 +1225,30 @@ final class Schema
                                    . ' has no ' . $c[2] . ' column. The version is NOT recorded and the scan stays disabled.'];
                 }
             }
+            if ($v === 8) {
+                // The data step first, as version 2's: it reads catchup_dirty,
+                // phase and rollup_cursor, which version 1 created.
+                try {
+                    self::upgradeDataV8($module);
+                    $bad = self::verifyV8($module);
+                } catch (\Throwable $e) {
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 8 was installed but its data could not be brought '
+                                   . 'forward (' . get_class($e) . '), so the version is NOT recorded and the '
+                                   . 'scan stays disabled. Re-saving the configuration retries it.'];
+                }
+                if ($bad !== null) {
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 8 did not verify after it was applied: ' . $bad
+                                   . '. The version is NOT recorded and the scan stays disabled.'];
+                }
+            }
             try {
+                // UTC, as every store write is (W7-N13). date() wrote the
+                // server's zone, so on a server away from Greenwich the
+                // version row disagreed with every other stamp by hours.
                 $module->query('INSERT IGNORE INTO ' . self::table('schema_version')
-                    . ' (version, applied_at) VALUES (?, ?)', [$v, date('Y-m-d H:i:s')]);
+                    . ' (version, applied_at) VALUES (?, ?)', [$v, gmdate('Y-m-d H:i:s')]);
             } catch (\Throwable $e) {
                 return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
                         'why' => 'version ' . $v . ' installed but could not be recorded ('
@@ -1180,22 +1376,27 @@ final class Schema
      * schema is sound - and this file has the same distinction at every other
      * boundary.
      *
+     * health()'s one read (presentTables()), not a probe per table (W8-N11):
+     * one statement where there were as many as tables(). It is also health()'s
+     * answer in the one case the probes gave another: a table the server
+     * holds only in another letter case is missing here too (R8-2), so
+     * migrate() creates the table the module names, where it used to report a
+     * complete schema that health() refused.
+     *
      * @return string[]|null
      */
     private static function missingTables($module)
     {
         if (!is_callable([$module, 'query'])) return null;
+        try {
+            $present = self::presentTables($module);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if ($present === null) return null;
         $missing = [];
         foreach (self::tables() as $t) {
-            try {
-                $q = $module->query('SELECT COUNT(*) FROM information_schema.tables
-                    WHERE table_schema = DATABASE() AND table_name = ?', [$t]);
-                $row = $q ? self::firstRow($q) : null;
-                if ($row === null) return null;
-                if ((int) (isset($row[0]) ? $row[0] : 0) < 1) $missing[] = $t;
-            } catch (\Throwable $e) {
-                return null;
-            }
+            if (!isset($present[$t])) $missing[] = $t;
         }
         return $missing;
     }
@@ -1283,13 +1484,16 @@ final class Schema
         // them - and none can be resumed: its manifest describes a generation
         // that no longer means anything. Expired is what this module already
         // says for a run whose evidence has gone, and it releases the slot.
+        // updated_at in UTC (W7-N13): progressOf() reads every run stamp as
+        // UTC, and date() put a retired run hours off on a server east or
+        // west of Greenwich.
         $module->query('UPDATE ' . self::table('scan_run') . '
             SET active_slot = NULL, phase = ?, terminal = ?, coverage = ?, clean = NULL,
                 terminal_reason = ?, updated_at = ?
             WHERE active_slot = 1 OR terminal IS NULL',
             [ScanPhase::TERMINAL, ScanOutcome::EXPIRED, ScanOutcome::COV_PARTIAL,
              'ended by the upgrade to schema version 2, which changed what a finding is named',
-             date('Y-m-d H:i:s')]);
+             gmdate('Y-m-d H:i:s')]);
 
         // SEED THE SEQUENCE SO NO PROJECT REUSES A GENERATION. The retired runs
         // are gone as reports, but their generation numbers were real and a new

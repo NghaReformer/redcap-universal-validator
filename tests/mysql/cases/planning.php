@@ -68,6 +68,12 @@ $NEIGHBOUR = uv_neighbour($PID);
         'engine' => '1.8.20',
         'createdBy' => 'alice',
         'pageSize' => 10,
+        // Unbudgeted (rvfix-N6): these checks expect one plan() call to list
+        // the whole project. Left to the browser budget plan() falls back to,
+        // a loaded server stopped the first slice early and the checks that
+        // count the manifest failed. The checks about slices pass their own
+        // budget.
+        'budget' => false,
     );
 
     $res = $planner->plan($PID, $baseReq);

@@ -55,6 +55,26 @@ final class ScanService
     const SYS_FLAG  = 'scan-system-enable-durable';
     const PROJ_FLAG = 'scan-enable-durable';
 
+    /** The system settings the disable and enable hooks write their unix time to (M17). */
+    const DISABLED_AT = 'scan-disabled-at';
+    const ENABLED_AT  = 'scan-enabled-at';
+
+    /**
+     * The same pair as project settings, written by the hooks that switch the
+     * module off and on for one project (review rvf2-1). Their own keys: a
+     * project value under the system keys would be read as the system's
+     * wherever the framework lets a project setting stand in for one.
+     */
+    const PROJECT_DISABLED_AT = 'scan-project-disabled-at';
+    const PROJECT_ENABLED_AT  = 'scan-project-enabled-at';
+
+    /** What Start and work answer while the module is being switched off; see disabling(). */
+    const OFF_SERVER = 'the module is being switched off on this server, so no scan can start or carry on';
+    const OFF_PROJECT = 'the module is being switched off for this project, so no scan can start or carry on';
+
+    /** How long after a disable, with no enable since, Start and work refuse; see disabling(). */
+    const DISABLING_SECONDS = 600;
+
     /** How long a worker's installation slot lease lasts without renewal. */
     const SLOT_TTL = 300;
 
@@ -76,8 +96,13 @@ final class ScanService
      * and `updated_at` (which their cursor writes do move) is the better clock.
      * In scanning it is the WORSE one: claim() refreshes it on a run whose every
      * batch is being refused, which is the wedge `progress_at` exists to show.
+     *
+     * The list is ScanPhase's, because the reaper reads the same clock: a run
+     * this page reported working was expired as abandoned by the cron and by
+     * another user's Start, since the reaper judged every phase by
+     * `progress_at` alone (review rv10a1-1).
      */
-    const PHASES_ON_THE_UPDATE_CLOCK = [ScanPhase::CATCH_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP];
+    const PHASES_ON_THE_UPDATE_CLOCK = ScanPhase::ON_THE_UPDATE_CLOCK;
 
     /** @var object the module */
     private $module;
@@ -104,6 +129,8 @@ final class ScanService
     private $capabilities = [];
     /** @var array project id => the change log as a fence, or null when there is none */
     private $fences = [];
+    /** @var array project id => SourceFence::forProject()'s answer (W10AF-N4) */
+    private $fenceOpened = [];
     /** @var array entitlement key (see entitlement()) => its answer */
     private $entitlements = [];
     /**
@@ -177,7 +204,7 @@ final class ScanService
                 . 'so the durable scan cannot run here');
         }
         if (!$this->flag(self::SYS_FLAG, null) || !$this->flag(self::PROJ_FLAG, $pid)) {
-            return self::no('the durable validation scan is not enabled here');
+            return self::no(self::NOT_ENABLED);
         }
         // After the flags, so an installation that has not turned the scan on
         // is told nothing about its server. Without these the worker died part
@@ -188,6 +215,8 @@ final class ScanService
             return self::no('this server\'s PHP does not load the ' . implode(' and ', $missing)
                 . (count($missing) > 1 ? ' extensions' : ' extension') . ' the scan needs');
         }
+        $off = $this->disabling($pid);
+        if ($off !== null) return self::no($off === 'project' ? self::OFF_PROJECT : self::OFF_SERVER);
         $health = Schema::health($this->module);
         if (empty($health['ok'])) {
             // Reported, never repaired on the fly. A migration that runs
@@ -248,6 +277,10 @@ final class ScanService
         // run id and the person starting a new scan does not have one.
         $this->reapCancelled($pid);
 
+        $scope = ScanPageView::scanScope($this->module, $pid);
+        if (empty($scope['ok'])) return self::noStart($scope['why']);
+        $dag = $scope['dag'];
+
         // AND ANY RUN THAT STOPPED MAKING PROGRESS (B6a). A run whose tab
         // closed or whose worker died held the slot until the reap cron came
         // round - or for ever, where the cron is not running - and Start
@@ -258,16 +291,19 @@ final class ScanService
         // cancelled, not expired. Swallowed as that reap is: a reap that fails
         // must not stop the start being attempted, and the slot check refuses
         // honestly if the run is still there.
+        //
+        // AFTER THE RIGHTS CHECK (review rv10a2-2). Asked before it, any
+        // signed-in user of the project - no design rights, confined to a
+        // group - ended the project's run by posting scan-start, and the audit
+        // named them; the refusal they were then given came after the damage.
+        // The cancelled-run reap stays first: it ends only a run somebody with
+        // the right to stop it already stopped.
         $policy = $this->policy($pid);
         try {
             $this->store()->expireAbandoned($pid, $policy['staleHours'], (string) $this->username());
         } catch (\Throwable $e) {
             \INSPIRE\UniversalValidator\Faults::swallow($e, 'ScanService::openRun');
         }
-
-        $scope = ScanPageView::scanScope($this->module, $pid);
-        if (empty($scope['ok'])) return self::noStart($scope['why']);
-        $dag = $scope['dag'];
 
         // PLANNING CONTEXT. start() needs the rule list and the ownership map
         // to authorise and to plan; the run - and therefore its generation -
@@ -277,7 +313,7 @@ final class ScanService
         $ctx = $this->module->durableScanContext($pid,
             $this->planOptions($pid, ['valueCeiling' => $policy['valueMode'], 'generation' => null,
                                       'policy' => $policy]), $dag);
-        if (empty($ctx['ok'])) return self::noStart($ctx['why']);
+        if (empty($ctx['ok'])) return self::noStart(self::contextRefusal($ctx));
 
         // Every instrument the run will read, from the plan rather than from a
         // list somebody maintains. A field the plan could not place on an
@@ -286,13 +322,8 @@ final class ScanService
         // unplaceable field is a fixable dictionary problem: the field exists,
         // its form_name does not. A refusal that says only "at least one field"
         // sends an administrator looking through the whole dictionary.
-        $forms = [];
-        $unknown = [];
-        foreach ($ctx['ownership'] as $field => $form) {
-            if ($form === null || $form === '') { $unknown[] = (string) $field; continue; }
-            $forms[$form] = true;
-        }
-        $auth = ScanAuthorization::mayStart($scope['rights'], array_keys($forms), $unknown);
+        $sets = self::formsOf($ctx);
+        $auth = ScanAuthorization::mayStart($scope['rights'], $sets['forms'], $sets['unknown']);
         if (empty($auth['ok'])) return self::noStart($auth['why']);
         // A STARTER ANOTHER PROJECT REFUSES IS REFUSED THE START (review
         // rv10b1-2). Their plan skips the lookups that project would not
@@ -350,6 +381,9 @@ final class ScanService
                                && array_key_exists('crossLookups', $ctx['plan']))
                                ? $ctx['plan']['crossLookups'] : null,
             'createdBy' => (string) $this->username(),
+            // The clock every record of the run is judged by (W10BF-3),
+            // frozen into its policy; see durableScanContext().
+            'asOf'      => isset($ctx['clock']) ? $ctx['clock'] : null,
             // WHAT THE PLAN ALREADY KNOWS IT CANNOT EVALUATE. Config-broken,
             // unlocatable, unmapped-instrument and group-unscopable rules are
             // decided before a record is read; the planner records them so
@@ -365,6 +399,10 @@ final class ScanService
         }
         $runId = (int) $r['run']['run_id'];
         $this->store()->audit($pid, $runId, 'start', (string) $this->username(), null);
+        // A RUN MADE WHILE THE MODULE WAS BEING SWITCHED OFF IS ENDED AGAIN
+        // (review rvf2-1). Asked afresh, never from available()'s memo.
+        $off = $this->disabling($pid);
+        if ($off !== null) return self::noStart($this->endUnderDisable($pid, $runId, $off));
         return ['ok' => true, 'busy' => false, 'run_id' => $runId, 'why' => null];
     }
 
@@ -396,7 +434,10 @@ final class ScanService
 
         // The reader before the run (L8): see readerScope().
         $no = $this->readerRefusal($pid);
-        if ($no !== null) return ['ok' => false, 'why' => $no['why']];
+        if ($no !== null) {
+            $gone = (!empty($no['final']) && $no['why'] === self::NO_RULES) ? $this->endRulesGone($pid, $runId) : null;
+            return $gone !== null ? $gone : ['ok' => false, 'why' => $no['why']];
+        }
         $store = $this->store();
         $run = $store->run($pid, $runId);
         if ($run === null) return ['ok' => false, 'why' => self::NO_RUN];
@@ -567,6 +608,63 @@ final class ScanService
         return $this->disclosed($run, $r, $this->statusOf($pid, $runId, $known));
     }
 
+    /** What a work request answers when it has ended a run whose rules are gone (CFXB-N2). */
+    const RULES_GONE = 'Every rule this scan was checking has been removed or now has a configuration '
+        . 'error, so the scan was ended rather than left holding the project. Fix the rules and start a '
+        . 'new scan.';
+
+    /** The stored reason of that run, as promotion words the reason of a run the rules moved under. */
+    const RULES_GONE_WHY = 'every rule this scan was checking was removed or now has a configuration error, '
+        . 'so the scan was ended rather than left holding the project; fix the rules and run it again';
+
+    /**
+     * End $runId when its project has no rule left to evaluate (CFXB-N2), or
+     * null to answer the refusal as before.
+     *
+     * A RUN WHOSE RULES ALL WENT WAS ENDED BY NOBODY'S WORK. The rules were
+     * deleted, or each became a configuration error, while it ran: every
+     * work request was refused before the run row ("no rules this scan can
+     * evaluate"), the worker that would have met the moved fingerprint was
+     * never built, and the run held the project's one slot until Stop or the
+     * reaper ended it. Since rv11b2-6 that refusal is settled (contextFinal()),
+     * so a work request on such a run ends it, failed, with a stored reason
+     * that says why - as promote() ends a run the configuration moved under.
+     *
+     * ASKED AS STOP IS ASKED (cancelAuth()). No context can be built, so the
+     * instruments the rules read cannot be named; a reader cancel() would let
+     * stop the run may end it, since ending reads no value, and anyone else
+     * is given the refusal unchanged, the same for every id. A stopped run is
+     * finished as stopped, by the one finisher. A finished run, or an id that
+     * is no run of this project, is left to the refusal.
+     *
+     * @return ?array the work answer, or null
+     */
+    private function endRulesGone($pid, $runId)
+    {
+        $store = $this->store();
+        $run = $store->run($pid, $runId);
+        if ($run === null || (isset($run['terminal']) && $run['terminal'] !== null && $run['terminal'] !== '')
+                || (isset($run['phase']) && $run['phase'] === ScanPhase::TERMINAL)) {
+            return null;
+        }
+        if ($this->readerRefusal($pid, 'cancel') !== null) return null;
+        $auth = $this->cancelAuth($pid, $run);
+        if (empty($auth['ok'])) return null;
+        $answer = ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+                   'phase' => ScanPhase::TERMINAL, 'done' => false];
+        if (isset($run['phase']) && $run['phase'] === ScanPhase::CANCELLING) {
+            ScanPromotion::finishCancelled($store, $pid, $runId, self::limitsOf($this->policy($pid)));
+            return ['ok' => true, 'stop' => 'cancelled',
+                    'why' => 'this scan was stopped, so the records after that point were never examined'] + $answer;
+        }
+        $outcome = ScanOutcome::derive(['failed' => true]);
+        $outcome['why'] = self::RULES_GONE_WHY;
+        $outcome['suffix'] = ScanOutcome::suffix($outcome);
+        if (!$store->finish((int) $runId, $outcome)) return null;
+        $this->note('scan run ended: no rules left to evaluate', ['project_id' => (int) $pid, 'run_id' => (int) $runId]);
+        return ['stop' => 'changed', 'why' => self::RULES_GONE] + $answer;
+    }
+
     /**
      * The worker's answer as the reader may see it, with the status beside it.
      *
@@ -636,7 +734,8 @@ final class ScanService
             // The budget a stopped run is judged against, for the worker's
             // own ending of a run it finds `cancelling` (review R3U-3).
             'limits'    => self::limitsOf($policy),
-            'finalizer' => $this->finalizer($pid, $ctx, $store, (int) $run['run_id']),
+            'finalizer' => $this->finalizer($pid, $ctx, $store, (int) $run['run_id'],
+                                            $run['scope_dag'] !== null),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
             // The SAME question catch-up asks, of the same opened source: is
             // this record still in the project. The worker asks it before it
@@ -721,8 +820,42 @@ final class ScanService
      */
     public function status($pid, $runId)
     {
+        $off = $this->readGate($pid);
+        if ($off !== null) return $off;
         return $this->statusOf($pid, $runId, []);
     }
+
+    /**
+     * May a stored run be READ here at all: the two switches, and nothing
+     * else available() asks (review rv11a1, observation (a)).
+     *
+     * SWITCHED OFF IS OFF FOR READING TOO. Start and work asked available(),
+     * and status, scan-findings and the export asked nothing, so a scan an
+     * administrator had switched off - for the installation or for one
+     * project - still answered its counts, its findings and its file to
+     * anyone who held a run id, while the page showed only the notice that
+     * the scan is unavailable. A switch is how an installation withdraws a
+     * feature, and a stored report is part of the feature. The records stay
+     * in their tables, under retention, and read again once it is back on.
+     *
+     * NOT the rest of available(): whether records can be enumerated and
+     * whether the tables are healthy are questions about running a scan, and
+     * a table that cannot be read fails as storage. Not the switch-off
+     * window either (disabling()), which only stops new work. And not
+     * cancel(): stopping a run is what switching off asks for, and a run
+     * nobody may stop holds the project's slot until the reaper ends it.
+     * Asked first, before the reader: it says nothing about a run.
+     *
+     * @return ?array the refusal, or null when reading is on
+     */
+    private function readGate($pid)
+    {
+        if ($this->flag(self::SYS_FLAG, null) && $this->flag(self::PROJ_FLAG, $pid)) return null;
+        return ['ok' => false, 'why' => self::NOT_ENABLED, 'final' => true];
+    }
+
+    /** What available() and the read verbs say while either switch is off. */
+    const NOT_ENABLED = 'the durable validation scan is not enabled here';
 
     /**
      * status(), with what this request has already read about the run.
@@ -735,24 +868,37 @@ final class ScanService
     private function statusOf($pid, $runId, array $known)
     {
         // The reader before the run (L8): see readerScope().
+        //
+        // A READER WHO MAY STOP RUNS IS TOLD WHETHER THIS ONE CAN BE (review
+        // rvc2-3). The page offers Stop only from a status, and every refusal
+        // below answered with none: a reader refused the status - a context
+        // that cannot be built, an operand instrument they cannot read,
+        // another project's refusal - was never shown Stop, though cancel()
+        // would have stopped the run for them. A reader whom cancel() would
+        // refuse before any run row is refused here the same way; one it
+        // would not is given the same refusal for every id, and for a run it
+        // may stop, with what the page needs to offer Stop (stopOffer()).
+        // cancel() tells that reader which ids are runs already, so this
+        // says nothing new.
         $no = $this->readerRefusal($pid);
-        if ($no !== null) return $no;
+        if ($no !== null && $this->readerRefusal($pid, 'cancel') !== null) return $no;
         $store = $this->store();
         $run = (isset($known['run']) && is_array($known['run'])) ? $known['run'] : $store->run($pid, $runId);
-        if ($run === null) return ['ok' => false, 'why' => self::NO_RUN, 'final' => true];
+        if ($run === null) return $no !== null ? $no : ['ok' => false, 'why' => self::NO_RUN, 'final' => true];
+        if ($no !== null) return $this->stopOffer($pid, $run, $no);
 
         $ent = $this->entitlement($pid, $run);
         if (empty($ent['ok'])) {
-            return ['ok' => false, 'why' => $ent['why'], 'final' => !empty($ent['final'])];
+            return $this->stopOffer($pid, $run, ['ok' => false, 'why' => $ent['why'], 'final' => !empty($ent['final'])]);
         }
         $auth = ScanAuthorization::mayRead($ent['rights'], $ent['forms'], $run['scope_dag'],
                                            $ent['unknown']);
-        if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why'], 'final' => true];
+        if (empty($auth['ok'])) return $this->stopOffer($pid, $run, ['ok' => false, 'why' => $auth['why'], 'final' => true]);
         // A run can hold answers another project gave whoever drove it. A
         // reader that project would not answer is refused the whole run, by
         // the same rule as an instrument they cannot read (ScanAuthorization:
         // whole-report denial, never filtered rows). Cancel does not ask: a
-        // run must stay stoppable.
+        // run must stay stoppable, and the refusal says so (stopOffer()).
         //
         // ASKED OF THE LOOKUPS THE RUN MADE, NOT OF THE RULES AS THEY STAND
         // (reviews R3U-N1, R4-1, R4-2, R4-3). The reader's plan was asked
@@ -761,7 +907,7 @@ final class ScanService
         // held. The run keeps every lookup its rules make (whoever drives it),
         // and the other project is asked about each one for this reader.
         $refusal = $this->crossRefusal($pid, $run);
-        if ($refusal !== null) return $refusal;
+        if ($refusal !== null) return $this->stopOffer($pid, $run, $refusal);
 
         // The lease is not one of ScanStore::RUN_COLUMNS, so it is read here
         // unless the row already carries it. See progressOf() for why a quiet
@@ -774,7 +920,7 @@ final class ScanService
         $progress = self::progressOf($run, $census, time(), self::STALL_SECONDS);
         // cancelForms, NOT forms - see entitlement(). A run nobody may stop
         // holds the project's only slot with no reaper behind it.
-        $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        $cancel = $this->cancelAuth($pid, $run);
         // A GROUP-SCOPED RUN SHOWS NO COUNTS UNTIL ITS SCOPE IS PROVED AT THE
         // TARGET FENCE (H10 part 1). Its list is the group as planning read it,
         // and records move between groups while it runs; until catch-up has
@@ -784,11 +930,14 @@ final class ScanService
         // made for a status that will not carry it.
         $proved = ScanAuthorization::scopeProved($run);
         // ONE READ OF THE SUMMARY for both counts below, and only when they
-        // need it (ScanPromotion::countsRead()): a run that ended, or one past
-        // its detail budget. justifiedOf() read it a second time on every poll
-        // of a finished run, which the bounds in tests/mysql/cases/perf.php
-        // caught.
+        // need it (ScanPromotion::countsRead()): a run that keeps no counts of
+        // its own. A run that keeps them answers both from its row. Before,
+        // justifiedOf() read it a second time on every poll of a finished
+        // run, which the bounds in tests/mysql/cases/perf.php caught.
         $aggregates = ($proved && ScanPromotion::countsRead($run)) ? $store->aggregates((int) $run['run_id']) : null;
+        // The ending's inputs as the report and the file read them (review
+        // CFXB-N4): one reading of the run row for all three.
+        $ending = ScanReport::endingOf($run);
 
         $full = [
             'ok'        => true,
@@ -810,6 +959,10 @@ final class ScanService
             'done'      => $progress['done'],
             'excluded'  => $progress['excluded'],
             'removed'   => $progress['removed'],
+            // Whether any record left the group, and not how many (review
+            // rvf1-2): a run whose every record moved away was told they had
+            // been deleted, and the page needs to know which happened.
+            'leftGroup' => $progress['departed'] > 0,
             'settled'   => $progress['settled'],
             'stalled'   => $progress['stalled'],
             'paused'    => $progress['paused'],
@@ -820,7 +973,13 @@ final class ScanService
             'justified' => $proved ? ScanPromotion::justifiedOf($store, $run, $aggregates) : null,
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
             'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,
-            'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
+            'scope'     => $ending['scope'],
+            // Whether an upgrade of the module ended it (W12-N4): its stored
+            // reason, so the page says so and not only that it failed.
+            'upgraded'  => $ending['upgraded'],
+            // The day the run's date rules are judged as of (W10BF-3), or
+            // null for a run whose rules read no clock.
+            'asOf'      => ScanPlanner::frozenDay($run),
             'active'    => ScanPhase::isActive((string) $run['phase']),
             'mayCancel' => !empty($cancel['ok']),
             'why'       => null,
@@ -1032,16 +1191,14 @@ final class ScanService
     public function cancel($pid, $runId)
     {
         // The reader before the run (L8): see readerScope().
-        $no = $this->readerRefusal($pid);
+        // Asked of the host instruments, as mayCancel() asks (formsOf()).
+        $no = $this->readerRefusal($pid, 'cancel');
         if ($no !== null) return ['ok' => false, 'why' => $no['why']];
         $store = $this->store();
         $run = $store->run($pid, $runId);
         if ($run === null) return ['ok' => false, 'why' => self::NO_RUN];
 
-        $ent = $this->entitlement($pid, $run);
-        if (empty($ent['ok'])) return ['ok' => false, 'why' => $ent['why']];
-        // cancelForms, NOT forms - see entitlement().
-        $auth = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        $auth = $this->cancelAuth($pid, $run);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
 
         // Read as status() reads it, and BEFORE the stop: the stop writes
@@ -1052,11 +1209,86 @@ final class ScanService
         return $this->stopRun($store, $pid, $runId, (string) $this->username(), $run, time());
     }
 
+    /**
+     * May this reader stop $run? mayCancel() over the instruments the rules
+     * sit on (cancelForms, NOT forms - see entitlement()).
+     *
+     * A RUN STAYS STOPPABLE WHEN NO SCAN CONTEXT CAN BE BUILT (review
+     * rvc2-3). The host instruments come from the plan, and a configuration
+     * read in part, or rules that can no longer be evaluated, refused the
+     * context and with it Stop: on a project whose rules all failed so, the
+     * run held the project's slot until the reaper, refused to everybody.
+     * Then the question is asked of every instrument of the project
+     * (everyInstrument(), one dictionary read): a reader who may read all of
+     * them may read any set the rules could name. A reader who may not is
+     * given the context's own refusal, which says what could not be read.
+     *
+     * @return array{ok:bool, why:?string}
+     */
+    private function cancelAuth($pid, array $run)
+    {
+        $ent = $this->entitlement($pid, $run);
+        if (!empty($ent['ok'])) {
+            return ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
+        }
+        $no = ['ok' => false, 'why' => $ent['why']];
+        if (empty($ent['unplanned'])) return $no;
+        $every = $this->everyInstrument($pid);
+        $scope = $this->readerScope($pid);
+        if ($every === null || empty($scope['ok'])) return $no;
+        $auth = ScanAuthorization::mayCancel($scope['rights'], $every, $run['scope_dag']);
+        return empty($auth['ok']) ? $no : $auth;
+    }
+
+    /**
+     * A refused status, with what the page needs to offer Stop on $run when
+     * this reader may stop it (review rvc2-3): `run_id`, `active` and
+     * `mayCancel`. A reader cancelAuth() refuses gets the refusal as it was,
+     * so a run of another group stays no run at all.
+     */
+    private function stopOffer($pid, array $run, array $refusal)
+    {
+        $auth = $this->cancelAuth($pid, $run);
+        if (empty($auth['ok'])) return $refusal;
+        return $refusal + ['run_id' => (int) $run['run_id'],
+                           'active' => ScanPhase::isActive((string) $run['phase']), 'mayCancel' => true];
+    }
+
+    /**
+     * Every instrument of the project, or null when the module cannot say
+     * (review rvc2-3): what Stop asks about when no scan context can be built.
+     *
+     * @return string[]|null
+     */
+    private function everyInstrument($pid)
+    {
+        if (!is_callable([$this->module, 'scanProjectInstruments'])) return null;
+        try {
+            $forms = $this->module->scanProjectInstruments($pid);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        if (!is_array($forms) || !$forms) return null;
+        $out = [];
+        foreach ($forms as $f) {
+            if (!is_string($f) || $f === '') return null;
+            $out[] = $f;
+        }
+        return $out;
+    }
+
     // -- the report (B5) -------------------------------------------------------
 
     /** Findings one scan-findings page answers when it is not told, and at most. */
     const FINDINGS_PAGE = 50;
     const FINDINGS_PAGE_MAX = 100;
+
+    /**
+     * Store calls one findings page may make while it has found no row
+     * (review rv11a2-6): 10 x FILTER_WINDOWS x FILTER_WINDOW is 200,000
+     * entries of the first filter's key, at most 80 bounded statements.
+     */
+    const FINDINGS_EMPTY_WALK = 10;
 
     /**
      * A scan-findings filter name => the findings column it narrows. The four
@@ -1113,23 +1345,66 @@ final class ScanService
         $limit = max(1, min(self::FINDINGS_PAGE_MAX, $limit));
 
         $run = $r['run'];
+        // `runScope`: what the run covered (review rv11a1-1), so the page can
+        // say a coverage sentence is about one group, as the file now does.
         $out = ['ok' => true, 'run_id' => (int) $run['run_id'], 'withheld' => false, 'withheldWhy' => null,
+                'runScope' => self::runScope($run),
                 'columns' => $r['columns'], 'after' => $after, 'limit' => $limit, 'filter' => $applied,
-                'report' => $r['report']->runFacts($r['expected']), 'marks' => self::incompleteMarks($run)]
+                'report' => $r['report']->runFacts($r['expected'], $r['emptied']),
+                'marks' => self::incompleteMarks($r['shown'], $r['emptied'])]
              + self::decisionOf($run);
         // A RUN THAT HAS NOT PROVED ITS GROUP SHOWS NO ROWS (H10 part 1), as its
         // status shows no counts: a row is a count of one. No facets either.
-        if ($r['withheld'] !== null) {
-            return array_merge($out, ['withheld' => true, 'withheldWhy' => $r['withheld'],
-                                      'rows' => [], 'next' => null, 'facets' => null]);
+        if ($r['withheld'] !== null) return self::withheldAnswer($out, $r['withheld']);
+        // AN EMPTY PAGE IS THE END, WITHIN A STATED BOUND (review rv11a2-6).
+        // A page of two filters walks the first one's key in windows and may
+        // come back short with `next` set (ScanStore::findings()): with 20,003
+        // findings on one form and the only 3 of reason `rare` last, page 1
+        // held no rows and next=20000, while the facet said `rare: 3`. An
+        // empty answer asks again from where the walk stopped, so a page with
+        // no rows and a `next` means FINDINGS_EMPTY_WALK store calls read that
+        // many windows without a match.
+        $store = $this->store();
+        $from = $after;
+        for ($call = 1; ; $call++) {
+            $through = null;
+            $rows = $store->findings($pid, (int) $run['generation_id'], $r['scope'], $filter,
+                                     $from, $limit, $through);
+            if ($rows || $through === null || $call >= self::FINDINGS_EMPTY_WALK) break;
+            $from = $through;
         }
-        $through = null;
-        $rows = $this->store()->findings($pid, (int) $run['generation_id'], $r['scope'], $filter,
-                                         $after, $limit, $through);
         $out['rows'] = $r['report']->present($rows);
         $out['next'] = $through;
         $out['facets'] = $this->facetsOf($r['aggregates'], $r['dims'], $r['scope']);
         return $out;
+    }
+
+    /**
+     * The findings answer of a run that has not proved its group: what
+     * ScanAuthorization::preFenceStatus() keeps of its status, and no more
+     * (review rv11a1-3).
+     *
+     * A KEEP-LIST, for preFenceStatus()'s reason. status() withheld `detail`,
+     * `ruleProblems` and `notExamined` (rv5b-6: whether the run kept every
+     * finding is a statement about how many it made), and this answer, for the
+     * same reader and the same run, handed out all three - in `report.detail`,
+     * in the coverage sentence's "Some findings were not kept", in a
+     * `_TRUNCATED` suffix and as two counts. reportOf() builds the report and
+     * the marks of such a run with its detail unsaid, and this drops the rest.
+     */
+    private static function withheldAnswer(array $out, $why)
+    {
+        $keep = ['ok', 'run_id', 'runScope', 'columns', 'after', 'limit', 'filter', 'report', 'marks', 'clean'];
+        // `asOf` as preFenceStatus() keeps it (review rv11b1-4): the day the
+        // run's date rules were judged as of counts nothing.
+        $reportKeeps = ['schema', 'columns', 'legend', 'coverage', 'coverageSentence', 'mayCertify', 'suffix',
+                        'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows', 'asOf'];
+        $kept = [];
+        foreach ($keep as $k) if (array_key_exists($k, $out)) $kept[$k] = $out[$k];
+        $report = [];
+        foreach ($reportKeeps as $k) if (array_key_exists($k, $out['report'])) $report[$k] = $out['report'][$k];
+        $kept['report'] = $report;
+        return $kept + ['withheld' => true, 'withheldWhy' => $why, 'rows' => [], 'next' => null, 'facets' => null];
     }
 
     /**
@@ -1150,13 +1425,16 @@ final class ScanService
      * reader's export rights floored by the project's value policy now, and
      * the record names come from the module's own posture (W7-R2).
      *
-     * @return array{ok:bool, answer?:array, run?:array, report?:ScanReport,
+     * @return array{ok:bool, answer?:array, run?:array, shown?:array, report?:ScanReport,
      *               dims?:ScanDimensions, scope?:array, withheld?:?string,
-     *               columns?:array, expected?:?int, aggregates?:array}
+     *               columns?:array, expected?:?int, aggregates?:array,
+     *               emptied?:?array}
      */
     private function reportOf($pid, $runId)
     {
         $no = function ($why, $final) { return ['ok' => false, 'answer' => ['ok' => false, 'why' => $why, 'final' => $final]]; };
+        $off = $this->readGate($pid);
+        if ($off !== null) return ['ok' => false, 'answer' => $off];
         $refused = $this->readerRefusal($pid);
         if ($refused !== null) return ['ok' => false, 'answer' => $refused];
         $store = $this->store();
@@ -1171,15 +1449,44 @@ final class ScanService
         if ($run['terminal'] === null || $run['terminal'] === '') {
             return $no('this scan has not finished, so it has no report yet', false);
         }
-
         $reader = $this->readerScope($pid);
+        // A REPORT A LATER RUN HAS REPLACED IS NOT SHOWN (reviews rv11a1-5,
+        // rv11a2-1). A later whole-project run that completes closes this
+        // run's findings a page at a time (supersedePrevious()), and the
+        // report read nothing but active rows: in between it was a finished
+        // report missing rows, and after it an empty one, with `expected_rows`
+        // and the coverage sentence of the whole run above `rows=0`. Asked
+        // after the reader's entitlement, so no run a reader may not touch
+        // answers anything but NO_RUN; and a group reader is not told the id
+        // of a whole-project run, which they may not read.
+        $by = $store->supersededBy($pid, (int) $run['run_id']);
+        if ($by !== null) {
+            return $no($reader['dag'] === null ? sprintf(self::SUPERSEDED_BY, $by) : self::SUPERSEDED, true);
+        }
+
         // The reader's group as a finding stores it: its unique name, which is
         // what readerScope() resolved the group id to. A group reader whose
         // group has no name was refused there.
         $scope = ['dag' => $reader['dag'] === null ? null : (string) $reader['dagName']];
         $withheld = null;
+        // `shown`: the run as its report may describe it. A run that has not
+        // proved its group does not say whether it kept every finding
+        // (review rv11a1-3, see withheldAnswer()), so its detail is unsaid in
+        // the coverage sentence, the suffix and the terminal row.
+        $shown = $run;
         if (!ScanAuthorization::scopeProved($run)) {
             $withheld = ScanAuthorization::preFenceStatus(['terminal' => $run['terminal']])['withheldWhy'];
+            $shown['detail'] = null;
+        }
+        // A GROUP'S REPORT IS SHOWN WHILE IT STILL DESCRIBES THE GROUP (review
+        // rv11a1-2, H10 part 2). A record moved out of the group after the
+        // run's fence stayed on its page and in its file, id and kept value
+        // included, for a group that can no longer open it. Asked for a group
+        // reader only: anyone else may open every group's records. A withheld
+        // run shows no rows to drift.
+        if ($withheld === null && $reader['dag'] !== null) {
+            $drift = $this->scopeDrift($pid, $store, $run);
+            if (empty($drift['ok'])) return $no($drift['why'], !empty($drift['final']));
         }
 
         $ctx = $ent['ctx'];
@@ -1199,19 +1506,47 @@ final class ScanService
             'readerCeiling' => ScanPolicy::floor($reader['valueCeiling'], $ent['policy']['valueMode']),
             'identifiers'   => $ids,
         ] + $posture);
-        $report = new ScanReport($mapper, $dims, $run);
+        $report = new ScanReport($mapper, $dims, $shown);
         $columns = [];
         foreach (ScanColumns::all($dims) as $c) $columns[] = ['key' => $c['key'], 'label' => $c['label']];
 
-        // What the summary counted, for the facets and the expected count. A
-        // run that ended without a verdict may have no summary, and its count
-        // is then unknown rather than zero.
+        // What the summary counted, for the facets, and the expected count
+        // (expectedRows()).
         $aggregates = ($withheld === null) ? $store->aggregates((int) $run['run_id']) : [];
-        $expected = ($withheld === null && !in_array($run['terminal'], ScanOutcome::NO_VERDICT, true))
-            ? self::expectedRows($aggregates, $scope) : null;
-        return ['ok' => true, 'run' => $run, 'report' => $report, 'dims' => $dims, 'scope' => $scope,
-                'withheld' => $withheld, 'columns' => $columns, 'expected' => $expected,
-                'aggregates' => $aggregates];
+        $expected = ($withheld === null) ? self::expectedRows($run, $aggregates, $scope) : null;
+        // HOW AN EMPTY SCOPE EMPTIED (review rvf1-2, deferred to here). The
+        // report's coverage sentence and its terminal row said every record
+        // was deleted for a group whose records all moved to another group;
+        // the census says which, and is read only for the one coverage whose
+        // sentence depends on it. status() reads the same census every poll.
+        $emptied = null;
+        if ((string) $run['coverage'] === ScanOutcome::EMPTY_SCOPE) {
+            $p = self::progressOf($run, $store->recordStates((int) $run['run_id']), time());
+            $emptied = ['departed' => $p['departed'], 'removed' => $p['removed']];
+        }
+        return ['ok' => true, 'run' => $run, 'shown' => $shown, 'report' => $report, 'dims' => $dims,
+                'scope' => $scope, 'withheld' => $withheld, 'columns' => $columns, 'expected' => $expected,
+                'aggregates' => $aggregates, 'emptied' => $emptied];
+    }
+
+    /** Has a group run's group changed since its fence (ScopeDrift, review rv11a1-2)? */
+    private function scopeDrift($pid, ScanStore $store, array $run)
+    {
+        return ScopeDrift::check($this->fence($pid), $store, $run,
+            $this->scopeProbe($pid, $run['scope_dag']), $this->existsProbe($pid), $this->recordHasher($pid));
+    }
+
+    /**
+     * string => string: a record id's raw record hash, as a run's manifest
+     * stores it. The store finds a run's record by this hash (W5F-N3), so
+     * catch-up and the drift check hash with the one closure.
+     */
+    private function recordHasher($pid)
+    {
+        $key = $this->key();
+        return function ($id) use ($pid, $key) {
+            return Hmac::raw(Hmac::P_RECORD, $pid, (string) $id, $key);
+        };
     }
 
     /**
@@ -1255,67 +1590,85 @@ final class ScanService
      */
     private function facetsOf(array $aggregates, ScanDimensions $dims, array $scope)
     {
+        $dag = $scope['dag'];
         $out = [];
         foreach (self::FINDINGS_FACETS as $name => $kind) {
-            $out[$name] = [];
+            // value => count, in the order the summary holds the values: one
+            // value is several rows when a group run's summary is split by
+            // group (RollupBuilder::step()), and one entry here.
+            $counts = [];
             foreach ($aggregates as $a) {
                 if (!isset($a['kind']) || $a['kind'] !== $kind) continue;
                 $v = (string) $a['axis1'];
                 if ($v === '') continue;
-                if ($name === 'group' && $scope['dag'] !== null && $v !== $scope['dag']) continue;
-                $out[$name][] = ['value' => $v, 'label' => $name === 'form' ? $dims->form($v) : $v,
-                                 'count' => (int) $a['cnt']];
+                // A GROUP READER'S COUNTS ARE THEIR GROUP'S (review rv11a1-4):
+                // the group facet's own row, and of every other facet the
+                // share filed under their group, which is what their pages
+                // hold. A count over every group's rows promised rows the page
+                // never returned, and told the reader how many other groups'
+                // findings each form held. A summary written before it was
+                // split names no group, and counts nothing for them.
+                if ($dag !== null) {
+                    $mine = $name === 'group' ? $v === $dag
+                          : (isset($a['axis2']) && (string) $a['axis2'] === $dag);
+                    if (!$mine) continue;
+                }
+                $counts["\0" . $v] = (isset($counts["\0" . $v]) ? $counts["\0" . $v] : 0) + max(0, (int) $a['cnt']);
+            }
+            $out[$name] = [];
+            foreach ($counts as $k => $c) {
+                $v = substr((string) $k, 1);
+                $out[$name][] = ['value' => $v, 'label' => $name === 'form' ? $dims->form($v) : $v, 'count' => $c];
             }
         }
         return $out;
     }
 
     /**
-     * README's three ways of saying a report is incomplete, from the run row:
-     * a banner above it, a terminal row inside it that survives sorting and
-     * deleting comment lines, and a filename suffix that survives renaming.
-     * The page and the export both take them from here.
+     * README's three ways of saying a report is incomplete: see
+     * ScanReport::incompleteMarks(), which makes them. The page and the export
+     * take them from here, and the report's own `suffix` from there, so the
+     * two cannot disagree (review rv11a2-5). The filename suffix survives the
+     * file being forwarded or attached elsewhere; renaming the file removes it.
      *
-     * Incomplete is a run that did not finish complete, or that finished
-     * complete and did not keep every finding (the detail limit). A complete
-     * run that may still not be called clean is not incomplete: its suffix
-     * says _NOT-CERTIFIED and it carries no banner.
+     * The row ends on the run's coverage sentence, chosen as the panel and
+     * runFacts() choose it: $emptied is the same pair runFacts() takes, so a
+     * group whose records moved away is not told they were deleted.
      *
+     * @param array|null $emptied ['departed' => int, 'removed' => int] from the census, or null
      * @return array{incomplete:bool, certified:bool, banner:?string, row:?string, suffix:string}
      */
-    public static function incompleteMarks(array $run)
+    public static function incompleteMarks(array $run, ?array $emptied = null)
     {
-        $o = ['terminal' => isset($run['terminal']) ? $run['terminal'] : null,
-              'coverage' => isset($run['coverage']) ? $run['coverage'] : null,
-              'detail'   => isset($run['detail']) ? $run['detail'] : null,
-              'clean'    => isset($run['clean']) && $run['clean'] !== null && (int) $run['clean'] === 1];
-        $incomplete = $o['terminal'] !== ScanOutcome::COMPLETE || $o['detail'] === ScanOutcome::DETAIL_TRUNCATED;
-        $certified = ScanOutcome::mayClaimClean($o);
-        $suffix = ScanOutcome::suffix($o);
-        if ($incomplete && strpos($suffix, '_INCOMPLETE') === false) $suffix = '_INCOMPLETE' . $suffix;
-        if (!$incomplete && !$certified && $suffix === '') $suffix = '_NOT-CERTIFIED';
-        return [
-            'incomplete' => $incomplete,
-            'certified'  => $certified,
-            'banner'     => $incomplete ? 'INCOMPLETE SCAN - this report does NOT certify the project as clean' : null,
-            'row'        => $incomplete
-                ? 'This scan did not cover the whole project. Rows above are real findings over the records '
-                  . 'that WERE examined; absence of a row is not evidence a record is clean. '
-                  . ScanPageView::coverageSentence($o['coverage'], $o['detail'])
-                : null,
-            'suffix'     => $suffix,
-        ];
+        return ScanReport::incompleteMarks($run, $emptied);
     }
 
     /**
-     * How many findings THIS reader's report holds, from the run's summary:
-     * every stored one for an unconfined reader, and for a group reader the
-     * count the summary filed under their group, because their pages hold out
-     * a row stored under another group's name. A count the file can be
+     * How many findings THIS reader's report holds. A count the file can be
      * checked against has to be the count of the file.
+     *
+     * FOR AN UNCONFINED READER OF A RUN THAT KEEPS ITS COUNT, the run row's
+     * (reviews rvc2-2, CONS-N1): ScanPromotion::storedOf(), which the store
+     * keeps equal to the run's active findings, in every state. So the
+     * file's expected_rows, its rows and the page's total are the stored part
+     * of the count the panel shows (ScanPromotion::findingsOf()), for a run
+     * stopped, expired or failed as for one that finished. It came from the
+     * summary, and a run with no verdict expected 'unknown'.
+     *
+     * Otherwise from the summary: every stored finding for an unconfined
+     * reader of a run from before schema version 8, and for a group reader
+     * the count the summary filed under their group, because their pages
+     * hold out a row stored under another group's name. A run that ended
+     * without a verdict may have no summary, and its count is then unknown
+     * rather than zero.
+     *
+     * @return int|null
      */
-    private static function expectedRows(array $aggregates, array $scope)
+    public static function expectedRows(array $run, array $aggregates, array $scope)
     {
+        $held = ScanPromotion::storedOf($run);
+        if ($scope['dag'] === null && $held !== null) return $held;
+        if (in_array($run['terminal'], ScanOutcome::NO_VERDICT, true)) return null;
         if ($scope['dag'] === null) return ScanPromotion::tally($aggregates)['stored'];
         $n = 0;
         foreach ($aggregates as $a) {
@@ -1340,6 +1693,14 @@ final class ScanService
 
     /** The line a file that stopped early ends on, in place of the trailer. */
     const ROWS_LOST = 'ROWS WERE LOST: the report could not be read to the end, so this file is not the whole report';
+
+    /** Why a report a later whole-project run replaced is not shown, to a reader who may read that run. */
+    const SUPERSEDED_BY = 'scan %1$d, a later scan of the whole project, has replaced this one, so the '
+        . 'findings of this scan are closed and it is no longer shown as a report. Open scan %1$d instead.';
+
+    /** The same, to a group reader, who is not told the id of a run they may not read. */
+    const SUPERSEDED = 'a later scan of the whole project has replaced this one, so the findings of this '
+        . 'scan are closed and it is no longer shown as a report. Run a new scan to see them as they are now.';
 
     /**
      * The CSV of a finished run's findings for THIS reader, or why not.
@@ -1369,17 +1730,24 @@ final class ScanService
             return self::exportRefusal(['why' => $this->storageFailed($pid, $runId, $e), 'final' => false]);
         }
         $run = $r['run'];
-        $facts = $r['report']->runFacts($r['expected']);
-        $reader = $this->readerScope($pid);
+        $facts = $r['report']->runFacts($r['expected'], $r['emptied']);
+        // THE RUN'S SCOPE, NOT THE READER'S (review rv11a1-1). This line was
+        // the reader's, so an unconfined reader's file of a clean run over one
+        // group said "whole project" above "Every record was checked" and
+        // "certified yes": a certificate for groups the run never read.
+        $scope = self::runScope($run);
+        $group = $scope['kind'] === 'group';
         $head = [
             ['schema', ScanReport::SCHEMA],
             ['project', (string) (int) $pid],
             ['run', (string) (int) $run['run_id']],
             ['generated_at', gmdate('Y-m-d H:i:s') . ' UTC'],
-            ['scope', $r['scope']['dag'] === null ? 'whole project'
-                : 'Data Access Group ' . (string) $reader['dagName']],
-            ['coverage', $facts['coverageSentence']],
-            ['certified', $facts['mayCertify'] ? 'yes' : 'no'],
+            ['scope', $scope['label']],
+            ['coverage', $facts['coverageSentence'] . ($group ? ' ' . sprintf(self::GROUP_ONLY, $scope['label']) : '')],
+            ['certified', !$facts['mayCertify'] ? 'no' : ($group ? 'yes, for ' . $scope['label'] . ' only' : 'yes')],
+            // The day the run's date rules were judged as of (W10BF-3), as the
+            // status, the panel and the findings page give it (review rvc2-5).
+            ['judged_as_of', $facts['asOf'] !== null ? (string) $facts['asOf'] : 'not applicable'],
             ['values', $facts['valuesState']],
             ['labels', $facts['labelsDegraded'] ? $facts['degradedSummary']
                 : 'as the project was when this scan was planned'],
@@ -1388,19 +1756,57 @@ final class ScanService
         ];
         // README's three marks of a file that cannot certify (incompleteMarks()):
         // the banner and the terminal row go in the file, the suffix in its name.
-        $marks = self::incompleteMarks($run);
+        $marks = self::incompleteMarks($run, $r['emptied']);
         $filename = sprintf('uv-scan-%d-run%d-%s%s.csv', (int) $pid, (int) $run['run_id'], gmdate('Ymd'),
                             preg_replace('/[^A-Za-z0-9_-]/', '', $marks['suffix']));
         $store = $this->store();
         return ['ok' => true, 'filename' => $filename,
                 'stream' => function (callable $write, callable $flush) use ($store, $r, $pid, $runId, $run, $head, $marks) {
+                    // A group reader's file is checked for drift again at its
+                    // end (review rv11a1-2), as its run is (rv11a2-1).
+                    $drift = $r['scope']['dag'] === null ? null : function () use ($store, $pid, $run) {
+                        return $this->scopeDrift($pid, $store, $run);
+                    };
                     $out = self::streamFindings($store, $r['report'], (int) $pid, (int) $run['generation_id'],
-                                                $r['scope'], $head, $marks, $write, $flush);
+                                                $r['scope'], $head, $marks, $write, $flush,
+                                                ['run' => (int) $run['run_id'], 'expected' => $r['expected'],
+                                                 'drift' => $drift]);
                     if ($out['error'] instanceof ScanStoreUnavailable) {
                         $this->storageFailed($pid, $runId, $out['error']);
                     }
                     return $out;
                 }];
+    }
+
+    /**
+     * Why pages/export.php refuses anything but a POST (W11F-N5): the file
+     * comes only from the scan page's download button, which posts run_id
+     * with the page's redcap_csrf_token. Sent with HTTP 405.
+     */
+    const EXPORT_POST_ONLY = 'the file is sent only in answer to the download button on the scan page, '
+        . 'which sends the page\'s token with it; a link or an address typed into the browser cannot '
+        . 'fetch it. Open the scan page and press the download button.';
+
+    /** Said after the coverage of a run over one group, in its file: %s is runScope()'s label. */
+    const GROUP_ONLY = 'This scan covered %s only, not the whole project.';
+
+    /**
+     * What a stored run covered, as its report states it: the run's own
+     * scope_dag, resolved to the group's name for prose (review rv11a1-1).
+     * A group reader may only read a run of their own group, so for them this
+     * is their group; for an unconfined reader it is whichever group the run
+     * was confined to, which is what a whole-project heading had hidden.
+     *
+     * @return array{kind:string, group:?string, label:string} kind 'project'
+     *         or 'group'; group the unique name, null when it cannot be read
+     */
+    private static function runScope(array $run)
+    {
+        $dag = isset($run['scope_dag']) ? $run['scope_dag'] : null;
+        if ($dag === null || $dag === '') return ['kind' => 'project', 'group' => null, 'label' => 'whole project'];
+        $name = ScanPageView::dagNameOf($dag);
+        return ['kind' => 'group', 'group' => $name, 'label' => $name !== null
+            ? 'Data Access Group ' . $name : 'the Data Access Group with id ' . (string) $dag];
     }
 
     /** A refusal as the export page sends it: 403 when it is the answer, 503 when asking again may help. */
@@ -1428,14 +1834,29 @@ final class ScanService
      * sorting the sheet; the third mark, the filename suffix, is the caller's.
      * A file that lost rows says so in a data row too, for the same reason.
      *
+     * AND THE TRAILER IS EARNED AT THE END, NOT ASSUMED (reviews rv11a1-5,
+     * rv11a2-1). A file is read a page at a time over minutes, and in that
+     * time a later whole-project run can close this run's rows, or retention
+     * can begin removing it: each page then read fewer rows, the walk ended
+     * early, and the file still closed on `export_complete=1`. With $whole,
+     * the run is read again after the last page, and the file earns the
+     * trailer only when the run is still there, nothing has replaced it, and
+     * it wrote the number of rows its head promised; otherwise it ends as a
+     * file that lost rows. A recheck that cannot be read is not a yes.
+     *
      * @param array $head  [[key, value], ...] the lines about the report
      * @param array $marks incompleteMarks() of the run: `banner` and `row`, each
      *                     null when the run needs none
+     * @param array $whole ['run' => int, 'expected' => ?int]: the run to read
+     *                     again at the end and the rows its head promised (null:
+     *                     not known, so not compared); [] asks nothing.
+     *                     'drift' => ?callable: ScopeDrift asked again at the
+     *                     end for a group reader's file (review rv11a1-2)
      * @return array{ok:bool, rows:int, pages:int, error:?\Throwable}
      */
     public static function streamFindings(ScanStore $store, ScanReport $report, $pid, $generationId,
                                           array $scope, array $head, array $marks, callable $write,
-                                          callable $flush)
+                                          callable $flush, array $whole = [])
     {
         $banner = isset($marks['banner']) ? $marks['banner'] : null;
         $terminal = isset($marks['row']) ? $marks['row'] : null;
@@ -1464,7 +1885,24 @@ final class ScanService
                 }
                 $after = $through;
             } while ($after !== null);
+            if (isset($whole['run'])) {
+                $runId = (int) $whole['run'];
+                $expected = array_key_exists('expected', $whole) ? $whole['expected'] : null;
+                if ($store->run($pid, $runId) === null || $store->supersededBy($pid, $runId) !== null) {
+                    throw new \RuntimeException('the run was replaced or removed while it was exported');
+                }
+                if ($expected !== null && $rows !== (int) $expected) {
+                    throw new \RuntimeException('the export wrote ' . $rows . ' rows of ' . (int) $expected);
+                }
+                if (isset($whole['drift']) && empty(call_user_func($whole['drift'])['ok'])) {
+                    throw new \RuntimeException('the group changed while it was exported');
+                }
+            }
         } catch (\Throwable $e) {
+            // THE RUN'S OWN ROW TOO (review rv11a2-4). A file that lost rows
+            // carried only INCOMPLETE EXPORT, so once its comment lines were
+            // deleted nothing in it said the scan itself was stopped or cut.
+            if ($terminal !== null) $write($report->csvNoticeLine(self::INCOMPLETE_LABEL, $terminal) . "\r\n");
             $write($report->csvNoticeLine(self::LOST_LABEL, self::ROWS_LOST) . "\r\n");
             $write($report->csvMetaLine(self::ROWS_LOST, 'rows=' . $rows) . "\r\n");
             $flush();
@@ -1508,8 +1946,17 @@ final class ScanService
     private function stopRun(ScanStore $store, $pid, $runId, $actor, array $before, $now)
     {
         if (!$store->cancel($pid, $runId, $actor)) {
-            return ['ok' => false, 'stopped' => false,
-                    'why' => 'this scan had already finished, so there was nothing to stop'];
+            // A RUN ALREADY STOPPING IS STOPPED, NOT FINISHED (review
+            // rvfix-N3). cancel() no longer stops a `cancelling` run a second
+            // time, so its false no longer means only "finished": a second
+            // Stop, or one pressed after a stop a worker held, finds the run
+            // stopping. It is finished below as this Stop's own would be,
+            // with nothing audited twice.
+            $now_ = $store->run($pid, $runId);
+            if ($now_ === null || !isset($now_['phase']) || $now_['phase'] !== ScanPhase::CANCELLING) {
+                return ['ok' => false, 'stopped' => false,
+                        'why' => 'this scan had already finished, so there was nothing to stop'];
+            }
         }
         $stopped = false;
         if (!self::workerHolds($before, $now, self::STALL_SECONDS)) {
@@ -1760,6 +2207,117 @@ final class ScanService
     }
 
     /**
+     * The report the findings panel opens on for THIS reader, and what the
+     * page says beside it, or null.
+     *
+     * The panel shows a finished run's report (B5), and a run that finished
+     * after its tab was closed had no way back onto the page: activeRun()
+     * answers only the run holding the slot. The scope is the reader's own -
+     * a group reader's group, the whole project for anyone else - the scope a
+     * Start from this page would have. A group reader is never offered a
+     * whole-project run, which they may not read (rv5b-4).
+     *
+     * THE CURRENT REPORT, NOT THE NEWEST ROW (reviews rv11b1-1, rv11b2-1,
+     * rv11b2-2, rv11b2-5). This was the newest terminal run of the scope, and
+     * three kinds of run were offered that scan-findings then refused or
+     * showed empty:
+     *   - a run a later complete whole-project run has superseded. That run
+     *     closes every older generation, group runs included, so after any
+     *     whole-project scan a group reader's page opened on "This report
+     *     holds 2 findings." over "This scan stored no findings.", and since
+     *     rv11a1-5 on a refusal. Superseded is ScanStore::supersededBy()'s
+     *     test: a complete whole-project run of a later generation, read here
+     *     as the newest such generation, so no run that the report would
+     *     refuse as replaced is offered;
+     *   - a run retention has begun removing, which every verb answers as no
+     *     run (ScanStore::REMOVING_WHY);
+     *   - a run that stopped, failed or expired after the complete one the
+     *     store still treats as current (supersedePrevious() keeps the
+     *     previous report for any end but `complete`), which hid that report
+     *     behind a partial one.
+     * So the page opens the newest COMPLETE run of the scope that nothing
+     * superseded and retention keeps, and names the newest unfinished one
+     * after it as `newer`, for the reader to open. With no complete run left
+     * it opens the newest finished one. When the scope's newest finished run
+     * was superseded, a group reader has nothing readable left, and
+     * `replaced` says so: the page tells them a whole-project scan replaced
+     * their group's report, rather than opening an empty one.
+     *
+     * A LOCATOR, NOT A GRANT. The ids are printed into the page for the client
+     * to ask scan-findings about, and that verb decides everything again,
+     * before the run row (L8): a reader it refuses is refused the same way for
+     * these ids as for any other. Nothing about the runs but their ids and
+     * generations is read here.
+     *
+     * ONE STATEMENT, BOUNDED BY THE PROJECT'S OWN RUNS. Three branches through
+     * ix_project_created: the scope's newest finished run and its newest
+     * complete one, each newest first with run_id breaking a tie in the same
+     * second (the key's own suffix, so there is no sort) and LIMIT 1; and the
+     * newest generation a complete whole-project run of the project reached.
+     * Each walks at most the project's retained runs once, so the read is
+     * linear in them at worst, never in the findings. Generations rise with
+     * the runs (one active slot per project), so a run is superseded exactly
+     * when its generation is below that one.
+     *
+     * @param array|null $scope ScanPageView::scanScope()'s answer, as the page holds it
+     * @return array{run_id:?int, newer:?int, replaced:bool}|null null for no
+     *         readable scope, or a read that failed or answered in a shape
+     *         this does not know; run_id null when there is nothing to open
+     */
+    public function finishedRun($pid, $scope = null)
+    {
+        if (!is_array($scope) || empty($scope['ok']) || !array_key_exists('dag', $scope)) return null;
+        $t = Schema::table('scan_run') . ' FORCE INDEX (ix_project_created)';
+        $mine = 'project_id = ? AND phase = ? AND '
+              . ($scope['dag'] === null ? 'scope_dag IS NULL' : 'scope_dag = ?')
+              . ' AND (terminal_reason IS NULL OR terminal_reason <> ?)';
+        $newest = ' ORDER BY created_at DESC, run_id DESC LIMIT 1';
+        $sql = '(SELECT 1, run_id, generation_id FROM ' . $t . ' WHERE ' . $mine . $newest . ')'
+             . ' UNION ALL (SELECT 2, run_id, generation_id FROM ' . $t . ' WHERE ' . $mine
+             . ' AND terminal = ?' . $newest . ')'
+             . ' UNION ALL (SELECT 3, NULL, MAX(generation_id) FROM ' . $t
+             . ' WHERE project_id = ? AND terminal = ? AND scope_dag IS NULL)';
+        $p = [(int) $pid, ScanPhase::TERMINAL];
+        if ($scope['dag'] !== null) $p[] = (string) $scope['dag'];
+        $p[] = ScanStore::REMOVING_WHY;
+        try {
+            $rows = $this->db->select($sql, array_merge($p, $p,
+                [ScanOutcome::COMPLETE, (int) $pid, ScanOutcome::COMPLETE]));
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $found = [];
+        $whole = false;
+        foreach ($rows as $row) {
+            $row = array_values((array) $row);
+            if (count($row) < 3) return null;
+            $k = (string) $row[0];
+            if ($k === '3') {
+                if ($row[2] !== null && !ctype_digit((string) $row[2])) return null;
+                $whole = $row[2] === null ? null : (int) $row[2];
+                continue;
+            }
+            if (($k !== '1' && $k !== '2') || !ctype_digit((string) $row[1]) || !ctype_digit((string) $row[2])) {
+                return null;
+            }
+            $found[$k] = ['id' => (int) $row[1], 'gen' => (int) $row[2]];
+        }
+        // MAX() answers one row whatever the project holds. No row is a read
+        // that did not work, and reading it as "nothing superseded" would
+        // offer a replaced report.
+        if ($whole === false) return null;
+        $live = function ($x) use ($whole) { return $x !== null && ($whole === null || $x['gen'] >= $whole); };
+        $last = isset($found['1']) ? $found['1'] : null;
+        $complete = isset($found['2']) ? $found['2'] : null;
+        $open = $live($complete) ? $complete : ($live($last) ? $last : null);
+        return [
+            'run_id'   => $open === null ? null : $open['id'],
+            'newer'    => ($open !== null && $live($last) && $last['id'] !== $open['id']) ? $last['id'] : null,
+            'replaced' => $open === null && $last !== null && $scope['dag'] !== null,
+        ];
+    }
+
+    /**
      * Retire any active run whose scope no user of this project could match.
      *
      * THE AUTHORITY IS THE PROJECT'S OWN GROUP LIST. A run is unworkable when
@@ -1913,8 +2471,11 @@ final class ScanService
      * readerScope()'s refusal, or null for a reader who may go on to ask
      * about a run. FINAL unless the rights could not be READ (review R2O-4),
      * as entitlementNow() says it.
+     *
+     * $verb is 'cancel' for cancel() and 'read' for every other verb: they
+     * are asked about different instrument sets (see formsOf()).
      */
-    private function readerRefusal($pid)
+    private function readerRefusal($pid, $verb = 'read')
     {
         $scope = $this->readerScope($pid);
         if (empty($scope['ok'])) {
@@ -1926,7 +2487,66 @@ final class ScanService
         // mayWork() or mayCancel(), each of which asks the same first.
         $alone = ScanAuthorization::readerAlone($scope['rights']);
         if (empty($alone['ok'])) return ['ok' => false, 'why' => $alone['why'], 'final' => true];
+        // AND THE INSTRUMENTS (W11A-N3). The entitlement was built for the run
+        // row, so a designer barred from an instrument the rules read was
+        // named the barred instruments for an id that is a run and told
+        // NO_RUN for one that is not: the run ids of the project could be
+        // told apart by somebody the scan refuses. Which instruments the
+        // rules read is a fact about the project's rules and dictionary, not
+        // about a run - the plan's ownership map does not depend on the group
+        // it is built for - so it is decided here, from a planning context
+        // for the reader's own scope, before any run row is read. A context
+        // that cannot be built is refused here too, the same for every id,
+        // and final only when settled (contextFinal()), as entitlementNow()
+        // says it.
+        $f = $this->readerForms($pid);
+        if (empty($f['ok'])) {
+            $no = ['ok' => false, 'why' => $f['why'], 'final' => !empty($f['final'])];
+            // STOP DOES NOT WAIT FOR A CONTEXT (review rvc2-3): it is asked
+            // of every instrument instead, as cancelAuth() asks it.
+            if ($verb !== 'cancel') return $no;
+            $every = $this->everyInstrument($pid);
+            if ($every === null || empty(ScanAuthorization::mayStart($scope['rights'], $every)['ok'])) return $no;
+            return null;
+        }
+        $auth = ($verb === 'cancel')
+            ? ScanAuthorization::mayStart($scope['rights'], $f['cancelForms'])
+            : ScanAuthorization::mayStart($scope['rights'], $f['forms'], $f['unknown']);
+        if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why'], 'final' => true];
         return null;
+    }
+
+    /** "<pid>|<user>" => readerForms()'s answer for this request. */
+    private $readerForms = [];
+
+    /**
+     * The instruments this reader's rules read, from a planning context built
+     * for the reader's own scope, once per request.
+     *
+     * THE SAME PLAN AS THE RUN'S, NOT A SECOND ONE. The plan memo is keyed by
+     * the project, the group, the value ceiling and the user, and not by the
+     * generation, so for a group reader - whose only readable runs are their
+     * group's - and for an unrestricted reader of a whole-project run, the
+     * entitlement built after the run row is a memo hit on this one.
+     *
+     * @return array{ok:bool, why?:?string, forms?:string[], unknown?:string[], cancelForms?:string[]}
+     */
+    private function readerForms($pid)
+    {
+        $key = (int) $pid . '|' . $this->username();
+        if (!array_key_exists($key, $this->readerForms)) {
+            $scope = $this->readerScope($pid);
+            $policy = $this->policy($pid);
+            $ctx = $this->module->durableScanContext($pid, $this->planOptions($pid, [
+                'valueCeiling' => $policy['valueMode'], 'generation' => null, 'policy' => $policy,
+            ]), $scope['dag']);
+            // contextRefusal(), as entitlementNow() says it: a context refused
+            // on a read that failed names what could not be read (W10BF-4).
+            $this->readerForms[$key] = empty($ctx['ok'])
+                ? ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => self::contextFinal($ctx)]
+                : ['ok' => true, 'why' => null] + self::formsOf($ctx);
+        }
+        return $this->readerForms[$key];
     }
 
     /** @see entitlement() — the answer, worked out. */
@@ -1957,11 +2577,38 @@ final class ScanService
             'generation'   => (int) $run['generation_id'],
             'runSeq'       => (int) $run['run_seq'],
             'policy'       => $policy,
+            // The clock the run froze at planning (W10BF-3), so a record
+            // judged after midnight is judged as of the same day.
+            'asOf'         => ScanPlanner::frozenClock($run),
         ]), $run['scope_dag']);
-        // Never final: the commonest reason is a rule list or a dictionary that
-        // could not be read just now.
-        if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why'], 'final' => false];
+        // Final only when settled (contextFinal()): the commonest reason is a
+        // rule list or a dictionary that could not be read just now.
+        // `unplanned` tells cancelAuth() the run can still be stopped by
+        // another question (review rvc2-3).
+        if (empty($ctx['ok'])) {
+            return ['ok' => false, 'why' => self::contextRefusal($ctx), 'final' => self::contextFinal($ctx),
+                    'unplanned' => true];
+        }
 
+        return ['ok' => true, 'why' => null, 'rights' => $scope['rights']] + self::formsOf($ctx) + [
+                // The CALLER's scope, kept beside the run's own. The two are
+                // equal for any request the authorisation above let through -
+                // they are compared as ids by mayWork() - and keeping both is
+                // what let the seam be asserted rather than assumed.
+                'policy' => $policy, 'ctx' => $ctx, 'dag' => $scope['dag']];
+    }
+
+    /**
+     * The instruments a planning context reads, as the entitlement asks about
+     * them: `forms`, `unknown` (fields no instrument could be found for) and
+     * `cancelForms`. ONE DERIVATION for start(), the pre-run question
+     * (readerForms(), W11A-N3) and the run's entitlement, so the three cannot
+     * be asked about different sets.
+     *
+     * @return array{forms:string[], unknown:string[], cancelForms:string[]}
+     */
+    private static function formsOf(array $ctx)
+    {
         // NULL AND '' ARE "COULD NOT BE PLACED", AND THIS LOOP IS THE WHOLE
         // FAIL-CLOSED PROPERTY. A field the plan could not put on an instrument
         // is a field whose access cannot be checked, so it sets $unknown and
@@ -1985,11 +2632,14 @@ final class ScanService
         // deploy, on a project where a when/assert/with operand sits on an
         // instrument the actor cannot read, would become unworkable AND
         // unreadable AND uncancellable at once - and it holds active_slot = 1,
-        // so openRun() answers busy for everyone on that project. The three
-        // paths that release a slot are finish() from a worker pass (gated by
-        // mayWork), reapCancelled() (needs phase `cancelling`, which needs a
-        // successful cancel), and ScanRetention::expireAbandoned(), which has
-        // no caller (tests/scan_wiring_php.php). The exit would be a DBA.
+        // so openRun() answers busy for everyone on that project. Short of
+        // switching the module off, the paths that release a slot are finish()
+        // from a worker pass (gated by mayWork), reapCancelled() (needs phase
+        // `cancelling`, which needs a successful cancel), and
+        // ScanStore::expireAbandoned(), which the reap cron
+        // (ScanMaintenance::reap()) and openRun() run only once the run has
+        // gone staleHours without progress. Until then the whole project
+        // would answer busy, and nobody could stop the run.
         //
         // mayCancel's own docblock forbids this shape in the general case -
         // "Ownership would only add a way for a wedged run to become
@@ -2008,14 +2658,7 @@ final class ScanService
                 if ($form !== null && $form !== '') $cancelForms[$form] = true;
             }
         }
-        return ['ok' => true, 'why' => null, 'rights' => $scope['rights'],
-                'forms' => array_keys($forms), 'unknown' => $unknown,
-                'cancelForms' => array_keys($cancelForms),
-                // The CALLER's scope, kept beside the run's own. The two are
-                // equal for any request the authorisation above let through -
-                // they are compared as ids by mayWork() - and keeping both is
-                // what let the seam be asserted rather than assumed.
-                'policy' => $policy, 'ctx' => $ctx, 'dag' => $scope['dag']];
+        return ['forms' => array_keys($forms), 'unknown' => $unknown, 'cancelForms' => array_keys($cancelForms)];
     }
 
     private function store()
@@ -2036,19 +2679,41 @@ final class ScanService
     {
         $k = (int) $pid;
         if (!array_key_exists($k, $this->fences)) {
-            $f = SourceFence::forProject($this->db, $pid);
+            $f = $this->openedFence($pid);
             // A LOG THAT COULD NOT BE READ IS NOT A PROJECT WITHOUT ONE (H11).
             // Null here builds a worker with no fence, and a worker with no
             // fence takes every record it reads as having held still - so one
             // failed read of the log let a whole request's records through
             // unproved. The request stops instead, as for any storage failure,
-            // and the next one asks again; nothing is remembered.
+            // and the next one asks again; no request remembers it for another.
             if (!empty($f['unreadable'])) {
                 throw new ScanStoreUnavailable('the project change log could not be read');
             }
             $this->fences[$k] = empty($f['ok']) ? null : $f['fence'];
         }
         return $this->fences[$k];
+    }
+
+    /**
+     * SourceFence::forProject() for $pid, once per request.
+     *
+     * ONE OPENING FOR THE FENCE AND THE CAPABILITY PROBE (W10AF-N4). The
+     * census's sourceFence probe read the table name and the top of the log,
+     * and the fence read both again, so a work request opened the change log
+     * twice. capabilities() hands the census this answer instead
+     * (ScanCapabilities::sourceFenceFrom()), and fence() builds on it. A log
+     * that could not be read is kept for this request too, so the probe and
+     * the fence cannot disagree inside one; the next request asks again.
+     *
+     * @return array{ok:bool, fence:?SourceFence, why:?string, unreadable:bool}
+     */
+    private function openedFence($pid)
+    {
+        $k = (int) $pid;
+        if (!array_key_exists($k, $this->fenceOpened)) {
+            $this->fenceOpened[$k] = SourceFence::forProject($this->db, $pid);
+        }
+        return $this->fenceOpened[$k];
     }
 
     /**
@@ -2076,6 +2741,11 @@ final class ScanService
             try {
                 $known = isset($this->enumeration[$k])
                        ? ['recordEnumeration' => $this->enumeration[$k]] : [];
+                // The change log as the fence opens it (W10AF-N4). With no
+                // query() there is no fence, and the probe says why itself.
+                if ($this->db !== null) {
+                    $known['sourceFence'] = ScanCapabilities::sourceFenceFrom($this->openedFence($pid));
+                }
                 $this->capabilities[$k] = ScanCapabilities::all($this->module, $pid, $known);
                 $this->enumeration[$k] = $this->capabilities[$k]['recordEnumeration'];
             } catch (\Throwable $e) {
@@ -2154,12 +2824,9 @@ final class ScanService
     private function catchUp($pid, ScanStore $store, $dag)
     {
         $source = $this->openSource($pid);
-        $key = $this->key();
         return new CatchUp($store, [
             'fence'  => $this->fence($pid),
-            'hash'   => function ($id) use ($pid, $key) {
-                return Hmac::raw(Hmac::P_RECORD, $pid, (string) $id, $key);
-            },
+            'hash'   => $this->recordHasher($pid),
             'exists' => $this->existsProbe($pid),
             'scope'  => $this->scopeProbe($pid, $dag),
             'dag'    => function (array $ids) use ($source) {
@@ -2168,7 +2835,7 @@ final class ScanService
         ]);
     }
 
-    private function finalizer($pid, array $ctx, ScanStore $store, $runId = null)
+    private function finalizer($pid, array $ctx, ScanStore $store, $runId = null, $scoped = false)
     {
         $read = $ctx['read'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
@@ -2190,7 +2857,11 @@ final class ScanService
             'versions' => $this->fence($pid),
             // Which candidates' records left the run's group (review rv5b-1).
             // Their candidates are dropped from the group rather than re-read.
-            'departed' => ($store === null || $runId === null) ? null
+            // A GROUP-SCOPED RUN'S ONLY (review rvf1-4): a run over the whole
+            // project has no group to leave, and the question is a
+            // scan_record read on every verify page, about 250,000 reads on
+            // 500,000 records in pairs.
+            'departed' => (!$scoped || $store === null || $runId === null) ? null
                 : function (array $hashes) use ($store, $runId) {
                     return $store->departedOf((int) $runId, $hashes);
                 },
@@ -2399,7 +3070,25 @@ final class ScanService
         return null;
     }
 
-    /** The effective policy: the system maximum, then whatever the project asked for. */
+    /**
+     * The effective policy: the system maximum, then whatever the project asked for.
+     *
+     * PLUS THE RECORD-ID POSTURE (W10BF-2). "log-values" = none is the mode
+     * for a site whose record ids are themselves identifying, and the legacy
+     * report hashes its ids under it (UniversalValidator::scanPlan()). This
+     * policy never carried it, so ScanPolicy::tightened()'s hashRecordIds
+     * branch could not fire: a project switched to "none" while a run was
+     * working was not a tightening, and the run went on under the posture it
+     * had begun with. Resolved here, as the legacy plan resolves it, and
+     * frozen into policy_json with the rest. Not in ScanPolicy::resolve(),
+     * whose other caller (the maintenance pass) does not read the setting
+     * and would then state a posture it never asked about. A read that fails
+     * is not "none" here: this value only decides whether a run stops, and
+     * read as "none" a blip in one work request would stop the run as a
+     * tightening. A run frozen that way and read as "none" later is one, and
+     * stops. The report, which discloses, hashes on a read that fails
+     * (UniversalValidator::hashesRecordIds(), review rvc2-4).
+     */
     private function policy($pid)
     {
         $sys = [];
@@ -2414,7 +3103,9 @@ final class ScanService
                   'scan-max-detail-findings', 'scan-max-detail-bytes'] as $k) {
             $prj[$k] = $this->setting($k, $pid);
         }
-        return ScanPolicy::resolve($sys, $prj);
+        $policy = ScanPolicy::resolve($sys, $prj);
+        $policy['hashRecordIds'] = ($this->setting('log-values', $pid) === 'none');
+        return $policy;
     }
 
     /**
@@ -2445,7 +3136,7 @@ final class ScanService
 
     /**
      * The evaluator's revision: BUMP IT WHENEVER A VERDICT CAN CHANGE (review
-     * R3G-4).
+     * R3G-4), OR THE FORM A STORED FINDING OR SUMMARY IS READ IN (rv11a2-9).
      *
      * It is the `engine` input of every run's fingerprint, so a durable run
      * started under one evaluator and worked under another is refused ("the
@@ -2477,8 +3168,19 @@ final class ScanService
      *             `duplicate-value`, which is part of its identity (W7-R4;
      *             engine-5 on the scan branch, renumbered when it joined main,
      *             where engine-5 to engine-7 were already taken)
+     *   engine-9  what a finding STORES moved, though no verdict or identity
+     *             did (review rv11a2-9; engine-6 on the scan branch,
+     *             renumbered when it joined main, where engine-6 to engine-8
+     *             were already taken): a pooled finding's reason is kept as
+     *             `pooled` with a mask, and a branched rule's finding names
+     *             its branch (wave 11); a group run's summary is kept per
+     *             group (rv11a1-4). A run that spanned the upgrade held both
+     *             forms in one generation: one rule's findings in two reason
+     *             buckets with two wordings, and a summary its group's reader
+     *             counted short. The revision ends such a run, so the rule
+     *             above reads "a verdict, or the form a report reads it in".
      */
-    const ENGINE_REVISION = 'engine-8';
+    const ENGINE_REVISION = 'engine-9';
 
     /** The older name of ENGINE_REVISION, kept for code that still reads it. */
     const ENGINE_VERSION = self::ENGINE_REVISION;
@@ -2489,10 +3191,12 @@ final class ScanService
         return self::ENGINE_REVISION;
     }
 
-    /** What a work request answers when an upgrade of this module ended the run (review rv10b1-6). */
-    const ENGINE_CHANGED = 'This module was upgraded while this scan was running, and the new version judges '
-        . 'some values differently, so the scan was ended rather than finished half under each version. '
-        . 'Start a new scan.';
+    /**
+     * What a work request answers when an upgrade of this module ended the
+     * run (review rv10b1-6): the page's own sentence for that ending, which
+     * the status and the panel show after it (W12-N4).
+     */
+    const ENGINE_CHANGED = ScanPageView::UPGRADED;
 
     /** What a work request answers when the run it was sent for has just been ended for this. */
     const CONFIG_CHANGED = 'The validation configuration or the project\'s structure changed while '
@@ -2512,6 +3216,42 @@ final class ScanService
     private static function configUnread(array $unread)
     {
         return sprintf(self::CONFIG_UNREAD, implode(', ', array_map('strval', $unread)));
+    }
+
+    /**
+     * Why a context that is not ok refuses (W10BF-4): its own sentence, unless
+     * part of the configuration could not be read. Every rule refused because
+     * the growth reference folder would not open is "no rules this scan can
+     * evaluate", and that sentence sent a reader to fix rules the next read
+     * could check.
+     */
+    private static function contextRefusal(array $ctx)
+    {
+        if (!empty($ctx['unread']) && is_array($ctx['unread'])) return self::configUnread($ctx['unread']);
+        return isset($ctx['why']) ? $ctx['why'] : null;
+    }
+
+    /**
+     * durableScanContext()'s sentence for a project whose rule list was read
+     * in full and holds no rule a scan can evaluate: none at all, or every
+     * one a configuration error.
+     */
+    const NO_RULES = 'this project has no rules this scan can evaluate';
+
+    /**
+     * Is a context's refusal SETTLED (review rv11b2-6)? Only NO_RULES with
+     * nothing unread. It was never final, because before W10BF-4 a growth
+     * reference folder that would not open read as this same sentence; now
+     * a read that failed says CONFIG_UNREAD (contextRefusal()), so this one
+     * says the rules were read and none can be evaluated. Answered as not
+     * final, the findings panel asked again on its ladder for as long as the
+     * tab was open, and the file answered 503, "try again", about a project
+     * the next read would describe the same way. Every other refusal stays
+     * one to ask again.
+     */
+    private static function contextFinal(array $ctx)
+    {
+        return empty($ctx['unread']) && isset($ctx['why']) && $ctx['why'] === self::NO_RULES;
     }
 
     /**
@@ -2560,7 +3300,9 @@ final class ScanService
             $d->degraded['labels'] = 'the project\'s names could not be read when this scan was planned';
         }
         $d->rulesBySource = self::ruleOrdinals($plan);
-        return $d->toSnapshot();
+        // Only the fields a rule names (review rv11a2-7): the snapshot is
+        // read whole by every page and every export.
+        return $d->ruleFieldsOnly()->toSnapshot();
     }
 
     /**
@@ -2649,6 +3391,120 @@ final class ScanService
     private function owner()
     {
         return substr('u:' . $this->username() . ':' . substr(md5(uniqid('', true)), 0, 8), 0, 64);
+    }
+
+    /**
+     * Is the module being switched off on this server (review rv10a2-3)?
+     *
+     * The disable hook stops every active run, and the module keeps answering
+     * requests until that hook returns. A Start in that window made a run the
+     * hook's walk had already passed, which stayed active through the disable;
+     * a work request took a slot the hook was freeing. So Start and work
+     * refuse from the moment the hook writes DISABLED_AT, until an enable
+     * writes ENABLED_AT after it. DISABLING_SECONDS bounds the refusal: it is
+     * far longer than the hook may run (ScanMaintenance::DISABLE_SECONDS), so
+     * a framework that enabled the module again without calling the enable
+     * hook costs at most that wait, never a module that refuses every scan.
+     *
+     * AND FOR ONE PROJECT (review rvf2-1). The project disable hook wrote no
+     * marker, so a Start in its window made a run its one read of the
+     * project's active run had passed. It writes PROJECT_DISABLED_AT first
+     * now, and the project enable hook PROJECT_ENABLED_AT, with the same rule.
+     *
+     * NEVER MEMOIZED. available() keeps its answer for the request, and
+     * openRun() asks this again once its run exists; see endUnderDisable().
+     *
+     * @return ?string 'server' or 'project' while one is being switched off, else null
+     */
+    private function disabling($pid)
+    {
+        if (self::marked($this->setting(self::DISABLED_AT, null), $this->setting(self::ENABLED_AT, null))) {
+            return 'server';
+        }
+        if ($pid !== null && self::marked($this->setting(self::PROJECT_DISABLED_AT, $pid),
+                                          $this->setting(self::PROJECT_ENABLED_AT, $pid))) {
+            return 'project';
+        }
+        return null;
+    }
+
+    /**
+     * A disable marker newer than its enable marker, and inside DISABLING_SECONDS.
+     *
+     * IN MICROSECONDS (review rvfix-N4). The markers were whole seconds and an
+     * enable won a tie, so a disable written in the same second as an earlier
+     * enable was ignored, and a Start in its window made a run the hook had
+     * walked past. markerNow() writes the time to the microsecond now. A
+     * marker written before, in whole seconds, still reads: it is the start
+     * of its second, so against a new marker of the same second the new one
+     * is the later, which it is. A tie still goes to the enable, as before.
+     */
+    private static function marked($off, $on)
+    {
+        $o = self::markerParts($off);
+        if ($o === null) return false;
+        $n = self::markerParts($on);
+        if ($n !== null && ($n[0] > $o[0] || ($n[0] === $o[0] && $n[1] >= $o[1]))) return false;
+        return time() - $o[0] < self::DISABLING_SECONDS;
+    }
+
+    /**
+     * The value an enable or disable hook writes as its marker: the time now,
+     * "<seconds>.<six digits>" (review rvfix-N4). Taken from microtime()'s
+     * string, not its float, so no digit is rounded.
+     */
+    public static function markerNow()
+    {
+        $p = explode(' ', microtime());
+        $us = (isset($p[0]) && preg_match('/^0\.(\d{6})/', $p[0], $m)) ? $m[1] : '000000';
+        return (isset($p[1]) ? $p[1] : (string) time()) . '.' . $us;
+    }
+
+    /**
+     * [seconds, microseconds] of a marker, or null for none. Reads the
+     * markers markerNow() writes and the whole seconds written before it.
+     *
+     * @return ?int[]
+     */
+    private static function markerParts($m)
+    {
+        if (is_int($m)) $m = (string) $m;
+        if (!is_string($m) || !preg_match('/^\s*(\d{1,15})(?:\.(\d{1,6})\d*)?\s*$/D', $m, $x)) return null;
+        return [(int) $x[1], isset($x[2]) ? (int) str_pad($x[2], 6, '0') : 0];
+    }
+
+    /**
+     * End the run this Start has just made, because the module is being
+     * switched off (review rvf2-1), and say why the Start is refused.
+     *
+     * available() is asked before the run exists, and once per request. A
+     * Start past it when the disable hook wrote its marker could commit its
+     * run after the hook's second walk, while the hook finished what it had
+     * stopped, or after the hook returned; and the project hook reads the
+     * project's active run once. Such a run held the project's slot through
+     * the disable, and was expired as abandoned staleHours later. So the
+     * Start asks again once its run exists. The marker is written before the
+     * hook reads any run, so a run committed before it is the hook's to stop,
+     * and one committed after it is found here.
+     *
+     * Stopped and finished as the hook stops and finishes one: cancelled,
+     * audited as the system's, with the hook's sentence. A run the hook (or
+     * anyone) stopped first is finished with the reason on its row.
+     *
+     * @param string $by 'server' or 'project', as disabling() answered
+     */
+    private function endUnderDisable($pid, $runId, $by)
+    {
+        $store = $this->store();
+        $row = $store->run($pid, $runId);
+        $ours = $row !== null && $row['phase'] !== ScanPhase::CANCELLING && $row['phase'] !== ScanPhase::TERMINAL
+                && $store->cancel($pid, $runId, 'system');
+        $in = $this->limits($pid);
+        if ($ours) {
+            $in['why'] = $by === 'project' ? ScanMaintenance::PROJECT_DISABLED_WHY : ScanMaintenance::DISABLED_WHY;
+        }
+        ScanPromotion::finishCancelled($store, $pid, $runId, $in);
+        return $by === 'project' ? self::OFF_PROJECT : self::OFF_SERVER;
     }
 
     private function flag($key, $pid)

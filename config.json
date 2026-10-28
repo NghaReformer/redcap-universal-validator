@@ -1,7 +1,7 @@
 {
   "name": "Universal Field Validator — check-character & regex IDs, cross-field rules, uniqueness & dynamic choices",
   "namespace": "INSPIRE\\UniversalValidator",
-  "description": "Enforce the data-entry checks REDCap can't — live, as-you-type, in the browser — backed by a post-save audit and an on-demand project <b>Validation scan</b>. Action-tag rule kinds that <b>compose</b> on any field:<br><b>@UVALIDATE</b> — check-character &amp; regex validation for IDs and codes (ISO 7064, Damm, Verhoeff, Luhn, GS1/ABA/MRZ/ISBN; single fields or several IDs in one box).<br><b>@UVASSERT</b> — cross-field constraints: a field is invalid unless a condition holds (end-date on/after start, dose within the maximum, confirm-fields match).<br><b>@UVREQUIRED</b> — conditional required, with the real save-block REDCap's own required flag lacks.<br><b>@UVUNIQUE</b> — no duplicate values across records (project/DAG/event scope, composite keys), checked live against the server.<br><b>@UVCHOICES</b> — dynamic choice filtering: show or hide radio, dropdown and checkbox options as other answers change (cascading country&rarr;region&rarr;site) — no duplicate fields, and a hidden selection is flagged, never silently cleared.<br><b>@UVWINDOW</b> — date windows: a date within a window counted from another date, from today or from now (minutes to years), or inside a calendar week, month, quarter or year, and/or not after or not before today.<br><b>@UVEXISTS</b> — the value must already exist: a record ID of the project, or a value saved in another field (a specimen ID registered on another form), checked live against the server.<br><b>@UVRANGE</b> — plausible numbers: a soft range that asks before saving an unusual value and a hard range that holds an implausible one (lab values, vital signs), with different limits per sex or age band, or limits on the z-score against a growth reference (the WHO child growth standards ship with the module).<br>Enforce each rule as a <b>message</b>, a <b>confirm</b>, or a hard <b>block</b> of the form/survey save. Cross-instrument comparisons are advisory: they show live feedback but never block, because the other form's value is read when the page opens and cannot be refreshed while you type. Two safety nets cover what the browser can't reach: a post-save <b>audit</b> logs violations to the module log AFTER the write (it detects, it cannot prevent), and the <b>Validation scan</b> project page re-runs the rules it can evaluate over all saved records on demand, reporting separately any rule it could not evaluate and telling you when a scan did not complete — catching values entered by API, Data Import, or before a rule existed —. Configure from field annotations (bulk, straight from the data dictionary), the settings dialog, or fast field-name entry. Needs PHP's mbstring and ctype extensions, which standard PHP builds load.",
+  "description": "Enforce the data-entry checks REDCap can't — live, as-you-type, in the browser — backed by a post-save audit and an on-demand project <b>Validation scan</b>. Action-tag rule kinds that <b>compose</b> on any field:<br><b>@UVALIDATE</b> — check-character &amp; regex validation for IDs and codes (ISO 7064, Damm, Verhoeff, Luhn, GS1/ABA/MRZ/ISBN; single fields or several IDs in one box).<br><b>@UVASSERT</b> — cross-field constraints: a field is invalid unless a condition holds (end-date on/after start, dose within the maximum, confirm-fields match).<br><b>@UVREQUIRED</b> — conditional required, with the real save-block REDCap's own required flag lacks.<br><b>@UVUNIQUE</b> — no duplicate values across records (project/DAG/event scope, composite keys), checked live against the server.<br><b>@UVCHOICES</b> — dynamic choice filtering: show or hide radio, dropdown and checkbox options as other answers change (cascading country&rarr;region&rarr;site) — no duplicate fields, and a hidden selection is flagged, never silently cleared.<br><b>@UVWINDOW</b> — date windows: a date within a window counted from another date, from today or from now (minutes to years), or inside a calendar week, month, quarter or year, and/or not after or not before today.<br><b>@UVEXISTS</b> — the value must already exist: a record ID of the project, or a value saved in another field (a specimen ID registered on another form), checked live against the server.<br><b>@UVRANGE</b> — plausible numbers: a soft range that asks before saving an unusual value and a hard range that holds an implausible one (lab values, vital signs), with different limits per sex or age band, or limits on the z-score against a growth reference (the WHO child growth standards ship with the module).<br>Enforce each rule as a <b>message</b>, a <b>confirm</b>, or a hard <b>block</b> of the form/survey save. Cross-instrument comparisons are advisory: they show live feedback but never block, because the other form's value is read when the page opens and cannot be refreshed while you type. Two safety nets cover what the browser can't reach: a post-save <b>audit</b> logs violations to the module log AFTER the write (it detects, it cannot prevent), and the <b>Validation scan</b> project page (off until an administrator and the project both turn it on) checks every saved record against the rules in resumable batches, catching values entered by API, Data Import, or before a rule existed. It lists the findings page by page, reports separately any rule it could not evaluate, says when a scan did not cover the whole project, and exports the findings as CSV. Configure from field annotations (bulk, straight from the data dictionary), the settings dialog, or fast field-name entry. Needs PHP's mbstring and ctype extensions, which standard PHP builds load.",
   "documentation": "README.md",
   "authors": [
     {
@@ -35,7 +35,7 @@
   "crons": [
     {
       "cron_name": "uv_scan_reap_abandoned",
-      "cron_description": "Validation scan upkeep: end runs that stopped making progress so their project can scan again, remove worker places above the configured limit, and close the previous report of every project whose latest scan completed. Runs in bounded slices and carries on where it stopped.",
+      "cron_description": "Validation scan upkeep: end runs that stopped making progress so their project can scan again, remove worker places above the configured limit, and close the previous findings of every project whose latest whole-project scan finished complete. Runs in bounded slices and carries on where it stopped.",
       "method": "uvScanReapCron",
       "cron_frequency": "900",
       "cron_max_run_time": "300"
@@ -116,17 +116,17 @@
     },
     {
       "key": "scan-system-max-value-retention-days",
-      "name": "<b>Validation scan</b> \u2014 maximum days a stored value preview may be kept, across every project. A project may choose FEWER days, never more. Default 30. A stored value outlives the export rights of whoever caused it to be stored, which is why this has a ceiling at all.",
+      "name": "<b>Validation scan</b> \u2014 maximum days a stored value preview may be kept, across every project. A project may choose FEWER days, never more. Default 30. The hourly retention cron clears a preview once its days have passed. A stored value outlives the export rights of whoever caused it to be stored, which is why this has a ceiling at all.",
       "type": "text"
     },
     {
       "key": "scan-system-max-run-retention-days",
-      "name": "<b>Validation scan</b> \u2014 maximum days a finished scan is kept before it is purged, across every project. A project may choose fewer days, never more. Default 90. No scheduled task purges finished scans yet, so they stay until one does.",
+      "name": "<b>Validation scan</b> \u2014 maximum days a finished scan is kept before the hourly retention cron deletes it, across every project. A project may choose fewer days, never more. Default 90.",
       "type": "text"
     },
     {
       "key": "scan-system-max-detail-findings",
-      "name": "<b>Validation scan</b> \u2014 the most individual findings any one run may retain. Beyond it a run keeps COUNTING every finding and stops storing detail, and labels itself truncated; it never quietly shortens the report. Default 1000000.",
+      "name": "<b>Validation scan</b> \u2014 the most individual findings any one run may retain. Beyond it a run keeps COUNTING every finding and stops storing detail, and labels itself truncated; it never quietly shortens the report. Duplicate-value findings, written once every record has been read, are not held to this limit. Default 1000000.",
       "type": "text"
     },
     {
@@ -146,12 +146,12 @@
     },
     {
       "key": "scan-system-record-attempts",
-      "name": "<b>Validation scan</b> \u2014 how many times a record that cannot be read, or cannot be held still long enough to read, is retried before the run records it as unread and reports itself incomplete. Default 3.",
+      "name": "<b>Validation scan</b> \u2014 how many times a record that cannot be read, or cannot be held still long enough to read, is retried before the run records it as unread and reports itself incomplete. Default 3; at most 254 (a larger number is treated as 254).",
       "type": "text"
     },
     {
       "key": "scan-system-drop-tables-on-disable",
-      "name": "<b>Validation scan</b> \u2014 delete every table this module created, with every stored scan, finding and audit row and the value index of the live lookups, when the module is disabled on this server. <b>Off by default.</b> Disabling always frees the worker places and stops every scan in progress (each one is reported as stopped, nothing it examined is lost); with this off, disabling deletes nothing, and enabling again finds every earlier scan where it was.",
+      "name": "<b>Validation scan</b> \u2014 delete every table this module created, with every stored scan, finding and audit row and the value index of the live lookups, when the module is disabled on this server. <b>Off by default.</b> With the scan switched on, disabling stops every scan in progress (each one is reported as stopped, nothing it examined is lost) and frees the worker places, whatever this says. With this off, disabling deletes nothing, and enabling again finds every earlier scan where it was. With it on, the survey throttle's counter table is dropped too; enabling the module creates it again.",
       "type": "checkbox"
     },
     {
@@ -284,12 +284,12 @@
     },
     {
       "key": "scan-enable-durable",
-      "name": "<b>Validation scan</b> — use the durable scan for this project. Requires the installation-wide switch to be on as well. The scan runs in bounded batches, survives closing the tab, and can be resumed or stopped; while this is off, the Validation scan page explains that it is unavailable and nothing is scanned.",
+      "name": "<b>Validation scan</b> — use the durable scan for this project. Requires the installation-wide switch to be on as well. The scan runs in bounded batches sent by the open Validation scan page; closing the page pauses it, Continue resumes it where it stopped, and Stop ends it. While this is off, the Validation scan page explains that it is unavailable and nothing is scanned.",
       "type": "checkbox"
     },
     {
       "key": "scan-value-storage",
-      "name": "Validation scan report: whether the offending VALUE appears beside each finding. Locations-only is the default, and a report is readable by anyone with project design rights — a wider audience than REDCap's record-level access control — so showing values is an explicit decision. Whatever is chosen here is additionally capped by the reader's own data-export rights: raw values are shown only to a user with Full Data Set export rights, and a user with no export rights never sees a value at all.",
+      "name": "Validation scan report: whether the offending VALUE appears beside each finding. Locations-only is the default. A value that is shown is first copied into the module's own tables and kept there until its retention days pass, so showing values is an explicit decision. A report is readable only by a user with project design rights, Full Data Set export rights and access to every instrument the scan reads. The choice in force when a scan starts decides what it stores; the choice in force when a report is read decides what is shown, so a stricter choice hides values at once and the retention cron then clears them.",
       "type": "dropdown",
       "choices": [
         { "value": "locations", "name": "Locations only (default — where the problem is, never the value; staff open the record under REDCap's own access control to see it)" },
@@ -314,7 +314,7 @@
     },
     {
       "key": "scan-max-detail-findings",
-      "name": "<b>Validation scan report</b> \u2014 the most individual findings this project's scans should retain. Blank uses the server default. A run that reaches the limit keeps COUNTING every finding, stops storing detail, and labels itself truncated.",
+      "name": "<b>Validation scan report</b> \u2014 the most individual findings this project's scans should retain. Blank uses the server default. A run that reaches the limit keeps COUNTING every finding, stops storing detail, and labels itself truncated. Duplicate-value findings are not held to this limit.",
       "type": "text"
     },
     {

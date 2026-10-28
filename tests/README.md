@@ -1170,6 +1170,60 @@ one batch is refused; the rollup's open and justified counts, every page
 read through `ix_page_v2`; and a run whose only findings are justified,
 promoted clean.
 
+## `scan_*` — the durable validation scan
+
+```bash
+php  tests/scan_schema_php.php        # the scan's tables and upgrades, without a database
+php  tests/scan_store_php.php         # the store contract, against the in-memory store
+php  tests/scan_sqlstore_fault_php.php  # what the SQL store does when the database refuses
+php  tests/scan_moduledb_php.php      # the ScanDb that runs in REDCap
+php  tests/scan_worker_php.php        # phases, stable reads, catch-up, promotion
+php  tests/scan_service_php.php       # the gate in front of the scan: switches, rights, refusals, reason codes
+php  tests/scan_entitlement_php.php   # rights asked about what the run reads
+php  tests/scan_security_php.php      # permission matrix, terminal states, HMAC purposes, policy floor
+php  tests/scan_identity_php.php      # which rule a finding is filed against
+php  tests/scan_reason_bits_php.php   # what a finding keeps of its reason and of its branch
+php  tests/scan_capabilities_php.php  # what an installation supports, and what a run may claim on it
+php  tests/scan_report_php.php        # a stored finding as the report shows it
+php  tests/scan_export_php.php        # the CSV of a stored run, as the export streams it
+php  tests/scan_page_php.php          # pages/scan.php: switches, prefill, labels, the findings panel
+php  tests/scan_cron_php.php          # the two crons are declared, wired and bounded
+php  tests/scan_wiring_php.php        # every safeguard has a caller, and every suite runs in CI
+php  tests/unique_also_scan_php.php   # @UVUNIQUE lookups in the scan: settled, re-read by form, never findings
+node tests/scan_client_js.cjs         # js/scan.js: the work loop, Stop, Continue, retries, the status it renders
+node tests/scan_panel_js.cjs          # js/scan.js: the findings panel (keyset pages, filters, refusals, marks)
+php  tests/messages_fixture_php.php   # the report's sentence for every catalogue key, beside the form's
+node tests/messages_fixture_js.cjs    # the form's sentence for the same cases, from js/engine.js
+php  tests/docs_claims_php.php        # scan docs name only settings, tables, crons, pages and actions that exist
+```
+
+The database half is `tests/mysql/run.php` (see `docs/TESTING.md`), which
+runs the SQL store against MySQL and MariaDB. The live half is
+[`../docs/testbed/scan_live_run_sheet.md`](../docs/testbed/scan_live_run_sheet.md).
+
+`messages_fixture.json` holds one case per catalogue key in
+`php/messages/catalog.json`, plus cases worded by the rule's own message.
+Each case has a rule in the shape the page gives the engine, one finding, the
+form's values, and for staff and survey both sentences with a mark, `same`
+or `differs`. The PHP half renders the report's sentence and the JS half
+reads the form's, and each fails when a sentence or its mark no longer holds.
+The PHP half renders the staff sentence twice: from the rule as planned, and
+as a stored run's report gives it, with the finding written as a stored row,
+read back by `FindingRowMapper::toFinding()`, over the labels snapshot read
+back by `ScanDimensions::fromSnapshot()`.
+A catalogue key with no case fails the PHP half. Of the 58 sentences the form
+shows, 9 match the catalogue; the fixture records the rest, and changes
+neither side.
+
+`scan_endings_fixture.json` holds every way a durable scan run can end: the
+status the panel is given and the one sentence that says how the run ended.
+`scan_service_php.php` ends a real run each way and requires that sentence of
+the panel's status, the findings answer (its summary and its terminal row) and
+the file (its `# coverage` line and its terminal row), and that the fixture
+matches what the service gives; `UV_UPDATE_ENDINGS=1` rewrites it.
+`scan_client_js.cjs` gives each status to the panel and requires the same
+sentence from `js/scan.js`.
+
 ## CI
 
 `.github/workflows/parity.yml` runs the JS suite on Node 20 and the PHP suite
@@ -1178,9 +1232,15 @@ stated), `php -l`-lints the PHP, checks that `pooled_fixture.json`,
 `when_fuzz.json` and the mode block in `js/engine.js` are regenerated, and
 builds a release-shaped `universal_validator_vX.Y.Z.zip` to verify the package
 layout (required files present, development-only trees excluded, namespace
-matching). `tests/ci_workflow_js.cjs` fails when a suite in `tests/` is named by no
-workflow, or when a plain `run:` has lines under it, which YAML folds into one
-command. Green CI means the module's client and server engines agree with
+matching). On each PHP version it also runs the mutation runners,
+`tests/temporal_mutations.py`, `tests/exists_where_mutations.py`,
+`tests/delta_mutations.py`, `tests/writeonce_mutations.py` and
+`tests/justify_mutations.py`. `tests/ci_workflow_js.cjs` fails when a suite in
+`tests/` is named by no workflow, or when a plain `run:` has lines under it,
+which YAML folds into one command. `tests/scan_wiring_php.php` fails when a
+suite or a mutation runner in `tests/` is not named by the command of some
+workflow `run:` key; a name in a comment, a step name or another key does not
+count. Green CI means the module's client and server engines agree with
 each other and with the ID generator — it does NOT replace the live-REDCap
 checklist in [`../docs/TESTING.md`](../docs/TESTING.md).
 

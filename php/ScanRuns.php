@@ -142,9 +142,16 @@ trait ScanRuns
         // field put that same id, raw, in the Value cell beside it. Withheld
         // under every mode, because the hashing is the project's posture and
         // the reader's ceiling cannot lift it.
-        if (!empty($plan['hashRecordIds']) && isset($plan['recordIdField'])
-            && $plan['recordIdField'] !== '' && $field === (string) $plan['recordIdField']) {
-            return self::REPORT_REDACTED;
+        //
+        // AND EVERY VALUE WHEN THE RECORD-ID FIELD IS NOT KNOWN (review
+        // rvc2-4). recordIdFieldOf() answers '' when neither the dictionary
+        // nor REDCap names it, and this skipped the check, so the field whose
+        // value is the id went out raw beside the hashed Record cell. A field
+        // this cannot tell from the id is withheld, as FindingRowMapper
+        // refuses to build hashed without one.
+        if (!empty($plan['hashRecordIds'])) {
+            $idField = isset($plan['recordIdField']) ? (string) $plan['recordIdField'] : '';
+            if ($idField === '' || $field === $idField) return self::REPORT_REDACTED;
         }
 
         if (!mb_check_encoding($val, 'UTF-8')) {
@@ -177,10 +184,9 @@ trait ScanRuns
      * How the scan report may show values: 'raw' | 'identifier-redacted' | 'locations'.
      *
      * A settings read that throws must not decide between showing values and
-     * withholding them, so a failure lands on the most permissive documented
-     * default rather than silently switching policy — the same posture logMode()
-     * takes, and for the same reason: a quietly-changed privacy mode is worse
-     * than a wrong one, because nobody can tell it happened.
+     * withholding them, so a failure lands on the least disclosing mode,
+     * locations only, as an unset or unknown setting does. The record-id
+     * posture fails the same way (hashesRecordIds(), review rvc2-4).
      */
     private function scanValueMode($pid)
     {
@@ -270,9 +276,10 @@ trait ScanRuns
      * @return array{ok:bool, why:?string, plan:?array, evaluate:?callable,
      *               read:?callable, rules:array, ownership:array, problems:array,
      *               verifyFingerprint?:bool, structure?:array, choices?:array,
-     *               unread?:string[]}
-     *         the last four on success only (scanStructureFacts()); `unread`
-     *         names the configuration reads that failed (review R5-4)
+     *               unread:string[]}
+     *         the three marked ? on success only (scanStructureFacts());
+     *         `unread`, on every return, names the configuration reads that
+     *         failed (review R5-4, W10BF-4)
      */
     public function durableScanContext($pid, array $opts = [], $dagFilter = null)
     {
@@ -280,10 +287,17 @@ trait ScanRuns
         // THE SHAPE IS THE SAME ON EVERY RETURN, including the refusals. A
         // caller that has to know which branch answered before it knows which
         // keys exist is a caller that will read the wrong one.
+        //
+        // `unread` TOO (W10BF-4). A refusal can rest on a read that failed:
+        // every rule a configuration error because the growth reference
+        // folder could not be read is "no rules this scan can evaluate", and
+        // ScanService answered with that, for good, about a project whose
+        // rules the next read could check. It answers configuration unread
+        // when the list is not empty.
         if ($plan['fatal'] !== null) {
             return ['ok' => false, 'why' => $plan['fatal'], 'plan' => null,
                     'evaluate' => null, 'read' => null, 'rules' => [], 'ownership' => [],
-                    'problems' => self::problemList($plan['unconf'])];
+                    'problems' => self::problemList($plan['unconf']), 'unread' => $this->configUnreadOf($pid)];
         }
         if (!empty($plan['nothingToScan'])) {
             // The rule problems survive the refusal even though no run can carry
@@ -295,7 +309,7 @@ trait ScanRuns
             return ['ok' => false, 'why' => 'this project has no rules this scan can evaluate',
                     'plan' => null, 'evaluate' => null, 'read' => null,
                     'rules' => [], 'ownership' => [],
-                    'problems' => self::problemList($plan['unconf'])];
+                    'problems' => self::problemList($plan['unconf']), 'unread' => $this->configUnreadOf($pid)];
         }
 
         $key = $this->hmacKey();
@@ -343,13 +357,26 @@ trait ScanRuns
         $ownership = isset($plan['ownership']) && is_array($plan['ownership'])
                    ? $plan['ownership'] : [];
 
+        // THE CLOCK THE RUN IS JUDGED BY (W10BF-3). A @UVWINDOW part judged
+        // against today - notFuture on a value whose saved day the log does
+        // not show - changed its answer at midnight inside one run, so one
+        // report held records judged on two days. The run freezes the clock
+        // its planning request read (ScanService stores `clock` below in
+        // policy_json as asOf) and hands it back on every request after, and
+        // every record of the run, catch-up included, is judged by it
+        // (findingsWindow()). Null, or anything that is not a clock, is the
+        // clock of the request, as before: a run begun before the freeze.
+        $asOf = Scan\ScanPlanner::clockOf(isset($opts['asOf']) ? $opts['asOf'] : null);
+
         $module = $this;
         // No generation, no evaluator. A caller that only needs the rule list
         // gets one it cannot accidentally scan with.
-        $evaluate = ($gen === null) ? null : function ($recordId, array $node) use ($module, $plan, $pid, $gen, $key, $ids,
-                                                          $runSeq, $valueExpiry) {
+        // $settled: the worker found the record unchanged since the run's
+        // opening fence (review rvc2-1); see findingsWindow().
+        $evaluate = ($gen === null) ? null : function ($recordId, array $node, $settled = false) use ($module, $plan, $pid,
+                                                          $gen, $key, $ids, $runSeq, $valueExpiry, $asOf) {
             return $module->durableEvaluateRecord($plan, $pid, $recordId, $node, $gen, $key, $ids,
-                                                  $runSeq, $valueExpiry);
+                                                  $runSeq, $valueExpiry, $asOf, $settled);
         };
 
         // The read the worker performs. Explicit records, and only the fields
@@ -410,14 +437,29 @@ trait ScanRuns
         // fingerprint's inputs, and a fact built from a failed read is not the
         // project's. Named, so the refusal can say what; ScanService refuses
         // to start or advance a run on a configuration with any.
-        $pk = (int) $pid;
-        $unread = isset($this->configUnread[$pk]) ? array_keys($this->configUnread[$pk]) : [];
-        sort($unread, SORT_STRING);
+        // `clock`: what this context judges by - the run's frozen clock, or,
+        // with none, this request's - and only where a live rule reads the
+        // clock (ModeRegistry "needs"), so a run with no such rule records
+        // no date it was never judged against.
+        $clock = null;
+        if (ModeRegistry::rulesNeed($plan['live'], 'clock')) {
+            $clock = $asOf !== null ? $asOf : Scan\ScanPlanner::clockOf($this->serverClock($pid));
+        }
         return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
                 'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
                 'verifyFingerprint' => true, 'structure' => $facts['structure'],
-                'choices' => $facts['choices'], 'unread' => $unread,
+                'choices' => $facts['choices'], 'unread' => $this->configUnreadOf($pid),
+                'clock' => $clock,
                 'problems' => self::problemList($plan['unconf'])];
+    }
+
+    /** The configuration reads noted as failed for $pid this request (R5-4), sorted. */
+    private function configUnreadOf($pid)
+    {
+        $pk = (int) $pid;
+        $unread = isset($this->configUnread[$pk]) ? array_map('strval', array_keys($this->configUnread[$pk])) : [];
+        sort($unread, SORT_STRING);
+        return $unread;
     }
 
     /**
@@ -582,7 +624,7 @@ trait ScanRuns
             }
         }
         if ($ids) {
-            $dir = $this->referenceDir();
+            $dir = $this->referenceDir($pid);
             $refs = [];
             foreach (array_keys($ids) as $id) {
                 $e = GrowthReference::entry((string) $id, $dir);
@@ -621,17 +663,31 @@ trait ScanRuns
      * rule identities come from the planner - so this method chooses nothing and
      * exists to translate.
      *
+     * $asOf is the clock the run froze (W10BF-3), set for the length of this
+     * record's judgement only; null judges by the request's clock. $settled
+     * says the record has not changed since the run was planned (review
+     * rvc2-1): only then is a date whose saved day is not known judged
+     * against the frozen day where the request's clock would pass it.
+     *
      * @return array{findings:array, candidates:array, bytes:int, contexts:int,
      *               problems:array, why:?string}
      */
     public function durableEvaluateRecord(array $plan, $pid, $recordId, array $node, $gen, $key,
-                                          array $ids, $runSeq = 0, $valueExpiry = null)
+                                          array $ids, $runSeq = 0, $valueExpiry = null, $asOf = null,
+                                          $settled = false)
     {
         $found = [];
         $sink = new CallbackFindingSink(function (array $v) use (&$found) { $found[] = $v; });
         $seen = [];
         $unconf = [];
-        $r = $this->scanRecord($plan, $pid, $recordId, $node, $sink, $seen, $unconf);
+        $this->judgedClock = Scan\ScanPlanner::clockOf($asOf);
+        $this->judgedSettled = ($settled === true);
+        try {
+            $r = $this->scanRecord($plan, $pid, $recordId, $node, $sink, $seen, $unconf);
+        } finally {
+            $this->judgedClock = null;
+            $this->judgedSettled = false;
+        }
         if ($r['why'] !== null) {
             return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'contexts' => 0,
                     'problems' => [], 'collapsed' => 0, 'why' => $r['why']];
@@ -778,6 +834,9 @@ trait ScanRuns
                     'field' => (string) $row['field'],
                     // Evidence for the group, never a finding (collectUniqueLookups).
                     'lookup' => empty($row['lookup']) ? 0 : 1,
+                    // The branch that judged the value; the finalizer turns it
+                    // into the duplicate's reason bits (review rv11a2-2).
+                    'branch' => isset($row['branch']) ? (int) $row['branch'] : null,
                 ];
             }
         }

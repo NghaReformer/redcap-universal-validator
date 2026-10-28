@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator\Scan;
 
+require_once __DIR__ . '/../Faults.php';
+
 /**
  * What the module does on a timer, and when it is switched off.
  *
@@ -41,11 +43,14 @@ namespace INSPIRE\UniversalValidator\Scan;
  * A PASS CAN BE TOLD TO STOP. `stopped` is asked before every unit, beside the
  * budget. The module answers it from the marker its disable hook writes, so a
  * pass running in another process when the module is switched off stops at
- * its next unit (M17).
+ * its next unit (M17). The marker is read every few seconds, so a pass also
+ * stops at the first statement that finds a table missing: a disable that
+ * dropped the tables in between would otherwise fail every project left in
+ * the page, one log entry each (review rv10a2-4).
  *
- * SWITCHING THE MODULE OFF is here too: disable() frees every worker slot and
- * stops every active run, deleting nothing; dropTables() is the opt-in that
- * deletes.
+ * SWITCHING THE MODULE OFF is here too: disable() stops every active run and
+ * then frees every worker slot, deleting nothing; dropTables() is the opt-in
+ * that deletes.
  *
  * PHP 7.4.
  */
@@ -67,8 +72,19 @@ final class ScanMaintenance
     const DISABLED_WHY = 'the module was disabled on this server, so this scan was stopped before it '
         . 'finished; nothing it had examined was lost';
 
-    /** Active runs disable() reads per statement. */
+    /** The terminal sentence of a run stopped because the module was disabled for its project. */
+    const PROJECT_DISABLED_WHY = 'the module was disabled for this project, so this scan was stopped before it '
+        . 'finished; nothing it had examined was lost';
+
+    /** Active runs disable() reads, and stops, per statement. */
     const DISABLE_PAGE = 500;
+
+    /**
+     * Seconds disable() may spend finishing stopped runs one by one: inside
+     * the 30 s a web request is commonly allowed, with room for the reads and
+     * the drop after it. Every run is stopped whatever this says.
+     */
+    const DISABLE_SECONDS = 20;
 
     /**
      * The settings ScanPolicy::resolve() reads, by owner: the ones the policy
@@ -160,14 +176,16 @@ final class ScanMaintenance
 
     /**
      * Free what is stuck: abandoned runs, slots above the limit, and the
-     * previous reports of every project whose latest scan completed.
+     * previous reports of every project whose latest whole-project run
+     * finished complete.
      *
      * THE SLOTS FIRST (W1-N1). Lowering scan-system-max-concurrent-projects
      * takes effect in acquire() at once; the free rows above it are removed
      * here, so the table says what the limit is within one interval.
      *
      * THEN THE PROJECTS. A project with a stale active run has it expired
-     * (ScanStore::expireAbandoned()); a project with a whole-project run that
+     * (ScanStore::expireAbandoned()), or finished as cancelled when somebody
+     * had stopped it (finishStopped()); a project with a whole-project run that
      * completed and has not closed its older generations has them closed, a
      * page per call (W4-D1). Scoped runs are not listed: they supersede
      * nothing (review R8-1), and one that answers SUPERSEDE_SCOPED anyway is
@@ -181,8 +199,8 @@ final class ScanMaintenance
     {
         $this->begin('reap', $state);
         $until = $this->started + max(0.0, (float) $seconds);
-        $out = ['runs_expired' => 0, 'slots_removed' => 0, 'superseded' => 0, 'projects' => 0,
-                'failed' => 0, 'more' => 0, 'stopped' => 0];
+        $out = ['runs_expired' => 0, 'runs_stopped' => 0, 'slots_removed' => 0, 'superseded' => 0,
+                'projects' => 0, 'failed' => 0, 'more' => 0, 'stopped' => 0];
         $sys = null;
         try {
             $sys = $this->sys = call_user_func($this->policy, null);
@@ -193,9 +211,10 @@ final class ScanMaintenance
         }
         if ($sys === null) return $this->end($out);
         $this->state['after'] = $this->lap($this->cursor(), $until, $out, function (array $row) use ($sys, $until, &$out) {
-            if (!$row['stale'] && !$row['supersede']) return true;
+            if (!$row['stale'] && !$row['stopped'] && !$row['supersede']) return true;
             $out['projects']++;
             call_user_func($this->enter, $row['pid']);
+            if ($row['stopped']) $out['runs_stopped'] += $this->finishStopped($row['pid']);
             if ($row['stale']) {
                 $out['runs_expired'] += $this->store->expireAbandoned($row['pid'], $sys['staleHours'], 'cron',
                     $this->nowGiven ? $this->now : null);
@@ -203,6 +222,32 @@ final class ScanMaintenance
             return !$row['supersede'] || $this->supersede($row['pid'], $until, $out);
         });
         return $this->end($out);
+    }
+
+    /**
+     * Finish a run somebody stopped and nobody finished (review rv10a1-2).
+     *
+     * Stop leaves a run `cancelling` while a worker holds it, for that worker
+     * to finish at its next fence; a worker that never came back, a finish
+     * that failed, or a disable that ran out of time leaves it there, holding
+     * its project's slot and reading "stopping". Start finishes such a run
+     * (ScanService::reapCancelled()); the cron expired it as abandoned once it
+     * was stale, which threw away the user's stop and the reason. It is
+     * finished here the way Stop finishes one, by
+     * ScanPromotion::finishCancelled() with what the run found counted, once
+     * the census finds it past the stale window with its lease lapsed: the
+     * same wait a worker that still holds a run is given to come back.
+     *
+     * @return int runs finished: 0 or 1
+     */
+    private function finishStopped($pid)
+    {
+        $rows = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run')
+            . ' WHERE project_id = ? AND active_slot = 1 AND phase = ?', [(int) $pid, ScanPhase::CANCELLING]);
+        if (!isset($rows[0][0])) return 0;
+        $policy = call_user_func($this->policy, $pid);
+        return ScanPromotion::finishCancelled($this->store, $pid, (int) $rows[0][0], [
+            'maxFindings' => $policy['maxFindings'], 'maxBytes' => $policy['maxBytes']]) ? 1 : 0;
     }
 
     /**
@@ -272,6 +317,10 @@ final class ScanMaintenance
         if (!isset($this->state['revoke']) || !is_array($this->state['revoke'])) $this->state['revoke'] = [];
 
         foreach (array_keys($this->state['revoke']) as $pid) {
+            if ($this->gone) {
+                $out['stopped'] = 1;
+                break;
+            }
             // revokeMore() asks the budget itself, after a bump still owed.
             try {
                 call_user_func($this->enter, (int) $pid);
@@ -284,18 +333,23 @@ final class ScanMaintenance
 
         $this->state['after'] = $this->lap($this->cursor(), $lapUntil, $out, function (array $row) use ($lapUntil, &$out) {
             $pid = $row['pid'];
-            // mutated
+            if (isset($this->state['revoke'][$pid])) return true;   // its purge waits (R8-3)
             $kept = self::keptModes($row['modes']);
             // runDays is at least 1, so a run finished within the last day is
             // never due, whatever the project chose: no policy read for it.
-            $mayPurge = $row['oldest'] !== null && strcmp($row['oldest'], self::at($this->now - 86400)) < 0;
+            // A run whose removal has begun is due whatever its age (review
+            // rvf2-3): it reads as gone to every reader, so it is finished.
+            $removing = !empty($row['removing']);
+            $mayPurge = $removing
+                || ($row['oldest'] !== null && strcmp($row['oldest'], self::at($this->now - 86400)) < 0);
             if (!$kept && !$mayPurge) return true;
             $out['projects']++;
             call_user_func($this->enter, $pid);
             $policy = call_user_func($this->policy, $pid);
             if ($kept && !$this->revokeStart($pid, $policy, $kept, $lapUntil, $out)) return false;
             if (isset($this->state['revoke'][$pid])) return true;
-            if (!$mayPurge || strcmp($row['oldest'], self::at($this->now - max(1, (int) $policy['runDays']) * 86400)) >= 0) {
+            if (!$removing && (!$mayPurge
+                    || strcmp($row['oldest'], self::at($this->now - max(1, (int) $policy['runDays']) * 86400)) >= 0)) {
                 return true;
             }
             return $this->purge($pid, (int) $policy['runDays'], $lapUntil, $out);
@@ -319,10 +373,17 @@ final class ScanMaintenance
      * ScanPolicy::tightened(): the value mode and the value window. A frozen
      * policy that cannot be read is tightened, as ScanService treats it.
      *
-     * The revision is one past the project's highest, so the bump reaches
-     * every run of the project, including one started under the new policy:
-     * every run starts at revision 1 and nothing else tells them apart. That
-     * clears more than it must, never less. The intent is checkpointed before
+     * The revision is one past the project's highest, and the bump reaches
+     * the runs up to the newest one judged tightened (`through`). A run
+     * starts at the project's highest revision (W10A-N1), so one started
+     * under the new policy before a pass noticed the change sat at the same
+     * revision as the runs it tightened, and the bump cleared its previews
+     * too (W10AF-N6). Run ids only grow, and every run started before the
+     * policy changed has a lower id than any started after it, so the bound
+     * spares it; a run whose frozen policy cannot be read counts as
+     * tightened, so the bound can still reach further than it must, never
+     * less far. A run started after the bump starts at the new revision, and
+     * a repeat of the bump leaves it alone. The intent is checkpointed before
      * the bump and again after it, so a pass that dies in between bumps again
      * rather than leaving previews it never clears.
      *
@@ -330,19 +391,22 @@ final class ScanMaintenance
      */
     private function revokeStart($pid, array $policy, array $kept, $until, array &$out)
     {
-        $rows = $this->db->select('SELECT values_state, policy_json FROM ' . Schema::table('scan_run')
+        $rows = $this->db->select('SELECT run_id, values_state, policy_json FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ? AND values_state IN (' . implode(',', array_fill(0, count($kept), '?')) . ')',
             array_merge([(int) $pid], $kept));
-        $applies = false;
+        // Every row is judged, not only until the first that is tightened:
+        // the bound is the newest of them.
+        $through = null;
         $now = ['valueMode' => $policy['valueMode'], 'valueDays' => (int) $policy['valueDays']];
         foreach ($rows as $r) {
-            $frozen = is_string($r[1]) ? json_decode($r[1], true) : null;
-            if (!is_array($frozen)) { $applies = true; break; }
-            $then = ['valueMode' => (string) $r[0]];
-            if (isset($frozen['valueDays'])) $then['valueDays'] = (int) $frozen['valueDays'];
-            if (ScanPolicy::tightened($then, $now)) { $applies = true; break; }
+            $frozen = is_string($r[2]) ? json_decode($r[2], true) : null;
+            $then = ['valueMode' => (string) $r[1]];
+            if (is_array($frozen) && isset($frozen['valueDays'])) $then['valueDays'] = (int) $frozen['valueDays'];
+            if (!is_array($frozen) || ScanPolicy::tightened($then, $now)) {
+                $through = max((int) $through, (int) $r[0]);
+            }
         }
-        if (!$applies) return true;
+        if ($through === null) return true;
         $max = $this->db->select('SELECT MAX(policy_revision) FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ?', [(int) $pid]);
         if (!isset($max[0]) || !array_key_exists(0, (array) $max[0])) {
@@ -351,9 +415,11 @@ final class ScanMaintenance
             throw new \RuntimeException('the project\'s policy revision could not be read');
         }
         $rev = (int) $max[0][0] + 1;
-        $this->state['revoke'][$pid] = ['revision' => $rev, 'bumped' => false, 'cursor' => null];
+        $this->state['revoke'][$pid] = ['revision' => $rev, 'bumped' => false, 'cursor' => null,
+                                        'through' => $through];
         $this->checkpoint();
-        call_user_func($this->log, 'scan-cron-revoke', ['project_id' => (int) $pid, 'revision' => $rev]);
+        call_user_func($this->log, 'scan-cron-revoke', ['project_id' => (int) $pid, 'revision' => $rev,
+                                                        'through' => $through]);
         return $this->revokeMore($pid, $until, $out);
     }
 
@@ -362,6 +428,8 @@ final class ScanMaintenance
      *
      * The first call after the intent was stored bumps; every later one passes
      * no revision and bumps nothing (ScanRetention::revokePreviews()). The
+     * bump stops at the intent's `through` run (W10AF-N6); an intent stored
+     * by an earlier build has none, and bumps every run as it did. The
      * cursor kept is the whole array the call handed back: it carries the
      * project and the generation digest, and a bare id would restart it.
      *
@@ -378,7 +446,8 @@ final class ScanMaintenance
         while (true) {
             if (!empty($st['bumped']) && $this->halted($until, $out)) return false;
             $r = $this->retention->revokePreviews($pid, empty($st['bumped']) ? (int) $st['revision'] : null,
-                isset($st['cursor']) && is_array($st['cursor']) ? $st['cursor'] : null, ScanRetention::PAGE);
+                isset($st['cursor']) && is_array($st['cursor']) ? $st['cursor'] : null, ScanRetention::PAGE,
+                isset($st['through']) && is_numeric($st['through']) ? (int) $st['through'] : null);
             $out['runs_revoked'] += (int) $r['runs'];
             $out['previews_revoked'] += (int) $r['rows'];
             $first = empty($st['bumped']);
@@ -435,63 +504,221 @@ final class ScanMaintenance
     // -- switching the module off (M17) ----------------------------------------
 
     /**
-     * Release every worker slot and stop every active run, deleting nothing.
+     * Stop every active run and release every worker slot, deleting nothing.
      *
      * A disabled module answers no request, so a run left active would hold
      * its project's slot through the next enable, and a leased worker slot
-     * would be counted against the limit for a worker that is gone. Each run
-     * is stopped the way Stop stops one nobody drives: cancel() moves the
-     * epoch and records the actor `system`, then
-     * ScanPromotion::finishCancelled() writes the terminal row with what the
-     * run found counted, and DISABLED_WHY. A worker mid-batch at that moment
-     * is refused at its next fence; nothing it committed is lost. A run whose
-     * finish fails is left `cancelling`, which the next Start finishes.
+     * would be counted against the limit for a worker that is gone.
      *
-     * A keyset over run_id, DISABLE_PAGE runs per read, so the read is
-     * bounded however many projects were scanning; each run is then a handful
-     * of statements of its own.
+     * THE RUNS FIRST, THE SLOTS LAST (review rv10a2-3). Releasing the slots
+     * first told a worker still mid-batch, at its next renew(), that it had
+     * "lost its place in the server queue" and would continue shortly - which
+     * was false - and it took a slot again. Its run is stopped first now, so
+     * its next fence tells it the truth, and the slots are freed when no run
+     * is left to want one.
      *
-     * @return array{slots_released:int, runs_stopped:int, failed:int}
+     * EVERY RUN IS STOPPED FIRST, THEN AS MANY AS THE BUDGET ALLOWS ARE
+     * FINISHED. A keyset over the active runs, DISABLE_PAGE per read; each
+     * page is stopped in two statements (stopPage()): the epoch moves, so
+     * every worker is refused at its next fence and nothing it committed is
+     * lost, and the project's Start finishes the run at once. Only when every
+     * page is stopped is each run finished the way Stop finishes one nobody
+     * drives, ScanPromotion::finishCancelled() with what it found counted and
+     * DISABLED_WHY, a handful of statements a run, while $seconds last. The
+     * administrator's request is held for this, and 1,200 active runs took
+     * 38 s finished one by one (the reviewer's measure), past a 30 s request.
+     * A run the budget did not reach stays `cancelling` with DISABLED_WHY on
+     * its row, and the first Start on its project, or the reap pass that
+     * finds it stale after the next enable, finishes it with that sentence.
+     *
+     * THEN THE ACTIVE RUNS ARE READ ONCE MORE, before any is finished. Start
+     * and work refuse once the disable marker is written
+     * (ScanService::disabling()), but a Start already past that check could
+     * make its run while the walk went on, in a part of the keyset the walk
+     * had passed. The second read takes every active run not yet stopped.
+     *
+     * @param float $seconds how long the finishing may take
+     * @return array{runs_stopped:int, runs_left:int, late:int, slots_released:int, failed:int}
+     *         `runs_left` stopped and left for a later finish, `late` found by
+     *         the second read
      */
-    public function disable()
+    public function disable($seconds = self::DISABLE_SECONDS)
     {
         $this->what = 'disable';
-        $out = ['slots_released' => 0, 'runs_stopped' => 0, 'failed' => 0];
+        $until = (float) call_user_func($this->clock) + max(0.0, (float) $seconds);
+        $out = ['runs_stopped' => 0, 'runs_left' => 0, 'late' => 0, 'slots_released' => 0, 'failed' => 0];
+        // run id => project id of every run stopped: one per project at most,
+        // the uq_project_active key.
+        $stopped = [];
+        if ($this->stopEvery(false, $stopped, $out)) $this->stopEvery(true, $stopped, $out);
+        $this->finishEach($stopped, $until, $out);
         try {
             $out['slots_released'] = $this->slots->releaseAll();
         } catch (\Throwable $e) {
             $this->failed('slots', null, $e);
             $out['failed']++;
         }
+        return $out;
+    }
+
+    /**
+     * Stop one project's active run because the module was disabled for that
+     * project (review rv10a2-7), deleting nothing.
+     *
+     * A project the module is disabled for gets no answer from it, so its
+     * run's worker stops at its next request and the run kept the project's
+     * slot until the reaper expired it, staleHours later, as abandoned, which
+     * it was not. disable()'s steps for that one run: stopped with
+     * PROJECT_DISABLED_WHY on the row and the cancel audited as the system's,
+     * the slots held for it freed, then finished as cancelled with that
+     * sentence. uq_project_active allows one active run a project, so this
+     * is a handful of statements and needs no budget.
+     *
+     * @return array{runs_stopped:int, slots_released:int, failed:int}
+     */
+    public function disableProject($pid)
+    {
+        $this->what = 'disable-project';
+        $out = ['runs_stopped' => 0, 'slots_released' => 0, 'failed' => 0];
+        $pid = (int) $pid;
+        try {
+            $rows = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run')
+                . ' WHERE project_id = ? AND active_slot = 1', [$pid]);
+        } catch (\Throwable $e) {
+            $this->failed('runs', $pid, $e);
+            $out['failed']++;
+            return $out;
+        }
+        $stopped = [];
+        foreach ($rows as $r) {
+            try {
+                $this->stopPage([(int) $r[0]], self::PROJECT_DISABLED_WHY);
+                $stopped[(int) $r[0]] = $pid;
+                $out['slots_released'] += $this->slots->releaseRun((int) $r[0]);
+            } catch (\Throwable $e) {
+                $this->failed('stop', $pid, $e);
+                $out['failed']++;
+            }
+        }
+        $left = ['runs_left' => 0, 'runs_stopped' => 0, 'failed' => 0];
+        $this->finishEach($stopped, INF, $left);
+        $out['runs_stopped'] = $left['runs_stopped'];
+        $out['failed'] += $left['failed'];
+        return $out;
+    }
+
+    /**
+     * One walk over the active runs for disable(): every one, or with $late
+     * only those not stopped yet. Each page it stopped is added to $stopped.
+     *
+     * @return bool false when a page could not be read
+     */
+    private function stopEvery($late, array &$stopped, array &$out)
+    {
         $after = 0;
         while (true) {
             try {
                 $runs = $this->db->select('SELECT run_id, project_id FROM ' . Schema::table('scan_run')
-                    . ' WHERE active_slot = 1 AND run_id > ? ORDER BY run_id LIMIT ' . self::DISABLE_PAGE, [$after]);
+                    . ' WHERE active_slot = 1' . ($late ? ' AND phase <> ?' : '') . ' AND run_id > ?'
+                    . ' ORDER BY run_id LIMIT ' . self::DISABLE_PAGE,
+                    $late ? [ScanPhase::CANCELLING, $after] : [$after]);
             } catch (\Throwable $e) {
                 $this->failed('runs', null, $e);
                 $out['failed']++;
-                return $out;
+                return false;
             }
-            foreach ($runs as $r) {
-                $runId = (int) $r[0];
-                $pid = (int) $r[1];
-                $after = $runId;
+            $page = [];
+            foreach ($runs as $r) $page[(int) $r[0]] = (int) $r[1];
+            if ($page) {
+                $after = max(array_keys($page));
                 try {
-                    // False: it left its slot since the read, so it is not ours to stop.
-                    if (!$this->store->cancel($pid, $runId, 'system')) continue;
-                    $policy = call_user_func($this->policy, $pid);
-                    if (ScanPromotion::finishCancelled($this->store, $pid, $runId, [
-                            'maxFindings' => $policy['maxFindings'], 'maxBytes' => $policy['maxBytes'],
-                            'why' => self::DISABLED_WHY])) {
-                        $out['runs_stopped']++;
-                    }
+                    $this->stopPage(array_keys($page), self::DISABLED_WHY);
+                    if ($late) $out['late'] += count($page);
+                    $stopped += $page;
                 } catch (\Throwable $e) {
-                    $this->failed('stop', $pid, $e);
+                    // Nothing of this page was stopped: the two statements are
+                    // one transaction, and none of it is finished. The next
+                    // disable, or each run's own staleness, comes back to them.
+                    $this->failed('stop', null, $e);
                     $out['failed']++;
                 }
             }
-            if (count($runs) < self::DISABLE_PAGE) return $out;
+            if (count($runs) < self::DISABLE_PAGE) return true;
+        }
+    }
+
+    /**
+     * Stop a page of runs in two statements: the cancel and its audit.
+     *
+     * SqlScanStore::cancel()'s write, for many runs at once: the request time,
+     * the phase, the epoch moved - which refuses every worker at its next
+     * fence - and `system` as the actor in the audit. Two more things: a run
+     * somebody had already stopped is left as they stopped it, and the row
+     * carries $why (DISABLED_WHY, or PROJECT_DISABLED_WHY), which
+     * ScanPromotion::finishCancelled() keeps whichever request finishes the
+     * run. The audit names exactly the rows this UPDATE moved: they are
+     * locked by it until the commit, and no other writer sets this reason.
+     */
+    private function stopPage(array $runIds, $why)
+    {
+        $in = implode(', ', array_fill(0, count($runIds), '?'));
+        $at = gmdate('Y-m-d H:i:s');
+        $run = Schema::table('scan_run');
+        $this->db->begin();
+        try {
+            $this->db->exec('UPDATE ' . $run . ' SET cancel_requested_at = ?, phase = ?, terminal_reason = ?,'
+                . ' lease_epoch = lease_epoch + 1, updated_at = ?'
+                . ' WHERE active_slot = 1 AND phase <> ? AND run_id IN (' . $in . ')',
+                array_merge([$at, ScanPhase::CANCELLING, (string) $why, $at, ScanPhase::CANCELLING], $runIds));
+            if ((int) $this->db->affected() > 0) {
+                $this->db->exec('INSERT INTO ' . Schema::table('scan_audit')
+                    . ' (project_id, run_id, event, actor, detail, created_at)'
+                    . ' SELECT project_id, run_id, ?, ?, NULL, ? FROM ' . $run
+                    . ' WHERE active_slot = 1 AND phase = ? AND terminal_reason = ? AND cancel_requested_at = ?'
+                    . ' AND run_id IN (' . $in . ')',
+                    array_merge(['cancel', 'system', $at, ScanPhase::CANCELLING, (string) $why, $at], $runIds));
+            }
+            $this->db->commit();
+        } catch (\Throwable $e) {
+            try {
+                $this->db->rollback();
+            } catch (\Throwable $ignored) {
+                \INSPIRE\UniversalValidator\Faults::swallow($ignored, 'ScanMaintenance::stopPage');
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * Finish the stopped runs while the budget lasts; count the rest as left.
+     *
+     * EACH WITH THE REASON ON ITS OWN ROW (review rvf2-2). The walks hand
+     * this every active run, and a run its user had already stopped is one
+     * of them: stopPage() leaves it as they stopped it, and this then passed
+     * the disable's sentence to the finisher, which beat the stored one. So a
+     * user's own Stop ended reading "the module was disabled", beside an
+     * audit naming the user. The finisher is given no sentence now: a run
+     * stopPage() moved carries the disable's on its row, and
+     * ScanPromotion::finishCancelled() keeps that, as it does when Start or
+     * the reap cron finishes the run later; any other keeps its own.
+     */
+    private function finishEach(array $stopped, $until, array &$out)
+    {
+        foreach ($stopped as $runId => $pid) {
+            if ((float) call_user_func($this->clock) >= $until) {
+                $out['runs_left']++;
+                continue;
+            }
+            try {
+                $policy = call_user_func($this->policy, $pid);
+                if (ScanPromotion::finishCancelled($this->store, $pid, $runId, [
+                        'maxFindings' => $policy['maxFindings'], 'maxBytes' => $policy['maxBytes']])) {
+                    $out['runs_stopped']++;
+                }
+            } catch (\Throwable $e) {
+                $this->failed('stop', $pid, $e);
+                $out['failed']++;
+            }
         }
     }
 
@@ -525,9 +752,17 @@ final class ScanMaintenance
     /** @var ?array the installation's policy, read once per pass */
     private $sys = null;
 
+    /**
+     * @var bool a statement of this pass found a table missing
+     *      (DbError::isMissingTable()): the tables went while it ran, and it
+     *      stops at its next unit (review rv10a2-4)
+     */
+    private $gone = false;
+
     private function begin($what, array $state)
     {
         $this->sys = null;
+        $this->gone = false;
         $this->what = $what;
         $this->state = $state;
         $this->started = (float) call_user_func($this->clock);
@@ -548,10 +783,10 @@ final class ScanMaintenance
         call_user_func($this->save, $this->state);
     }
 
-    /** Out of budget, or switched off: either stops the pass here. */
+    /** Out of budget, switched off, or its tables gone: any stops the pass here. */
     private function halted($until, array &$out)
     {
-        if (call_user_func($this->stopped)) {
+        if ($this->gone || call_user_func($this->stopped)) {
             $out['stopped'] = 1;
             return true;
         }
@@ -586,9 +821,15 @@ final class ScanMaintenance
                 try {
                     $finished = $each($row);
                 } catch (\Throwable $e) {
-                    // Logged; the next lap comes back to it.
+                    // Logged; the next lap comes back to it. With the tables
+                    // gone, the project is not passed over: the pass stops
+                    // before it, and nothing after it is tried.
                     $this->failed('project', $row['pid'], $e);
                     $out['failed']++;
+                    if ($this->gone) {
+                        $out['stopped'] = 1;
+                        return $after;
+                    }
                     $finished = true;
                 }
                 if (!$finished) return $row['pid'] - 1;
@@ -607,27 +848,39 @@ final class ScanMaintenance
      * read is one run of one of those projects. uv_scan_run holds a row per
      * run, and retention keeps that number bounded per project.
      *
-     * @return array<int, array{pid:int, stale:bool, supersede:bool, oldest:?string, modes:string[]}>
+     * `removing`: a finished run whose removal ScanRetention::purgeRuns() has
+     * begun (review rvf2-3), which is due whatever the project's runDays.
+     *
+     * @return array<int, array{pid:int, stale:bool, stopped:bool, supersede:bool, oldest:?string,
+     *                          modes:string[], removing:bool}>
      */
     private function census($after)
     {
-        $at = self::at($this->now);
+        // The store's predicate, clock and all (review rv10a1-1), so the
+        // census names exactly the projects expireAbandoned() will reap.
+        // A stale run somebody stopped is 2, finished as cancelled; any
+        // other stale run is 1, expired (review rv10a1-2). uq_project_active
+        // allows one active run a project, so MAX() sees at most one of them.
+        $stale = SqlScanStore::staleWhere($this->staleCut(), self::at($this->now));
         $rows = $this->db->select('SELECT project_id,'
-            . ' MAX(CASE WHEN active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
-            . '   AND (lease_expires_at IS NULL OR lease_expires_at < ?) THEN 1 ELSE 0 END),'
-            . ' MAX(CASE WHEN terminal = ? AND supersede_cursor < generation_id'
+            . ' MAX(CASE WHEN ' . $stale[0] . ' THEN (CASE WHEN phase = ? THEN 2 ELSE 1 END) ELSE 0 END),'
+            . ' MAX(CASE WHEN terminal = ? AND scope_dag IS NULL AND supersede_cursor < generation_id'
             . '   THEN 1 ELSE 0 END),'
             . ' MIN(CASE WHEN active_slot IS NULL THEN updated_at END),'
-            . ' GROUP_CONCAT(DISTINCT values_state)'
+            . ' GROUP_CONCAT(DISTINCT values_state),'
+            . ' MAX(CASE WHEN active_slot IS NULL AND terminal_reason = ? THEN 1 ELSE 0 END)'
             . ' FROM ' . Schema::table('scan_run') . ' WHERE project_id > ?'
             . ' GROUP BY project_id ORDER BY project_id LIMIT ' . self::CENSUS_PAGE,
-            [$this->staleCut(), $at, ScanOutcome::COMPLETE, (int) $after]);
+            array_merge($stale[1], [ScanPhase::CANCELLING, ScanOutcome::COMPLETE, ScanStore::REMOVING_WHY,
+                                    (int) $after]));
         $out = [];
         foreach ($rows as $r) {
             if ((int) $r[0] < 1) continue;   // the version-1 leftover: no project to act for
-            $out[] = ['pid' => (int) $r[0], 'stale' => (int) $r[1] === 1, 'supersede' => (int) $r[2] === 1,
+            $out[] = ['pid' => (int) $r[0], 'stale' => (int) $r[1] === 1, 'stopped' => (int) $r[1] === 2,
+                      'supersede' => (int) $r[2] === 1,
                       'oldest' => $r[3] === null ? null : (string) $r[3],
-                      'modes' => $r[4] === null || $r[4] === '' ? [] : explode(',', (string) $r[4])];
+                      'modes' => $r[4] === null || $r[4] === '' ? [] : explode(',', (string) $r[4]),
+                      'removing' => isset($r[5]) && (int) $r[5] === 1];
         }
         return $out;
     }
@@ -651,6 +904,7 @@ final class ScanMaintenance
 
     private function failed($step, $pid, \Throwable $e)
     {
+        if (DbError::isMissingTable($e)) $this->gone = true;
         call_user_func($this->log, 'scan-cron-step-failed', [
             'pass' => $this->what, 'step' => (string) $step, 'project_id' => $pid === null ? null : (int) $pid,
             // The class and what DbError keeps of the server's text, which is

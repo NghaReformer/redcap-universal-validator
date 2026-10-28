@@ -35,6 +35,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';    // the detail budget (H9)
     require_once __DIR__ . '/../php/Scan/WorkBudget.php';
     require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
+    require_once __DIR__ . '/../php/Scan/ReasonCode.php';      // a duplicate's reason_bits (rv11a2-2)
     require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
     require_once __DIR__ . '/../php/Scan/CatchUp.php';
     require_once __DIR__ . '/../php/Scan/RollupBuilder.php';   // tally() reads its KINDS
@@ -186,10 +187,11 @@ namespace INSPIRE\UniversalValidator\Scan {
     //
     // Asked of the stop itself: the store's cancel(), which
     // ScanService::stopRun() calls. ScanPhase::cancelTarget() answered for a
-    // phase alone, but nothing in the module called it, and it refused the
-    // second stop the store allows; that one bumps the epoch again, and
-    // stopRun() then finishes a run nobody holds (R2O-5). It was deleted for
-    // QUA-3. Each answer: [cancel() returned, the phase after, epoch bumps].
+    // phase alone, but nothing in the module called it (QUA-3, deleted). The
+    // store refuses a second stop of a run already stopping (review
+    // rvfix-N3), and stopRun() finishes that run on the second Stop all the
+    // same, with nothing audited twice. Each answer: [cancel() returned, the
+    // phase after, epoch bumps].
     $runsOf = new \ReflectionProperty(ArrayScanStore::class, 'runs');
     $runsOf->setAccessible(true);
     $stopFrom = function ($phase) use ($runsOf) {
@@ -214,8 +216,8 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $stopFrom('catch-up') === [true, 'cancelling', 1]
         && $stopFrom('unique-finalize') === [true, 'cancelling', 1]
         && $stopFrom('rollup-finalize') === [true, 'cancelling', 1]);
-    check('cancel: a run still stopping can be stopped again: the epoch is bumped once more, and it stays cancelling',
-        $stopFrom('cancelling') === [true, 'cancelling', 1]);
+    check('cancel: a run already stopping is not stopped again (rvfix-N3): nothing about it changes',
+        $stopFrom('cancelling') === [false, 'cancelling', 0]);
     check('cancel: a finished run cannot be cancelled, and nothing about it changes',
         $stopFrom('terminal') === [false, 'terminal', 0]);
     // cancelTarget() refused a phase it could not read; the stop does not,
@@ -1148,6 +1150,44 @@ namespace INSPIRE\UniversalValidator\Scan {
         'timeLimit' => null, 'min' => 1, 'max' => 100, 'first' => 10,
         'startedAt' => microtime(true)]); };
     $fin = function () { return new Finalizer(); };
+
+    // -- unchanged since planning (review rvc2-1) ----------------------------
+    //
+    // A date with no saved day is judged against the run's frozen day only
+    // for a record whose log goes no further than the opening fence. The
+    // worker has both versions of each record it reads; it says which.
+    $settledOf = function ($open, $fence) use ($reader) {
+        $store = new ArrayScanStore();
+        $r = $store->startRun(800, ['created_by' => 'alice', 'fence_open' => $open]);
+        $runId = (int) $r['run']['run_id'];
+        $recs = [];
+        foreach (['A', 'B', 'C', 'D'] as $id) $recs[] = ['id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null];
+        $store->writeManifest($runId, $recs);
+        $seen = [];
+        $w = new ScanWorker($store, ['fence' => $fence, 'read' => $reader,
+            'evaluate' => function ($id, $node, $settled = 'absent') use (&$seen) {
+                $seen[$id] = $settled;
+                return ['findings' => [], 'bytes' => 0, 'contexts' => 0, 'why' => null];
+            },
+            'budget' => new WorkBudget(['mode' => 'cron', 'memoryLimit' => null, 'timeLimit' => null,
+                'min' => 1, 'max' => 100, 'first' => 10, 'startedAt' => microtime(true)]),
+            'owner' => 'w1', 'attempts' => 3, 'finalizer' => new Finalizer()]);
+        $w->work(800, $runId);
+        ksort($seen);
+        return $seen;
+    };
+    $sv = new Versions();
+    $sv->v = ['A' => '99', 'B' => '100', 'C' => '101'];    // D: the log shows nothing of it
+    check('worker rvc2-1: a record whose log stops at or before the opening fence is unchanged since planning, '
+        . 'one past it or not in the log is not',
+        $settledOf('100', $sv) === ['A' => true, 'B' => true, 'C' => false, 'D' => false]);
+    $sv2 = new Versions();
+    $sv2->v = ['A' => '9', 'B' => '10', 'C' => '11', 'D' => '100'];
+    check('worker rvc2-1: the fence is compared as a number, not as text',
+        $settledOf('10', $sv2) === ['A' => true, 'B' => true, 'C' => false, 'D' => false]);
+    check('worker rvc2-1: a run with no opening fence, or a worker with no fence, knows no record unchanged',
+        $settledOf(null, $sv) === ['A' => false, 'B' => false, 'C' => false, 'D' => false]
+        && $settledOf('100', null) === ['A' => false, 'B' => false, 'C' => false, 'D' => false]);
 
     // -- the ordinary case ---------------------------------------------------
     list($store, $runId) = $fixture(['A', 'B', 'C', 'D', 'E']);
@@ -2379,9 +2419,11 @@ namespace INSPIRE\UniversalValidator\Scan {
             if (strpos($sql, 'ix_pending') !== false) return [[7, 'g1', 1, 0, 0, 'emitting', null, 2]];
             if (strpos($sql, 'lookup = 0') !== false && preg_match('/LIMIT (\d+)/', $sql, $m)) {
                 $this->limits[] = (int) $m[1];
-                $rows = [[1, 'h1', 'R1', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64)],
-                         [2, 'h2', 'R2', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64)],
-                         [3, 'h1', 'R1', 0, 1, 'fa', 'sid2', 'src-x', str_repeat('c', 64)]];
+                // The last column is the candidate's branch (rv11a2-2): R2's
+                // rule judged it in its second branch.
+                $rows = [[1, 'h1', 'R1', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64), null],
+                         [2, 'h2', 'R2', 0, 1, 'fa', 'sid', 'src-b', str_repeat('c', 64), 1],
+                         [3, 'h1', 'R1', 0, 1, 'fa', 'sid2', 'src-x', str_repeat('c', 64), null]];
                 return array_slice($rows, 0, (int) $m[1]);
             }
             return [];
@@ -2435,6 +2477,13 @@ namespace INSPIRE\UniversalValidator\Scan {
                     ['R1', 'sid2', 0, 'site_a', 'duplicate-value']]);
     check('W7-R4: a rule the map does not name is ordinal 0, as before, and never a guess',
         isset($wrote[2]) && $wrote[2][2] === 0);
+    // rv11a2-2: the duplicate carries its candidate's branch as every other
+    // finding does (branch + 1), and a candidate with none is 0, as before.
+    $bitsOf = [];
+    foreach ($edb->rows() as $row) $bitsOf[] = [$row['record_id_bin'], $row['reason_bits']];
+    check('rv11a2-2: a duplicate\'s reason_bits name its candidate\'s branch (got ' . json_encode($bitsOf) . ')',
+        $bitsOf === [['R1', 0], ['R2', 2], ['R1', 0]]
+        && \INSPIRE\UniversalValidator\Scan\ReasonCode::branchOf('duplicate-value', $bitsOf[1][1]) === 1);
     check('W7-R4: the groups are asked once for the page, each record once',
         $asked === [['R1', 'R2']] && $er['emitted'] === 3 && $er['read'] === 2);
     // The page is cut to the read limit when the groups may cost a read.
@@ -2479,6 +2528,16 @@ namespace INSPIRE\UniversalValidator\Scan {
             $this->tx[] = 'write';
             parent::execNoCount($sql, $params);
         }
+        /** What each counted write reports, in order: the publish's close, then its activation. */
+        public $counts = [];
+        private $last = 1;
+        public function exec($sql, array $params = [])
+        {
+            $this->tx[] = 'write';
+            $this->last = $this->counts ? array_shift($this->counts) : 1;
+            return 1;
+        }
+        public function affected() { return $this->last; }
         public function begin() { $this->tx[] = 'begin'; }
         public function commit() { $this->tx[] = 'commit'; }
         public function rollback() { $this->tx[] = 'rollback'; }
@@ -2500,12 +2559,28 @@ namespace INSPIRE\UniversalValidator\Scan {
         \Closure::bind($f, $s, ArrayScanStore::class)($rid);
     };
     list($fs, $frid, $fep) = $fenceRun();
+    // A page as long as asked for (3 of 3): the group may have more.
     $tdb = new TxEmitDb();
     $live = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
-        ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
+        ->forRun(5, $frid, $fep)->emit(1, $g7, 3);
     check('rv10a1-1: a page for a live run is one transaction, the hold first and then its two writes',
-        $live['emitted'] === 3 && $live['why'] === null
+        $live['emitted'] === 3 && $live['why'] === null && $live['published'] === false
         && $tdb->tx === ['begin', 'write', 'write', 'commit']);
+    // W10BF-5: a page shorter than asked for (3 of 10) is the group's last,
+    // and publishes it behind the same hold, in the same transaction: the
+    // page, the close of earlier epochs' rows, the activation and the
+    // group's pointer with its cursor.
+    $tdb = new TxEmitDb();
+    $tdb->counts = [0, 3];
+    $lastPage = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
+        ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
+    check('W10BF-5: the last page of a group publishes it in its own held transaction',
+        $lastPage['emitted'] === 3 && $lastPage['published'] === true && $lastPage['why'] === null
+        && $tdb->tx === ['begin', 'write', 'write', 'write', 'write', 'commit']);
+    // rvc2-2, CONS-N1: and the rows it published are the run's, counted in
+    // that transaction.
+    check('CONS-N1: the publish adds the rows it made active to the count of the run',
+        (int) $fs->run(800, $frid)['open_findings'] === 3);
     $bumpEpoch($fs, $frid);
     $tdb = new TxEmitDb();
     $late = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
@@ -2518,11 +2593,14 @@ namespace INSPIRE\UniversalValidator\Scan {
     list($fs, $frid, $fep) = $fenceRun();
     $tdb = new TxEmitDb();
     $tdb->empty = true;
+    $tdb->counts = [1, 3];
     $pubLive = (new UniqueFinalizer($tdb, ['pid' => 800, 'hmacKey' => 'k', 'store' => $fs]))
         ->forRun(5, $frid, $fep)->emit(1, $g7, 10);
     check('rv10a1-1: a group published for a live run is published in one held transaction',
         $pubLive['published'] === true && $pubLive['why'] === null
         && $tdb->tx === ['begin', 'write', 'write', 'write', 'commit']);
+    check('CONS-N1: a publish that closed an earlier staging takes its rows back as it adds the new ones',
+        (int) $fs->run(800, $frid)['open_findings'] === 2);
     $fs->finish($frid, ScanOutcome::derive(['failed' => true]));
     $tdb = new TxEmitDb();
     $tdb->empty = true;
@@ -3891,7 +3969,11 @@ namespace INSPIRE\UniversalValidator\Scan {
             $p = ScanPromotion::promote($store, $pid, $rid, array_merge($ok, $in));
             return [$p, $store->run($pid, $rid), $store];
         };
+        // The finalizer publishes the duplicate and counts it in the run's
+        // row in the same transaction (notePublished(), rvc2-2); the summary
+        // counts it once more.
         list($p, $row, $store810) = $promoted(810, function ($store, $rid) use ($K) {
+            $store->notePublished($rid, 1, 0);
             foreach ($K as $kind) $store->addAggregate($rid, $kind, 'x', null, 1);
         });
         check('duplicates only: the worker stored nothing', (int) $row['detail_rows'] === 0);
@@ -3899,6 +3981,9 @@ namespace INSPIRE\UniversalValidator\Scan {
             $p['promoted'] === true && $row['terminal'] === ScanOutcome::COMPLETE);
         check('duplicates only: and the page is told ONE finding, not the counter\'s zero',
             ScanPromotion::findingsOf($store810, $row) === 1);
+        check('duplicates only: and so is the page of a run from before the run kept its count, from the summary',
+            ScanPromotion::findingsOf($store810, array_merge($row, ['open_findings' => null,
+                                                                    'open_unstored' => null])) === 1);
         check('duplicates only: and is NOT clean, because the summary found what the counter missed',
             $row['clean'] !== null && (int) $row['clean'] === 0
             && ScanOutcome::mayClaimClean($p['outcome']) === false);
@@ -3912,16 +3997,31 @@ namespace INSPIRE\UniversalValidator\Scan {
         $lid = (int) $live->startRun(815, ['created_by' => 'alice'])['run']['run_id'];
         $live->addAggregate($lid, $K[0], 'x', null, 40);
         check('findings: a run still working reports what it has stored so far',
-            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), ['detail_rows' => 7])) === 7);
-        // OC-4: a run that ended without a verdict answers with the LARGER of
-        // its counter and whatever summary it built, because the counter misses
-        // every duplicate the uniqueness finalizer wrote.
-        check('findings: one that ended without a verdict answers with the larger of its counter and its summary',
+            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), ['open_findings' => 7])) === 7);
+        // OC-4, FOR A RUN FROM BEFORE SCHEMA VERSION 8 (NULL counts): one that
+        // ended without a verdict answers with the LARGER of its counter and
+        // whatever summary it built, because the counter misses every
+        // duplicate the uniqueness finalizer wrote.
+        $old = ['open_findings' => null, 'open_unstored' => null, 'detail_rows' => 7];
+        check('findings: an old run that ended without a verdict answers with the larger of its counter and its summary',
+            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), $old,
+                ['terminal' => ScanOutcome::CANCELLED])) === 40);
+        check('findings: and an old one that reached a verdict answers from the summary',
+            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), $old,
+                ['terminal' => ScanOutcome::PARTIAL])) === 40);
+        // ONE NUMBER (reviews rvc2-2, rvc1-2, CONS-N1): a run that keeps its
+        // count answers from its row in every state, the rows its page and
+        // its file list, whatever its summary says.
+        foreach ([null, ScanOutcome::CANCELLED, ScanOutcome::EXPIRED, ScanOutcome::FAILED,
+                  ScanOutcome::PARTIAL, ScanOutcome::COMPLETE] as $term) {
+            check('findings: a run that keeps its count answers its rows and what they left out, '
+                . ($term === null ? 'working' : $term),
+                ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid),
+                    ['open_findings' => 7, 'open_unstored' => 2, 'terminal' => $term])) === 9);
+        }
+        check('findings: and zero is its answer when it holds none, stopped or not',
             ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid),
-                ['detail_rows' => 7, 'terminal' => ScanOutcome::CANCELLED])) === 40);
-        check('findings: and one that reached a verdict answers from the summary',
-            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid),
-                ['detail_rows' => 7, 'terminal' => ScanOutcome::PARTIAL])) === 40);
+                ['open_findings' => 0, 'open_unstored' => 0, 'terminal' => ScanOutcome::CANCELLED])) === 0);
 
         // A CALLER CANNOT TALK THE VERDICT ROUND. These three used to arrive in
         // the array, and the production caller fed one of them from the wrong place.
@@ -4508,6 +4608,18 @@ namespace INSPIRE\UniversalValidator\Scan {
             && $store->run(842, $runId)['phase'] === ScanPhase::UNIQUE);
         check('W7-N9: and a refused step does not move the clock',
             $store->run(842, $runId)['progress_at'] === $OLD);
+        // A STEP THAT DROPPED A DEPARTED RECORD'S CANDIDATES moved the run
+        // forward (review rvf2-6). It reads nothing, writes no finding and
+        // says why, and was taken for a refusal: ok:false, stop 'finalizer'.
+        list($store, $runId) = $inUnique(849);
+        $f = new ScriptedFinalizer([['dropped' => 2, 'why' => 'a record in this duplicate group left the '
+                                     . 'group this scan covers, so the group is being checked again without it'],
+                                    ['done' => true]]);
+        $res = $drive($store, 849, $runId, $f);
+        check('rvf2-6: a step that dropped a departed record\'s candidates is stepped past, not stopped on',
+            $res['ok'] === true && $f->calls === 2 && $res['stop'] !== 'finalizer');
+        check('rvf2-6: and it moves the clock, so a run whose records depart does not age toward the reaper',
+            $store->run(849, $runId)['progress_at'] !== $OLD);
         // The same words with no why are a step that moved state the counts do
         // not show (a verified group going on to be written), and go on.
         list($store, $runId) = $inUnique(843);
@@ -4532,7 +4644,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         // rv10b2-3). A forward count reduced to groups alone left every suite
         // green while verify, emit and publish moved nothing: W7-N9 undone
         // for all but discovery.
-        foreach (['groups', 'verified', 'emitted', 'published', 'collisions'] as $i => $kind) {
+        foreach (['groups', 'verified', 'emitted', 'published', 'collisions', 'dropped'] as $i => $kind) {
             list($store, $runId) = $inUnique(850 + $i);
             $f = new ScriptedFinalizer([[$kind => 1], ['done' => true]]);
             $res = $drive($store, 850 + $i, $runId, $f);

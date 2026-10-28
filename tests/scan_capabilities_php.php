@@ -123,10 +123,10 @@ namespace {
             'SHOW TABLES'  => [['redcap_record_list']],
             'log_event_table' => [['redcap_log_event7']],
             // A fence is PROVED, not inferred from a table name: the probe asks
-            // the log for a monotonic maximum and a row count. Before that, a
-            // name matching the pattern was the whole check, so this fixture
-            // reported a fence on a module whose every query returned nothing.
-            'MAX(log_event_id)' => [['918273', '4412']],
+            // the log for a monotonic maximum. Before that, a name matching
+            // the pattern was the whole check, so this fixture reported a fence
+            // on a module whose every query returned nothing.
+            'MAX(log_event_id)' => [['918273']],
             'SHOW GRANTS'  => [['GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP ON `rc`.* TO `u`@`h`']],
         ];
         return $m;
@@ -368,6 +368,13 @@ namespace {
         $ok = fullyCapable();
         check('C-08: a log with entries and a numeric maximum IS a fence',
             $C::sourceFence($ok, PID)['state'] === $OK);
+        // W8-N11: one statement on the log, and it counts nothing. A COUNT(*)
+        // read every one of the project's log entries on every plan build.
+        $onLog = array_values(array_filter($ok->queries, function ($q) {
+            return strpos($q[0], 'redcap_log_event7') !== false; }));
+        check('C-08 W8-N11: the fence is proved in one statement on the log, which reads only its maximum',
+            count($onLog) === 1 && strpos($onLog[0][0], 'SELECT MAX(log_event_id) FROM') === 0
+            && stripos($onLog[0][0], 'COUNT(') === false);
 
         // Empty log: not an error, and not a fence either.
         $empty = fullyCapable();

@@ -165,8 +165,17 @@ final class ScanRetention
      * A NULL REVISION BUMPS NOTHING and only carries the clearing on. The
      * cron's later calls for one revocation pass null (wave 10): a run
      * started after the bump was planned under the policy that caused it, and
-     * a repeated bump would mark its values expired too. Every run starts at
-     * revision 1, so "below the revision" does not tell such a run apart.
+     * a repeated bump would mark its values expired too. Such a run starts
+     * at the project's revision, the one the bump wrote (W10A-N1), so a
+     * repeat of the same bump - a pass that died between the bump and its
+     * checkpoint - leaves it alone as well.
+     *
+     * UP TO THE RUNS THE OLD POLICY GOVERNED (W10AF-N6). $throughRun is the
+     * newest run the caller judged tightened. A run started under the new
+     * policy before the cron noticed the change starts at the project's
+     * revision, below the new one, and has a higher id than every run
+     * started before it, so the bound spares its previews; without it the
+     * bump reaches every run of the project.
      *
      * @param int|null   $newRevision the revision to move the project's runs
      *                           to, or null to bump nothing
@@ -174,11 +183,13 @@ final class ScanRetention
      *                           or null to start; any other cursor starts again
      *                           (review R8-3, see revokeAt())
      * @param int        $limit  rows per page, at most PAGE
+     * @param int|null   $throughRun the newest run id the bump may move, or
+     *                           null for every run of the project
      * @return array{runs:int, rows:int, done:bool, cursor:?array} `runs` whose
      *         previews this call revoked (0 once the bump has been made),
      *         `rows` previews cleared by this call
      */
-    public function revokePreviews($pid, $newRevision, $cursor = null, $limit = self::PAGE)
+    public function revokePreviews($pid, $newRevision, $cursor = null, $limit = self::PAGE, $throughRun = null)
     {
         $pid = self::project($pid);
         $limit = max(1, min(self::PAGE, (int) $limit));
@@ -188,10 +199,12 @@ final class ScanRetention
             // the bump is no work on the run: moving it restarted every run's
             // retention, so tightening the privacy policy kept the project's
             // old findings up to runDays longer (wave 10, the first caller).
+            $bound = $throughRun === null ? '' : ' AND run_id <= ?';
             $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
                 SET policy_revision = ?, values_state = ?
-                WHERE project_id = ? AND policy_revision < ?',
-                [(int) $newRevision, 'expired', $pid, (int) $newRevision]);
+                WHERE project_id = ? AND policy_revision < ?' . $bound,
+                array_merge([(int) $newRevision, 'expired', $pid, (int) $newRevision],
+                            $throughRun === null ? [] : [(int) $throughRun]));
             $runs = (int) $this->db->affected();
         }
 
@@ -256,7 +269,8 @@ final class ScanRetention
      *
      * uv_scan_audit is not a child. It is the record that the run existed.
      *
-     * @param int $olderThanDays a run last touched longer ago than this goes
+     * @param int $olderThanDays a run last touched longer ago than this goes;
+     *                           a run whose removal began goes first, whatever its age
      * @param int $limit         rows per statement, at most PAGE
      * @return array{done:bool, rows:int, runs:int, cursor:?int} `rows` child
      *         rows deleted by this call, `runs` run rows removed by it, `cursor`
@@ -267,14 +281,37 @@ final class ScanRetention
         $pid = self::project($pid);
         $limit = max(1, min(self::PAGE, (int) $limit));
         $cut = self::daysAgo($olderThanDays);
-        $run = $this->db->select('SELECT run_id, generation_id FROM ' . Schema::table('scan_run')
-            . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?'
-            . ' ORDER BY run_id LIMIT 1', [$pid, $cut]);
+        // A REMOVAL THAT HAS BEGUN IS FINISHED FIRST, WHATEVER THE RUN'S AGE
+        // (review rvf2-3). Once marked, a run reads as gone to every reader;
+        // picked by age alone, a run whose project raised its retention after
+        // the first page was never picked again, and stayed hidden with its
+        // findings kept. Both reads go through uq_project_active.
+        $pick = 'SELECT run_id, generation_id, terminal_reason FROM ' . Schema::table('scan_run')
+            . ' WHERE project_id = ? AND active_slot IS NULL AND ';
+        $run = $this->db->select($pick . 'terminal_reason = ? ORDER BY run_id LIMIT 1',
+            [$pid, ScanStore::REMOVING_WHY]);
+        if (!isset($run[0])) {
+            $run = $this->db->select($pick . 'updated_at < ? ORDER BY run_id LIMIT 1', [$pid, $cut]);
+        }
         if (!isset($run[0])) {
             return ['done' => true, 'rows' => 0, 'runs' => 0, 'cursor' => null];
         }
         $runId = (int) $run[0][0];
         $gen   = (int) $run[0][1];
+
+        // MARKED BEFORE ANYTHING IT OWNS GOES (review rv10a1-3). A run of
+        // 500,000 records is about a hundred manifest pages and two hundred
+        // finding pages, one or more cron passes, and its row stays until the
+        // last; read in between, it said `complete` with 0 records done and 0
+        // findings while its findings were still stored. ScanStore::run()
+        // answers null for this reason, so every reader says the run is gone
+        // from the first page. One statement per run, on the first call only,
+        // and NOT updated_at: that is the age this purge is judged by.
+        if (!isset($run[0][2]) || (string) $run[0][2] !== ScanStore::REMOVING_WHY) {
+            $this->db->exec('UPDATE ' . Schema::table('scan_run') . ' SET terminal_reason = ?'
+                . ' WHERE run_id = ? AND project_id = ? AND active_slot IS NULL',
+                [ScanStore::REMOVING_WHY, $runId, $pid]);
+        }
 
         $steps = [
             ['scan_record', 'run_id = ?', [$runId]],
@@ -305,7 +342,8 @@ final class ScanRetention
             . ' WHERE run_id = ? AND project_id = ? AND active_slot IS NULL', [$runId, $pid]);
         $gone = (int) $this->db->affected();
         $more = $this->db->select('SELECT EXISTS(SELECT 1 FROM ' . Schema::table('scan_run')
-            . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?)', [$pid, $cut]);
+            . ' WHERE project_id = ? AND active_slot IS NULL AND (updated_at < ? OR terminal_reason = ?))',
+            [$pid, $cut, ScanStore::REMOVING_WHY]);
         if (!isset($more[0][0])) {
             throw new \RuntimeException('could not tell whether more runs are due for removal');
         }
@@ -365,10 +403,14 @@ final class ScanRetention
             return $store->expireAbandoned(self::project($pid), $staleHours, $actor, $now);
         }
         $t = $now === null ? time() : (int) $now;
+        // The store's own predicate, so this read names exactly the projects
+        // the store will reap (review rv10a1-1: it judged every phase by the
+        // progress clock alone).
+        $w = SqlScanStore::staleWhere(gmdate('Y-m-d H:i:s', $t - max(1, (int) $staleHours) * 3600),
+            gmdate('Y-m-d H:i:s', $t));
         $rows = $this->db->select('SELECT DISTINCT project_id FROM ' . Schema::table('scan_run')
-            . ' WHERE active_slot = 1 AND COALESCE(progress_at, created_at) < ?'
-            . ' AND (lease_expires_at IS NULL OR lease_expires_at < ?) ORDER BY project_id',
-            [gmdate('Y-m-d H:i:s', $t - max(1, (int) $staleHours) * 3600), gmdate('Y-m-d H:i:s', $t)]);
+            . ' WHERE phase <> ? AND ' . $w[0] . ' ORDER BY project_id',
+            array_merge([ScanPhase::CANCELLING], $w[1]));
         $n = 0;
         foreach ($rows as $r) {
             if ((int) $r[0] < 1) continue;
@@ -390,7 +432,7 @@ final class ScanRetention
      * count every expired preview on the installation, so an administrator of
      * a small project was shown the consequence of somebody else's data.
      * `runs_to_purge` is the finished runs purgeRuns() would remove at
-     * $policy['runDays'].
+     * $policy['runDays'], with any whose removal has begun (review rvf2-3).
      *
      * ONE READ OF THIS PROJECT'S FINDINGS, NOT A PAGE. value_expires_at has no
      * index, so the count reads the project's rows once, through a
@@ -406,8 +448,8 @@ final class ScanRetention
             . ' WHERE project_id = ? AND value_expires_at IS NOT NULL'
             . ' AND value_expires_at <= ?', [$pid, self::now()]);
         $runs = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
-            . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?',
-            [$pid, self::daysAgo(isset($policy['runDays']) ? $policy['runDays'] : 90)]);
+            . ' WHERE project_id = ? AND active_slot IS NULL AND (updated_at < ? OR terminal_reason = ?)',
+            [$pid, self::daysAgo(isset($policy['runDays']) ? $policy['runDays'] : 90), ScanStore::REMOVING_WHY]);
         // COUNT(*) always answers one row. No row is a read that did not work,
         // and showing it as 0 would tell the administrator nothing is affected.
         if (!isset($vals[0][0], $runs[0][0])) {

@@ -145,6 +145,19 @@ UV.labels = {
                + 'records belong to that group, so its counts cannot be shown.',
   stoppedWithheld: 'This scan was stopped before it confirmed which records belong to this Data '
                  + 'Access Group, so it is not a complete picture of the group.',
+  stoppedProved: 'This scan was stopped after it confirmed which records belong to this Data Access '
+               + 'Group, so its counts are for the group. It ended before every check had run, so it '
+               + 'is not a complete picture of the group.',
+  upgraded: 'This module was upgraded while this scan was running, and the new version judges some '
+          + 'values differently, so the scan was ended rather than finished half under each version. '
+          + 'Start a new scan.',
+  emptyLeft: 'This scan has no record left to report on: every record it listed moved to another '
+           + 'Data Access Group while it ran. Any findings it counted are on records no longer in '
+           + 'the group. This result says nothing about the group.',
+  emptyLeftDeleted: 'This scan has no record left to report on: every record it listed moved to '
+                  + 'another Data Access Group or was deleted while it ran. Any findings it counted '
+                  + 'are on records no longer in the group. This result says nothing about the group.',
+  none: '0 records',
 };
 
 // -- a fake transport the test scripts -------------------------------------
@@ -557,6 +570,50 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
     && els['uv-scan-done'].textContent.toLowerCase().indexOf('nothing was checked') === -1
     && els['uv-scan-done'].textContent.indexOf('whether or not it had been checked') !== -1
     && els['uv-scan-done'].textContent.indexOf('Any findings it counted are on deleted records') !== -1);
+  // rvf1-2. A group whose every record moved away is an empty scope too, and
+  // was told its records had been deleted, under "Preparing".
+  const leftEmpty = (over) => Object.assign(finished('empty-scope'),
+    { terminal: 'partial', total: 0, done: 0, settled: 0, removed: 0, findings: 0, clean: 0, leftGroup: true },
+    over || {});
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: leftEmpty() }]);
+  UV.start(); await ticks(6);
+  check('client rvf1-2: an empty scope its records left says they moved, not that they were deleted',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.emptyLeft) === 0
+    && els['uv-scan-done'].textContent.indexOf('deleted') === -1);
+  check('client rvf1-2: and a finished run with no record in its total shows 0 records, not Preparing',
+    els['uv-scan-counts'].textContent === '0 records');
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: leftEmpty({ total: 2, removed: 2, settled: 2 }) }]);
+  UV.start(); await ticks(6);
+  check('client rvf1-2: some moved and the rest were deleted, and it says so',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.emptyLeftDeleted) === 0);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: leftEmpty({ leftGroup: false }) }]);
+  UV.start(); await ticks(6);
+  check('client rvf1-2 control: an empty scope no record left keeps the empty-scope sentence',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.coverage['empty-scope']) === 0);
+  const keptLeftLabels = UV.labels;
+  UV.labels = Object.assign({}, keptLeftLabels, { emptyLeft: undefined, none: undefined });
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: leftEmpty() }]);
+  UV.start(); await ticks(6);
+  check('client rvf1-2: and without the page\'s labels its own words are the server\'s',
+    els['uv-scan-done'].textContent.indexOf(keptLeftLabels.emptyLeft) === 0
+    && els['uv-scan-counts'].textContent === keptLeftLabels.none);
+  UV.labels = keptLeftLabels;
+
+  // W10BF-3. A finished run says the day its date rules were judged as of,
+  // last; a status without one, or with something that is not a day, says
+  // nothing of it.
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: Object.assign(finished('complete-through-fence'),
+    { asOf: '2026-10-21' }) }]);
+  UV.start(); await ticks(6);
+  const judged = els['uv-scan-done'].textContent;
+  check('client: W10BF-3 a finished run ends with the day it was judged as of',
+    judged.indexOf('Every record was checked') === 0
+    && judged.slice(-'Dates were judged as of 2026-10-21.'.length) === 'Dates were judged as of 2026-10-21.');
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: Object.assign(finished('complete-through-fence'),
+    { asOf: '<b>2026</b>' }) }]);
+  UV.start(); await ticks(6);
+  check('client: W10BF-3 and a value that is not a day is not shown',
+    els['uv-scan-done'].textContent === fenced);
 
   // Truncated detail is stated even on a run whose coverage was complete: the
   // report the reader holds is not the report the run produced.
@@ -884,6 +941,53 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('paused: a finished run is never paused or stopping, whatever it is sent',
     els['uv-scan-stalled'].style.display === 'none');
 
+  // rvc2-3. A REFUSED STATUS THAT SAYS THIS READER MAY STOP THE RUN SHOWS
+  // STOP. Stop was only ever shown from a status that arrived, so a run whose
+  // configuration could not be read in full kept going with no way to end it
+  // from the page. The refusal still names no count and no finding.
+  const stoppable = (active) => ({ ok: false, final: false, run_id: 42, active: active, mayCancel: true,
+    why: 'the scan context could not be built: the growth reference folder could not be read just now; try again shortly' });
+  const refusedFrom = async (shown, st) => {
+    reset([st]);
+    els['uv-scan-cancel'].style.display = shown;
+    UV.attach({ runId: 42, autoResume: false });
+    await ticks(4);
+    return els['uv-scan-cancel'].style.display;
+  };
+  check('rvc2-3: a refused status that offers Stop on an active run shows Stop',
+    (await refusedFrom('none', stoppable(true))) === ''
+    && els['uv-scan-note'].textContent.indexOf('could not be read just now') !== -1
+    && els['uv-scan-counts'].textContent === '');
+  check('rvc2-3: and hides it when the run has ended',
+    (await refusedFrom('', stoppable(false))) === 'none');
+  const plain = { ok: false, final: false, why: 'the scan context could not be built' };
+  check('rvc2-3: a refusal that offers nothing leaves a shown Stop shown',
+    (await refusedFrom('', plain)) === '');
+  check('rvc2-3: and a hidden one hidden',
+    (await refusedFrom('none', plain)) === 'none');
+  // rv11b1-8. A reader barred only from an instrument a rule's operand sits
+  // on (W11A-N3) is refused status, FINAL, and may still stop the run. This
+  // is the service's own answer for them (tools/temporal_pfx_g_status.php,
+  // pinned in tests/scan_service_php.php "refused a run and no run alike"):
+  // the page shows Stop, and Stop sends the cancel for that run.
+  const barred = { ok: false, final: true, run_id: 42, active: true, mayCancel: true,
+    why: 'this scan reads instrument(s) you do not have access to, so the whole report is refused rather '
+       + 'than quietly narrowed: fb' };
+  check('rv11b1-8: a final refusal for a reader who may still stop the run shows Stop',
+    (await refusedFrom('none', barred)) === ''
+    && els['uv-scan-note'].textContent === barred.why && els['uv-scan-counts'].textContent === '');
+  const askedAfter = sent.length;
+  await ticks(4);
+  for (let i = 0; i < 6 && pending.length; i++) { const t = pending.shift(); t.fn(); await ticks(4); }
+  check('rv11b1-8: and the final refusal is not asked again', sent.length === askedAfter);
+  sent.length = 0;
+  script = [{ ok: true, stopped: true, why: null }];
+  els['uv-scan-cancel'].click();
+  await ticks(6);
+  check('rv11b1-8: Stop sends the cancel for that run, and only the run id',
+    sent.length >= 1 && sent[0].action === 'scan-cancel' && sent[0].payload.run_id === 42
+    && Object.keys(sent[0].payload).join() === 'run_id');
+
   // R2O-3, RETIRED BY B10. A quiet planning run used to get its own
   // sentence sending the reader to Stop, with Continue hidden; the list now
   // resumes from its cursor, so a flag an older server still sends is not
@@ -960,6 +1064,14 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   await show(finished('complete-through-fence'));
   check('verdict: and a status that never said is not read as certified',
     els['uv-scan-done'].textContent.indexOf(UV.labels.notCertified) !== -1);
+  // W7-N10. No decision is not certified, and its counters are not counts.
+  await show(Object.assign(finished('partial'), { terminal: 'expired', clean: null, ruleProblems: 2 }));
+  check('verdict W7-N10: a run with no decision says it is not certified, whatever its rule count says',
+    els['uv-scan-done'].textContent.slice(-UV.labels.notCertified.length) === UV.labels.notCertified
+    && els['uv-scan-done'].textContent.indexOf('could not be evaluated') === -1);
+  await show(decided({ clean: 0, ruleProblems: 2 }));
+  check('verdict W7-N10 control: beside a stored 0 the count is said',
+    els['uv-scan-done'].textContent === fencedText + ' 2 rules could not be evaluated, so this result does not certify the project.');
   const keptLabelsForVerdict = UV.labels;
   UV.labels = {};
   await show(decided({ clean: 0, ruleProblems: 1 }));
@@ -1110,6 +1222,75 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
     els['uv-scan-counts'].textContent === keptEndedLabels.withheldEnded
     && els['uv-scan-done'].textContent.indexOf(keptEndedLabels.stoppedWithheld) === 0);
   UV.labels = keptEndedLabels;
+
+  // rvfix-N2. A group run stopped AFTER it proved its scope shows its counts,
+  // and its ending says they are the group's, as ScanPageView::endedSentence()
+  // does; it is not told that records could not be checked.
+  const endedP = (terminal, over) => withheld(Object.assign({ phase: 'terminal', terminal: terminal,
+    coverage: 'partial', active: false, mayCancel: false, clean: false, withheld: false, withheldWhy: null,
+    total: 5, done: 5, settled: 5, findings: 1 }, over || {}));
+  for (const t of ['cancelled', 'expired']) {
+    reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP(t) }]);
+    UV.start(); await ticks(6);
+    check('rvfix-N2 client: a group run ' + t + ' after it proved its scope says its counts are for the group',
+      els['uv-scan-done'].textContent.indexOf(UV.labels.stoppedProved) === 0
+      && els['uv-scan-done'].textContent.indexOf('could not be checked') === -1
+      && els['uv-scan-counts'].textContent.indexOf('5 of 5 records') === 0);
+  }
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP('cancelled', { detail: 'truncated' }) }]);
+  UV.start(); await ticks(6);
+  check('rvfix-N2 client: a truncated one still says findings were not kept',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.stoppedProved + ' ' + UV.labels.truncated) === 0);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP('cancelled', { scope: 'project' }) }]);
+  UV.start(); await ticks(6);
+  check('rvfix-N2 client control: a stopped whole-project run keeps the partial sentence',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.coverage.partial) === 0);
+  UV.labels = Object.assign({}, keptEndedLabels, { stoppedProved: undefined });
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: endedP('expired') }]);
+  UV.start(); await ticks(6);
+  check('rvfix-N2 client: and without the labels of the page it still says so',
+    els['uv-scan-done'].textContent.indexOf(keptEndedLabels.stoppedProved) === 0);
+  UV.labels = keptEndedLabels;
+
+  // W12-N4. A run an upgrade of the module ended says so wherever its ending
+  // is shown, as ScanPageView::endedSentence() does.
+  const upgradedSt = (over) => Object.assign(finished('failed'), { terminal: 'failed', upgraded: true }, over || {});
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt() }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client: a run an upgrade ended says so, not only that it failed',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.upgraded) === 0
+    && els['uv-scan-done'].textContent.indexOf(UV.labels.coverage.failed) === -1);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt({ detail: 'truncated' }) }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client: a truncated one still says findings were not kept',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.upgraded + ' ' + UV.labels.truncated) === 0);
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt({ upgraded: false }) }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client control: a failed run nothing upgraded keeps the failed sentence',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.coverage.failed) === 0);
+  const keptUpLabels = UV.labels;
+  UV.labels = Object.assign({}, keptUpLabels, { upgraded: undefined });
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: upgradedSt() }]);
+  UV.start(); await ticks(6);
+  check('W12-N4 client: and without the labels of the page it still says so',
+    els['uv-scan-done'].textContent.indexOf(keptUpLabels.upgraded) === 0);
+  UV.labels = keptUpLabels;
+
+  // CFXB-N4. EVERY ENDING, THE PANEL'S HALF. tests/scan_service_php.php walks
+  // each ending of a real run through its status, its findings answer and its
+  // file, requires one sentence of all three, and holds
+  // tests/scan_endings_fixture.json to the statuses it was given. Here the
+  // panel's own chooser (endedSentence() in js/scan.js) is given each of
+  // those statuses and must open on the same sentence.
+  const endings = JSON.parse(require('fs').readFileSync(path.join(__dirname, 'scan_endings_fixture.json'), 'utf8'));
+  check('CFXB-N4 client: the endings fixture has its cases', Array.isArray(endings.cases) && endings.cases.length >= 15);
+  for (const c of endings.cases) {
+    await show(Object.assign({ ok: true, run_id: 42, values: 'none', total: 0, done: 0, settled: 0, findings: 0,
+                               mayCancel: false, why: null }, c.status));
+    check('CFXB-N4 client: ' + c.name + ': the panel opens on the sentence the report and the file give (got '
+      + JSON.stringify(els['uv-scan-done'].textContent.slice(0, 80)) + ')',
+      typeof c.sentence === 'string' && c.sentence !== '' && els['uv-scan-done'].textContent.indexOf(c.sentence) === 0);
+  }
 
   process.stdout.write('scan_client_js: ' + n + ' checks, ' + fail + ' failure(s)\n');
   process.exit(fail ? 1 : 0);

@@ -48,7 +48,7 @@ final class FindingRowMapper
         // Schema versions 3 and 5: the day a value was judged against, and a
         // growth finding's z-score and reference (MessageCatalog's notes).
         'as_of', 'z_score', 'growth_reference',
-        // Schema version 6: a reason (@UVJUSTIFY) stands for the finding.
+        // Schema version 7: a reason (@UVJUSTIFY) stands for the finding.
         'justified',
     ];
 

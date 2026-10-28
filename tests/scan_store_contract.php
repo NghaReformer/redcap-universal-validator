@@ -35,9 +35,17 @@ namespace INSPIRE\UniversalValidator\Scan;
  *                            the run's plan row, which nothing in the module
  *                            does while a run plans (review R5-9). Null skips
  *                            that case.
+ * @param callable|null $setRun (ScanStore $store, int $runId, array $cols) => void:
+ *                            write run columns as stored, standing in for the
+ *                            hours between two writes that the reaper's clocks
+ *                            measure (review rv10a1-1). Null skips those cases.
+ * @param callable|null $audits (ScanStore $store, int $runId, string $event) => int:
+ *                            how many audit rows of that event the run has, which
+ *                            the interface cannot read back (review rvfix-N3).
+ *                            Null skips those cases.
  */
 function storeContract(callable $newStore, $label, callable $age, ?callable $clocked = null,
-                       ?callable $dropPlan = null)
+                       ?callable $dropPlan = null, ?callable $setRun = null, ?callable $audits = null)
 {
     $C = function ($what, $cond) use ($label) { \check("$label: $what", $cond); };
 
@@ -168,13 +176,20 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $batch['records'][$i]['version'] = '700';
     }
     $C('a fenced batch commits', $s->commitBatch($runId, 'w1', $epoch, $batch) === true);
-    $seen = $s->scannedVersions($runId, ['REC-1', 'REC-2']);
+    $hR = function ($id) { return hash('sha256', $id, true); };
+    $seen = $s->scannedVersions($runId, [$hR('REC-1'), $hR('REC-2')]);
     $C('and each record remembers the version it was examined at',
-        isset($seen['REC-1']['version']) && $seen['REC-1']['version'] === '700');
+        isset($seen[$hR('REC-1')]['version']) && $seen[$hR('REC-1')]['version'] === '700');
     $C('with its terminal state beside it',
-        (int) $seen['REC-1']['state'] === ScanStore::REC_DONE);
+        (int) $seen[$hR('REC-1')]['state'] === ScanStore::REC_DONE);
     $C('a record nobody has reached yet reports no version',
-        $s->scannedVersions($runId, ['REC-5'])['REC-5']['version'] === null);
+        $s->scannedVersions($runId, [$hR('REC-5')])[$hR('REC-5')]['version'] === null);
+    // W5F-N3. Asked by RECORD HASH, which is what uq_run_record (run_id,
+    // record_hash) finds a row by; the record id has no index, and naming a
+    // record by it finds nothing in either store.
+    $C('W5F-N3: the versions are asked for and answered by record hash, and a record id names nothing',
+        array_keys($seen) === [$hR('REC-1'), $hR('REC-2')]
+        && $s->scannedVersions($runId, ['REC-1', 'REC-2']) === []);
 
     // The state census is what the coverage predicate reads. Counted from the
     // rows, never accumulated: a counter can be incremented twice.
@@ -191,7 +206,7 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $s->reconcileAdd($runId, $epoch, [['id_bin' => 'REC-9',
             'hash' => hash('sha256', 'REC-9', true), 'dag' => null]]) === 0);
     $C('nor may a finished record be requeued from outside catch-up',
-        $s->requeue($runId, $epoch, ['REC-1']) === 0);
+        $s->requeue($runId, $epoch, [$hR('REC-1')]) === 0);
 
     // Aggregates ADD. A page that set the value would report only its own page.
     $s->addAggregate($runId, 'collection-gap', 'chest_xray', null, 3860);
@@ -214,6 +229,18 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('cancel succeeds on an active run', $s->cancel(700, $runId, 'admin') === true);
     $after = $s->run(700, $runId);
     $C('and bumps the lease epoch', (int) $after['lease_epoch'] === $epoch + 1);
+    // A RUN ALREADY STOPPING IS NOT STOPPED AGAIN (review rvfix-N3). A
+    // disable reads the run and then cancels it as the system's; a user's
+    // Stop between the two was audited twice and lost its sentence.
+    $C('rvfix-N3: a second stop of a run already stopping is refused',
+        $s->cancel(700, $runId, 'system') === false);
+    $C('rvfix-N3: and writes nothing: the epoch stays where the first stop put it',
+        (int) $s->run(700, $runId)['lease_epoch'] === $epoch + 1
+        && $s->run(700, $runId)['phase'] === ScanPhase::CANCELLING);
+    if ($audits !== null) {
+        $C('rvfix-N3: and the stop is audited once, as its first asker\'s',
+            $audits($s, $runId, 'cancel') === 1);
+    }
     $before = (int) $after['detail_rows'];
     $lost = ['bytes' => 5,
              'records' => [['ordinal' => 3, 'state' => ScanStore::REC_DONE,
@@ -1089,6 +1116,40 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('rv10a1-1: and a cancel takes the run away from the worker that was writing for it',
         $s13->holdRun($rid13, $ep13, $s13->run(756, $rid13)['phase']) === ScanStore::HOLD_TAKEN_OVER);
 
+    // -- A RUN THAT LEFT CATCH-UP SAYS SO, THROUGH ITS END (review rvf1-1) -----
+    //
+    // Stop and every ending overwrite the phase, so the row must keep the one
+    // fact a group-scoped run's counts hang on: it walked its window to the
+    // target fence. Written by the move out of catch-up and by nothing else.
+    $sl = $newStore();
+    $rl = (int) $sl->startRun(757, [])['run']['run_id'];
+    $sl->writeManifest($rl, [$mk5('C1')]);
+    $epL = (int) $sl->run(757, $rl)['lease_epoch'];
+    $sl->advancePhase($rl, $epL, ScanPhase::SCANNING);
+    $sl->advancePhase($rl, $epL, ScanPhase::CATCH_UP);
+    $C('rvf1-1: a run in catch-up has not left it',
+        (int) $sl->run(757, $rl)['catchup_dirty'] !== ScanStore::CAUGHT_UP);
+    $sl->advancePhase($rl, $epL, ScanPhase::UNIQUE);
+    $C('rvf1-1: the move out of catch-up writes that the run left it',
+        (int) $sl->run(757, $rl)['catchup_dirty'] === ScanStore::CAUGHT_UP);
+    $sl->advancePhase($rl, $epL, ScanPhase::ROLLUP);
+    $sl->cancel(757, $rl, 'alice');
+    $C('rvf1-1: and the row still says so once it is stopped',
+        (int) $sl->run(757, $rl)['catchup_dirty'] === ScanStore::CAUGHT_UP);
+    $sl->finish($rl, ScanOutcome::derive(['cancelled' => true]));
+    $C('rvf1-1: and once it has ended',
+        $sl->run(757, $rl)['phase'] === ScanPhase::TERMINAL
+        && (int) $sl->run(757, $rl)['catchup_dirty'] === ScanStore::CAUGHT_UP);
+    $rk = (int) $sl->startRun(758, [])['run']['run_id'];
+    $sl->writeManifest($rk, [$mk5('C2')]);
+    $epK = (int) $sl->run(758, $rk)['lease_epoch'];
+    $sl->advancePhase($rk, $epK, ScanPhase::SCANNING);
+    $sl->advancePhase($rk, $epK, ScanPhase::CATCH_UP);
+    $sl->cancel(758, $rk, 'alice');
+    $sl->finish($rk, ScanOutcome::derive(['cancelled' => true]));
+    $C('rvf1-1: a run stopped inside catch-up never says it left it',
+        (int) $sl->run(758, $rk)['catchup_dirty'] !== ScanStore::CAUGHT_UP);
+
     // -- A RUN NOBODY CAN FIND IS NOT COMPLETE (W6-N1) ------------------------
     //
     // The SQL store answered true here - no unfinished row, because no row at
@@ -1424,6 +1485,8 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('supersede: a run still in progress closes nothing, and is NOT done - it may yet complete',
         $live['done'] === false && $live['rows'] === 0 && is_string($live['why'])
         && count($sp->findings(795, $g1['gen'], ['dag' => null], [], 0, 100)) === 2);
+    $C('superseded by: nothing has replaced a run while the later one is still in progress',
+        $sp->supersededBy(795, $g1['run']) === null);
     $sp->finish($g2['run'], ScanOutcome::derive(['fenced' => true, 'manifestDone' => true,
                                                  'violations' => 1]));
     $C('supersede: the fixture run really did complete',
@@ -1482,6 +1545,18 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         && count($sp->findings(795, $gy['gen'], ['dag' => null], [], 0, 100)) === 1);
     $C('supersede: a run id nobody has is done with nothing to do',
         $sp->supersedePrevious(795, 987654321, 10)['done'] === true);
+    // WHICH RUN REPLACED A REPORT (reviews rv11a1-5, rv11a2-1): the earliest
+    // later whole-project run that completed. The partial and the cancelled
+    // run between the second and the last replace nothing.
+    $C('superseded by: a run is replaced by the next run of its project that completed',
+        $sp->supersededBy(795, $g1['run']) === $g2['run'] && $sp->supersededBy(795, $g2['run']) === $gy['run']);
+    $C('superseded by: a run that did not complete is replaced too, and replaces nothing',
+        $sp->supersededBy(795, $gx['run']) === $gy['run']);
+    $C('superseded by: the newest complete run is replaced by nothing',
+        $sp->supersededBy(795, $gy['run']) === null);
+    $C('superseded by: another project\'s id, and an id that is no run, are replaced by nothing',
+        $sp->supersededBy(796, $g1['run']) === null && $sp->supersededBy(795, 987654321) === null
+        && $sp->supersededBy(796, $nb['run']) === null);
 
     // ONLY A WHOLE-PROJECT RUN SUPERSEDES (review R8-1). A run scoped to one
     // data access group read that group's records and no others; it closed
@@ -1505,7 +1580,12 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('scope: and asking again changes nothing',
         $sd->supersedePrevious(797, $group['run'], 100) === $g
         && count($sd->findings(797, $whole['gen'], ['dag' => null], [], 0, 100)) === 3);
+    $C('superseded by: a run of one group replaces no report',
+        $sd->supersededBy(797, $whole['run']) === null && $sd->supersededBy(797, $group['run']) === null);
     $next = $scan($sd, 797, [[[]]], 'complete');
+    $C('superseded by: the next whole-project run replaces both, the group\'s run included',
+        $sd->supersededBy(797, $whole['run']) === $next['run']
+        && $sd->supersededBy(797, $group['run']) === $next['run'] && $sd->supersededBy(797, $next['run']) === null);
     $closed = 0;
     $calls = 0;
     do {
@@ -1813,14 +1893,30 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         && $activeD() === ['L1', 'L2', 'L3', 'L4']);
     $sd->advancePhase($rd, $epD, ScanPhase::CATCH_UP);
     $C('depart: refused at another lease epoch', $sd->depart($rd, $epD + 1, [$hD('L2')]) === 0);
-    $sd->tombstone($rd, $epD, ['L3']);
+    $C('W5F-N3: in catch-up, a tombstone or a requeue that names records by id moves nothing',
+        $sd->tombstone($rd, $epD, ['L3']) === 0 && $sd->requeue($rd, $epD, ['L4']) === 0
+        && $sd->recordStates($rd) === [ScanStore::REC_DONE => 4]);
+    $C('W5F-N3: by record hash, the tombstone moves its one row',
+        $sd->tombstone($rd, $epD, [$hD('L3')]) === 1);
+    // W5F-N4. A record deleted during the run has its findings in the run
+    // closed with it, as depart() closes a departed one's: the run reports
+    // on records the project holds, and counts this one as removed.
+    $C('W5F-N4: a tombstone closes the deleted record\'s findings in the run, and no other record\'s',
+        $activeD() === ['L1', 'L2', 'L4']);
+    $stN4 = $sd->recordStates($rd);
+    ksort($stN4);
+    $C('W5F-N4: the run counts it removed and finished, not done',
+        $stN4 === [ScanStore::REC_DONE => 3, ScanStore::REC_TOMBSTONE => 1]
+        && (int) $sd->run(746, $rd)['manifest_done'] === 4);
+    $C('W5F-N4: tombstoning it again moves nothing and closes nothing',
+        $sd->tombstone($rd, $epD, [$hD('L3')]) === 0 && $activeD() === ['L1', 'L2', 'L4']);
     $nD = $sd->depart($rd, $epD, [$hD('L2'), $hD('L3')]);
     $stD = $sd->recordStates($rd);
     $C('depart: a record that left the group departs, and a deleted one stays a tombstone',
         $nD === 1 && isset($stD[ScanStore::REC_DEPARTED]) && $stD[ScanStore::REC_DEPARTED] === 1
         && $stD[ScanStore::REC_TOMBSTONE] === 1 && $stD[ScanStore::REC_DONE] === 2);
     $C('depart: its findings in the run are closed, and no other record\'s',
-        $activeD() === ['L1', 'L3', 'L4']);
+        $activeD() === ['L1', 'L4']);
     $C('depart: the run counts it finished, so it holds nothing open',
         (int) $sd->run(746, $rd)['manifest_done'] === 4 && $sd->manifestComplete($rd) === true);
     $C('depart: departedOf() names it, and no other',
@@ -1828,15 +1924,370 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
     $C('depart: departing it again moves nothing', $sd->depart($rd, $epD, [$hD('L2')]) === 0);
     // The worker's half: a record it finds in another group is committed
     // departed, and the commit closes its findings as a re-examination would.
-    $sd->requeue($rd, $epD, ['L4']);
+    $sd->requeue($rd, $epD, [$hD('L4')]);
     $cD4 = $sd->claimPending($rd, 'w2', $epD, 10);
     $okD4 = is_array($cD4) && count($cD4) === 1 && $sd->commitBatch($rd, 'w2', $epD,
         ['bytes' => 0, 'records' => [['ordinal' => $cD4[0]['ordinal'], 'record_hash' => $cD4[0]['hash'],
             'state' => ScanStore::REC_DEPARTED, 'version' => null, 'claim' => $cD4[0]['claim']]],
          'findings' => []]) === true;
     $C('depart: a batch that commits a record departed closes its findings with it',
-        $okD4 && $activeD() === ['L1', 'L3']
+        $okD4 && $activeD() === ['L1']
         && $sd->departedOf($rd, [$hD('L4')]) === [$hD('L4') => true]);
+    // A RUN SOMEBODY STOPPED IS NOT ABANDONED (review rv10a1-2), however long
+    // it has sat in `cancelling`: it ends as cancelled, by the finisher Stop
+    // uses, and an expiry would write "abandoned" over the stop.
+    $sc = $newStore();
+    $rc = (int) $sc->startRun(792, ['created_by' => 'alice'])['run']['run_id'];
+    $sc->cancel(792, $rc, 'alice');
+    $C('reap: a run left cancelling is not expired, however stale',
+        $sc->expireAbandoned(792, 24, 'cron', $later) === 0
+        && $sc->run(792, $rc)['phase'] === ScanPhase::CANCELLING && $sc->run(792, $rc)['terminal'] === null);
+
+    // THE CLOCK IS THE STATUS PAGE'S (review rv10a1-1). In catch-up and the two
+    // finalizers nothing moves progress_at and nothing renews the lease, and
+    // every step moves updated_at: the last record finished thirty hours ago,
+    // the finalizer touched the run five seconds ago, and the page calls it
+    // working. Scanning keeps the progress clock, because there updated_at is
+    // what a claim refreshes on a run whose every batch is refused.
+    if ($setRun !== null) {
+        $long = gmdate('Y-m-d H:i:s', time() - 30 * 3600);
+        $recent = gmdate('Y-m-d H:i:s', time() - 5);
+        foreach (array_merge(ScanPhase::ON_THE_UPDATE_CLOCK, [ScanPhase::SCANNING]) as $i => $ph) {
+            $sp = $newStore();
+            $pp = 788 + $i;
+            $rp = (int) $sp->startRun($pp, ['created_by' => 'alice'])['run']['run_id'];
+            $setRun($sp, $rp, ['phase' => $ph, 'progress_at' => $long, 'updated_at' => $recent,
+                               'lease_expires_at' => null]);
+            $onUpdate = $ph !== ScanPhase::SCANNING;
+            $C('reap: in ' . $ph . ', a run touched seconds ago after thirty hours without a record '
+                . ($onUpdate ? 'is working, not abandoned' : 'is abandoned: a touch is no progress there'),
+                $sp->expireAbandoned($pp, 24, 'cron') === ($onUpdate ? 0 : 1));
+            if (!$onUpdate) continue;
+            $setRun($sp, $rp, ['updated_at' => $long]);
+            $C('reap: and in ' . $ph . ', once nothing has touched it for the window either, it is expired',
+                $sp->expireAbandoned($pp, 24, 'cron') === 1
+                && $sp->run($pp, $rp)['terminal'] === ScanOutcome::EXPIRED);
+        }
+
+        // A RUN RETENTION HAS BEGUN REMOVING IS NO RUN (review rv10a1-3).
+        // purgeRuns() marks the row before its first page and deletes it after
+        // its last; in between, every reader answers as it will afterwards.
+        $sm = $newStore();
+        $rm = (int) $sm->startRun(793, ['created_by' => 'alice'])['run']['run_id'];
+        $sm->finish($rm, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+        $rn = (int) $sm->startRun(793, ['created_by' => 'alice'])['run']['run_id'];
+        $sm->finish($rn, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+        $C('remove: a finished run reads as itself', $sm->run(793, $rm) !== null);
+        $setRun($sm, $rm, ['terminal_reason' => ScanStore::REMOVING_WHY]);
+        $C('remove: once retention has begun removing it, it reads as no run, and the next run is untouched',
+            $sm->run(793, $rm) === null && $sm->run(793, $rn) !== null);
+
+        // A RUN STARTS AT ITS PROJECT'S REVISION NOW (W10A-N1). The retention
+        // cron moves a project's runs to a higher revision when its privacy
+        // policy tightens; a run started after that starts there, not at 1,
+        // so a repeat of the bump does not reach it. Another project's
+        // revision is not this one's.
+        $sv = $newStore();
+        $ra = $sv->startRun(794, ['created_by' => 'alice'])['run'];
+        $C('revision: a project\'s first run starts at revision 1', (int) $ra['policy_revision'] === 1);
+        $sv->finish((int) $ra['run_id'], ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+        $setRun($sv, (int) $ra['run_id'], ['policy_revision' => 3]);
+        $rb = $sv->startRun(794, ['created_by' => 'alice'])['run'];
+        $rc = $sv->startRun(795, ['created_by' => 'alice'])['run'];
+        $C('revision: a later run starts at the project\'s highest revision, and only its own project\'s',
+            (int) $rb['policy_revision'] === 3 && (int) $sv->run(794, (int) $rb['run_id'])['policy_revision'] === 3
+            && (int) $rc['policy_revision'] === 1);
+    }
+
+    // -- what the detail budget left out, per record (review rvf1-3) -------
+    //
+    // A record committed done keeps its left-out count on its row and the
+    // run's open_unstored grows by it. A deleted or departed record takes it
+    // back; a requeued one keeps it until its next reading replaces it
+    // (reviews rvc2-2, rvc1-2).
+    $su = $newStore();
+    $ru = (int) $su->startRun(747, ['created_by' => 'alice'])['run']['run_id'];
+    $hU = function ($id) { return hash('sha256', $id, true); };
+    $su->writeManifest($ru, array_map(function ($id) use ($hU) {
+        return ['id_bin' => $id, 'hash' => $hU($id), 'dag' => null];
+    }, ['U1', 'U2', 'U3', 'U4']));
+    $epU = (int) $su->run(747, $ru)['lease_epoch'];
+    $openU = function () use ($su, $ru) {
+        $v = $su->run(747, $ru)['open_unstored'];
+        return $v === null ? null : (int) $v;
+    };
+    $C('rvf1-3: a run created now starts with nothing left out, not with no count',
+        $openU() === 0);
+    $bU = ['bytes' => 0, 'records' => [], 'findings' => [], 'unstored' => []];
+    foreach ($su->claim($ru, 'w1', $epU, 4) as $c) {
+        $done = $c['id_bin'] !== 'U4';
+        $bU['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '10',
+                            'state' => $done ? ScanStore::REC_DONE : ScanStore::REC_TOMBSTONE,
+                            'claim' => $c['claim']];
+        $left = ['U1' => 2, 'U2' => 3, 'U3' => 0, 'U4' => 5];
+        if ($left[$c['id_bin']] > 0) $bU['unstored'][$c['ordinal']] = $left[$c['id_bin']];
+    }
+    $C('rvf1-3: the batch commits', $su->commitBatch($ru, 'w1', $epU, $bU) === true);
+    $C('rvf1-3: the run holds what its done records left out, and a record committed in any other state holds none',
+        $openU() === 5);
+    $su->advancePhase($ru, $epU, ScanPhase::CATCH_UP);
+    $C('rvc2-2: a record sent back to be read again keeps its count until its next reading',
+        $su->requeue($ru, $epU, [$hU('U1')]) === 1 && $openU() === 5);
+    $C('rvf1-3: a record that left the run\'s group gives its count back',
+        $su->depart($ru, $epU, [$hU('U2')]) === 1 && $openU() === 2);
+    $C('rvf1-3: a record read again keeps only what its new reading left out',
+        (function () use ($su, $ru, $epU, $openU) {
+            $c = $su->claimPending($ru, 'w2', $epU, 10);
+            if (!is_array($c) || count($c) !== 1) return false;
+            $ok = $su->commitBatch($ru, 'w2', $epU, ['bytes' => 0, 'findings' => [],
+                'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                               'state' => ScanStore::REC_DONE, 'version' => '11', 'claim' => $c[0]['claim']]],
+                'unstored' => [$c[0]['ordinal'] => 4]]) === true;
+            return $ok && $openU() === 4;
+        })());
+    $C('rvf1-3: and a deleted record gives its count back',
+        $su->tombstone($ru, $epU, [$hU('U1')]) === 1 && $openU() === 0);
+    $C('rvf1-3: requeueing, departing or deleting again takes nothing more back',
+        $su->requeue($ru, $epU, [$hU('U3')]) === 1 && $su->depart($ru, $epU, [$hU('U2')]) === 0
+        && $su->tombstone($ru, $epU, [$hU('U1')]) === 0 && $openU() === 0);
+
+    // -- what the run's records still hold, stored (review W5F-N2) ---------
+    //
+    // detail_rows counts every finding row the run wrote. open_findings
+    // counts those of the readings its records hold, which are its active
+    // rows: each held record keeps its stored count on its row, a deleted or
+    // departed record takes it back with its rows, and a requeued one keeps
+    // both until its next reading replaces them (reviews rvc2-2, rvc1-2).
+    $sk = $newStore();
+    $rk = (int) $sk->startRun(749, ['created_by' => 'alice'])['run']['run_id'];
+    $rowK = $sk->run(749, $rk);
+    $epK = (int) $rowK['lease_epoch'];
+    $genK = (int) $rowK['generation_id'];
+    $hK = function ($id) { return hash('sha256', $id, true); };
+    $sk->writeManifest($rk, array_map(function ($id) use ($hK) {
+        return ['id_bin' => $id, 'hash' => $hK($id), 'dag' => null];
+    }, ['K1', 'K2', 'K3', 'K4']));
+    $findingK = function ($ord, $id, $n) use ($genK, $rowK, $hK) {
+        return ['ordinal' => $ord, 'project_id' => 749, 'generation_id' => $genK,
+                'host_form' => 'fa', 'field' => 'x' . $n, 'check_type' => 'required',
+                'reason_code' => 'required-blank', 'record_id_bin' => $id,
+                'identity' => hash('sha256', 'k' . $id . '|' . $n, true),
+                'valid_from_seq' => (int) $rowK['run_seq'], 'record_hash' => $hK($id),
+                'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64)];
+    };
+    $openK = function () use ($sk, $rk) {
+        $v = $sk->run(749, $rk)['open_findings'];
+        return $v === null ? null : (int) $v;
+    };
+    $activeK = function () use ($sk, $genK) {
+        return count($sk->findings(749, $genK, ['dag' => null], [], 0, 100));
+    };
+    $C('W5F-N2: a run created now starts holding no finding, not with no count', $openK() === 0);
+    $bK = ['bytes' => 0, 'records' => [], 'findings' => []];
+    foreach ($sk->claim($rk, 'w1', $epK, 4) as $c) {
+        $bK['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '10',
+                            'state' => $c['id_bin'] === 'K4' ? ScanStore::REC_TOMBSTONE : ScanStore::REC_DONE,
+                            'claim' => $c['claim']];
+        $many = ['K1' => 2, 'K2' => 1, 'K3' => 0, 'K4' => 0];
+        for ($i = 0; $i < $many[$c['id_bin']]; $i++) $bK['findings'][] = $findingK($c['ordinal'], $c['id_bin'], $i);
+    }
+    $C('W5F-N2: the batch commits', $sk->commitBatch($rk, 'w1', $epK, $bK) === true);
+    $C('W5F-N2: the run holds the 3 findings its records stored, as the table does',
+        $openK() === 3 && (int) $sk->run(749, $rk)['detail_rows'] === 3 && $activeK() === 3);
+    $sk->advancePhase($rk, $epK, ScanPhase::CATCH_UP);
+    $C('rvc2-2: a record sent back to be read again keeps its count and its findings, so the count is the rows',
+        $sk->requeue($rk, $epK, [$hK('K1')]) === 1 && $openK() === 3 && $activeK() === 3);
+    $C('W5F-N2: a record read again holds its new reading only, the old one superseded',
+        (function () use ($sk, $rk, $epK, $openK, $activeK, $findingK) {
+            $c = $sk->claimPending($rk, 'w2', $epK, 10);
+            if (!is_array($c) || count($c) !== 1) return false;
+            $ok = $sk->commitBatch($rk, 'w2', $epK, ['bytes' => 0,
+                'findings' => [$findingK($c[0]['ordinal'], 'K1', 9)],
+                'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                               'state' => ScanStore::REC_DONE, 'version' => '11', 'claim' => $c[0]['claim']]]]) === true;
+            return $ok && $openK() === 2 && $activeK() === 2
+                && (int) $sk->run(749, $rk)['detail_rows'] === 4;
+        })());
+    $C('W5F-N2: a record that left the run\'s group gives its count back with its findings',
+        $sk->depart($rk, $epK, [$hK('K2')]) === 1 && $openK() === 1 && $activeK() === 1);
+    $C('W5F-N2: and a deleted record gives its count back with its findings',
+        $sk->tombstone($rk, $epK, [$hK('K1')]) === 1 && $openK() === 0 && $activeK() === 0);
+    $C('W5F-N2: requeueing, departing or deleting again takes nothing more back',
+        $sk->requeue($rk, $epK, [$hK('K3')]) === 1 && $sk->depart($rk, $epK, [$hK('K2')]) === 0
+        && $sk->tombstone($rk, $epK, [$hK('K1')]) === 0 && $openK() === 0
+        && (int) $sk->run(749, $rk)['detail_rows'] === 4);
+
+    // -- a requeued record's reading, replaced whatever comes next (reviews rvc2-2, rvc1-2)
+    //
+    // The run's count is its active rows in every state. requeue() leaves the
+    // record its reading. The record's next commit replaces it in any
+    // terminal state, so one that is then unreadable or unstable gives its
+    // rows and counts up; so does one retired out of attempts, by
+    // noteAttempts() or by a takeover in claimPending(). One written back
+    // below done keeps its reading. These rows used to stay active with
+    // nothing counting them.
+    $sq = $newStore();
+    $rq = (int) $sq->startRun(751, ['created_by' => 'alice'])['run']['run_id'];
+    $rowQ = $sq->run(751, $rq);
+    $epQ = (int) $rowQ['lease_epoch'];
+    $genQ = (int) $rowQ['generation_id'];
+    $hQ = function ($id) { return hash('sha256', 'q' . $id, true); };
+    $sq->writeManifest($rq, array_map(function ($id) use ($hQ) {
+        return ['id_bin' => $id, 'hash' => $hQ($id), 'dag' => null];
+    }, ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']));
+    $countQ = function ($col) use ($sq, $rq) {
+        $v = $sq->run(751, $rq)[$col];
+        return $v === null ? null : (int) $v;
+    };
+    $activeQ = function () use ($sq, $genQ) {
+        $out = [];
+        foreach ($sq->findings(751, $genQ, ['dag' => null], [], 0, 100) as $f) $out[] = (string) $f['record_id_bin'];
+        sort($out);
+        return $out;
+    };
+    $bQ = ['bytes' => 0, 'records' => [], 'findings' => [], 'unstored' => []];
+    foreach ($sq->claim($rq, 'w1', $epQ, 5) as $c) {
+        $bQ['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '10',
+                            'state' => ScanStore::REC_DONE, 'claim' => $c['claim']];
+        $bQ['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => 751, 'generation_id' => $genQ,
+            'host_form' => 'fa', 'field' => 'x', 'check_type' => 'required', 'reason_code' => 'required-blank',
+            'record_id_bin' => $c['id_bin'], 'identity' => hash('sha256', 'q|' . $c['id_bin'], true),
+            'valid_from_seq' => (int) $rowQ['run_seq'], 'record_hash' => $c['hash'],
+            'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64)];
+        if ($c['id_bin'] === 'Q1') $bQ['unstored'][$c['ordinal']] = 2;
+    }
+    $C('rvc1-2: the fixture stores one finding for each of five records, and leaves two of one record out',
+        $sq->commitBatch($rq, 'w1', $epQ, $bQ) === true && $countQ('open_findings') === 5
+        && $countQ('open_unstored') === 2 && count($activeQ()) === 5);
+    $sq->advancePhase($rq, $epQ, ScanPhase::CATCH_UP);
+    $C('rvc2-2: four records sent back to be read again keep their readings: count, left-out count and rows',
+        $sq->requeue($rq, $epQ, [$hQ('Q1'), $hQ('Q2'), $hQ('Q3'), $hQ('Q4')]) === 4
+        && $countQ('open_findings') === 5 && $countQ('open_unstored') === 2 && count($activeQ()) === 5);
+    $cQ = $sq->claimPending($rq, 'w2', $epQ, 10);
+    $ordQ = [];
+    foreach (is_array($cQ) ? $cQ : [] as $c) $ordQ[$c['id_bin']] = $c;
+    $C('rvc1-2: the fixture takes the four back out', count($ordQ) === 4);
+    $recQ = function ($id, $state) use ($ordQ) {
+        return ['ordinal' => $ordQ[$id]['ordinal'], 'record_hash' => $ordQ[$id]['hash'], 'version' => '11',
+                'state' => $state, 'claim' => $ordQ[$id]['claim']];
+    };
+    $okQ = count($ordQ) === 4 && $sq->commitBatch($rq, 'w2', $epQ, ['bytes' => 0, 'findings' => [],
+        'records' => [$recQ('Q1', ScanStore::REC_UNREADABLE), $recQ('Q2', ScanStore::REC_UNSTABLE),
+                      $recQ('Q3', ScanStore::REC_PENDING)]]) === true;
+    $C('rvc1-2: a requeued record committed unreadable or unstable gives up its reading: rows and counts',
+        $okQ && $countQ('open_findings') === 3 && $countQ('open_unstored') === 0
+        && $activeQ() === ['Q3', 'Q4', 'Q5']);
+    $C('rvc1-2: one written back to be read again keeps it',
+        in_array('Q3', $activeQ(), true));
+    $C('rvc1-2: a requeued record retired out of attempts gives up its reading',
+        count($ordQ) === 4
+        && $sq->noteAttempts($rq, $epQ, 'w2', [$ordQ['Q4']['ordinal'] => $ordQ['Q4']['claim']], 1,
+                             ScanStore::REC_UNREADABLE)['retired'] === 1
+        && $countQ('open_findings') === 2 && $activeQ() === ['Q3', 'Q5']);
+    // Q3 is pending again with two attempts counted. A worker takes it and
+    // dies; the takeover at the limit retires it.
+    $dQ = $sq->claimPending($rq, 'w3', $epQ, 10);
+    $age($sq, $rq, 1000);
+    $retQ = -1;
+    $C('rvc1-2: and so does one a takeover retires',
+        is_array($dQ) && count($dQ) === 1
+        && $sq->claimPending($rq, 'w4', $epQ, 10, 900, 3, ScanStore::REC_UNREADABLE, $retQ) === [] && $retQ === 1
+        && $countQ('open_findings') === 1 && $activeQ() === ['Q5']);
+
+    // A published duplicate group goes into the count with its rows
+    // (ScanStore::notePublished(), reviews rvc2-2, CONS-N1).
+    $sq->notePublished($rq, 3, 0);
+    $C('CONS-N1: a published duplicate group adds the rows it made active', $countQ('open_findings') === 4);
+    $sq->notePublished($rq, 2, 3);
+    $C('CONS-N1: and takes back the rows of an earlier staging it closed', $countQ('open_findings') === 3);
+    $sq->notePublished($rq, 0, 50);
+    $C('CONS-N1: never below 0', $countQ('open_findings') === 0);
+    if ($setRun !== null) {
+        $setRun($sq, $rq, ['open_findings' => null]);
+        $sq->notePublished($rq, 4, 0);
+        $C('CONS-N1: and a run from before the count keeps NULL', $countQ('open_findings') === null);
+    }
+
+    // -- the justified parts of the counts (@UVJUSTIFY, schema version 8) ----
+    //
+    // Each count a record keeps has its justified part beside it, kept by the
+    // same statements: stored_justified and unstored_justified on the row,
+    // open_justified and open_unstored_justified on the run. A record read
+    // again replaces both parts with its new reading's; one that departs, is
+    // deleted or is retired gives both back. detail_justified only grows.
+    $sj = $newStore();
+    $rj = (int) $sj->startRun(753, ['created_by' => 'alice'])['run']['run_id'];
+    $rowJ = $sj->run(753, $rj);
+    $epJ = (int) $rowJ['lease_epoch'];
+    $genJ = (int) $rowJ['generation_id'];
+    $hJ = function ($id) { return hash('sha256', 'j' . $id, true); };
+    $sj->writeManifest($rj, array_map(function ($id) use ($hJ) {
+        return ['id_bin' => $id, 'hash' => $hJ($id), 'dag' => null];
+    }, ['J1', 'J2', 'J3', 'J4']));
+    $findingJ = function ($ord, $id, $n, $justified) use ($genJ, $rowJ, $hJ) {
+        return ['ordinal' => $ord, 'project_id' => 753, 'generation_id' => $genJ,
+                'host_form' => 'fa', 'field' => 'x' . $n, 'check_type' => 'required',
+                'reason_code' => 'required-blank', 'record_id_bin' => $id,
+                'identity' => hash('sha256', 'j' . $id . '|' . $n, true),
+                'valid_from_seq' => (int) $rowJ['run_seq'], 'record_hash' => $hJ($id),
+                'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+                'justified' => $justified ? 1 : 0];
+    };
+    // [open_findings, open_justified, open_unstored, open_unstored_justified, detail_justified]
+    $countsJ = function () use ($sj, $rj) {
+        $r = $sj->run(753, $rj);
+        $out = [];
+        foreach (['open_findings', 'open_justified', 'open_unstored', 'open_unstored_justified', 'detail_justified'] as $col) {
+            $out[] = $r[$col] === null ? null : (int) $r[$col];
+        }
+        return $out;
+    };
+    $C('JUSTIFY: a run created now starts every justified count at 0, not with no count',
+        $countsJ() === [0, 0, 0, 0, 0]);
+    $bJ = ['bytes' => 0, 'records' => [], 'findings' => [], 'unstored' => [], 'unstoredJustified' => []];
+    foreach ($sj->claim($rj, 'w1', $epJ, 4) as $c) {
+        $id = $c['id_bin'];
+        $bJ['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => '10',
+                            'state' => $id === 'J4' ? ScanStore::REC_TOMBSTONE : ScanStore::REC_DONE,
+                            'claim' => $c['claim']];
+        // J1: one open and one justified stored, three left out, one of them justified.
+        // J2: one justified stored, two left out, both justified. J3: one open stored.
+        $stored = ['J1' => [false, true], 'J2' => [true], 'J3' => [false], 'J4' => []];
+        foreach ($stored[$id] as $n => $j) $bJ['findings'][] = $findingJ($c['ordinal'], $id, $n, $j);
+        $left = ['J1' => [3, 1], 'J2' => [2, 2], 'J3' => [0, 0], 'J4' => [0, 0]];
+        if ($left[$id][0] > 0) $bJ['unstored'][$c['ordinal']] = $left[$id][0];
+        if ($left[$id][1] > 0) $bJ['unstoredJustified'][$c['ordinal']] = $left[$id][1];
+    }
+    $C('JUSTIFY: the batch commits', $sj->commitBatch($rj, 'w1', $epJ, $bJ) === true);
+    $C('JUSTIFY: the run keeps each count with its justified part (got ' . json_encode($countsJ()) . ')',
+        $countsJ() === [4, 2, 5, 3, 2]);
+    $sj->advancePhase($rj, $epJ, ScanPhase::CATCH_UP);
+    $C('JUSTIFY: a record sent back to be read again keeps both parts until its next reading',
+        $sj->requeue($rj, $epJ, [$hJ('J1')]) === 1 && $countsJ() === [4, 2, 5, 3, 2]);
+    $C('JUSTIFY: a record read again holds its new reading\'s parts only, and detail_justified does not shrink',
+        (function () use ($sj, $rj, $epJ, $countsJ, $findingJ) {
+            $c = $sj->claimPending($rj, 'w2', $epJ, 10);
+            if (!is_array($c) || count($c) !== 1) return false;
+            $ok = $sj->commitBatch($rj, 'w2', $epJ, ['bytes' => 0,
+                'findings' => [$findingJ($c[0]['ordinal'], 'J1', 9, false)],
+                'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                               'state' => ScanStore::REC_DONE, 'version' => '11', 'claim' => $c[0]['claim']]],
+                'unstored' => [$c[0]['ordinal'] => 1]]) === true;
+            return $ok && $countsJ() === [3, 1, 3, 2, 2];
+        })());
+    $C('JUSTIFY: a record that left the run\'s group gives both parts back (got ' . json_encode($countsJ()) . ')',
+        $sj->depart($rj, $epJ, [$hJ('J2')]) === 1 && $countsJ() === [2, 0, 1, 0, 2]);
+    $C('JUSTIFY: so does a deleted record',
+        $sj->tombstone($rj, $epJ, [$hJ('J3')]) === 1 && $countsJ() === [1, 0, 1, 0, 2]);
+    $C('JUSTIFY: and a record retired out of attempts',
+        (function () use ($sj, $rj, $epJ, $hJ, $countsJ) {
+            if ($sj->requeue($rj, $epJ, [$hJ('J1')]) !== 1) return false;
+            $c = $sj->claimPending($rj, 'w3', $epJ, 10);
+            if (!is_array($c) || count($c) !== 1) return false;
+            return $sj->noteAttempts($rj, $epJ, 'w3', [$c[0]['ordinal'] => $c[0]['claim']], 1,
+                                     ScanStore::REC_UNREADABLE)['retired'] === 1
+                && $countsJ() === [0, 0, 0, 0, 2];
+        })());
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //

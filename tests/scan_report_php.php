@@ -166,7 +166,12 @@ namespace {
             'event_id' => ($ev === null || $ev === '' || (int) $ev === 0) ? null : $ev,
             'instance' => (int) $cand['instance'], 'host_form' => $cand['host_form'], 'field' => $cand['field'],
             'rule_source_id' => $cand['rule_source_id'], 'rule_ord' => (int) $ord, 'check_type' => 'unique',
-            'reason_code' => \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON, 'reason_bits' => 0,
+            'reason_code' => \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON,
+            // UniqueFinalizer::emit(): the branch the candidate was stored
+            // with (rv11a2-2), 0 when it was stored with none.
+            'reason_bits' => \INSPIRE\UniversalValidator\Scan\ReasonCode::bits(
+                \INSPIRE\UniversalValidator\Scan\ReasonCode::split(\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON),
+                isset($cand['branch']) ? (int) $cand['branch'] : null),
             'dag_key' => $dag,
             'value_bin' => null, 'value_len' => null, 'value_truncated' => 0, 'value_expires_at' => null,
             'as_of' => null, 'z_score' => null, 'growth_reference' => null, 'justified' => 0,
@@ -400,8 +405,8 @@ namespace {
             $written !== []
             && array_intersect(['value_bin', 'value_len', 'value_truncated', 'value_expires_at'],
                                array_keys($written)) === []
-            && $written['rule_ord'] === '?' && $written['dag_key'] === '?' && $written['reason_bits'] === '0'
-            && strpos($fin, "\$ord, 'unique', self::REASON, \$dag, \$g['group_hmac']") !== false
+            && $written['rule_ord'] === '?' && $written['dag_key'] === '?' && $written['reason_bits'] === '?'
+            && strpos($fin, "\$ord, 'unique', self::REASON, \$bits, \$dag, \$g['group_hmac']") !== false
             && \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::REASON === 'duplicate-value');
 
         // The group a duplicate is given is read off the record node by
@@ -438,6 +443,53 @@ namespace {
             $prod === $mine && array_keys($mine) === ['p', 'q', 'r', 's']);
         check('identifier flags: no dictionary is "could not tell", not "none"',
             ScanDimensions::build(PID, [], [])->identifiers === null);
+
+        // A BRANCHED @UVUNIQUE DUPLICATE READS WITH ITS BRANCH (review
+        // rv11a2-2). The candidate table had no branch column, so the
+        // finalizer stored 0 and the duplicate read with no branch's message.
+        // The column is there now; the evaluator has to fill it, or the
+        // finalizer still has nothing to store.
+        $bDict = dict([
+            'record_id' => [],
+            'grp'  => [],
+            'code' => ['@UVUNIQUE={"when":"[grp]=\'2\'","message":"Female code taken."} '
+                       . '@UVUNIQUE={"when":"[grp]=\'1\'","message":"Male code taken."}'],
+        ]);
+        $bData = ['B-1' => [1 => ['record_id' => 'B-1', 'grp' => '1', 'code' => 'X1']],
+                  'B-2' => [1 => ['record_id' => 'B-2', 'grp' => '1', 'code' => 'X1']]];
+        $bm = mkMod($bDict, $bData);
+        $bLegacy = $bm->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']);
+        $bCtx = $bm->durableScanContext(PID, ['valueCeiling' => 'raw', 'generation' => 7, 'runSeq' => 7]);
+        $bd = $bm->scanDimensions(PID);
+        foreach ($bCtx['plan']['ruleIds'] as $i => $id) $bd->rulesBySource[$id['source_id']] = $i + 1;
+        $bOrd = \INSPIRE\UniversalValidator\Scan\ScanService::ruleOrdinals($bCtx['plan']);
+        $bWas = [];
+        foreach ($bLegacy['violations'] as $v) {
+            if ($v['type'] === 'unique') $bWas[$v['record']] = ScanColumns::row($v, $bd);
+        }
+        $bIs = [];
+        $bBranches = [];
+        foreach ($bData as $rid => $node) {
+            foreach ($bCtx['evaluate']($rid, $node)['candidates'] as $i => $c) {
+                $bBranches[] = isset($c['branch']) ? $c['branch'] : null;
+                $o = isset($bOrd[$c['rule_source_id']]) ? $bOrd[$c['rule_source_id']] : 0;
+                $bIs[$c['record_id_bin']] = ScanColumns::row(mapper()->toFinding(finalized($c, 200 + $i, $o)), $bd);
+            }
+        }
+        ksort($bWas); ksort($bIs);
+        // The finalizer keeps no value for a duplicate (RP-1), so the value
+        // cell is the one column the two reports are allowed to differ in.
+        $bValues = array_column($bIs, 'value');
+        $noValue = function ($rows) {
+            foreach ($rows as $k => $r) unset($rows[$k]['value']);
+            return $rows;
+        };
+        check('rv11a2-2: the evaluator hands each candidate the branch that judged it',
+            count($bBranches) === 2 && !in_array(null, $bBranches, true) && count(array_unique($bBranches)) === 1);
+        check('rv11a2-2: and the stored duplicate reads as the legacy report reads it, the branch\'s message included',
+            count($bWas) === 2 && $noValue($bWas) === $noValue($bIs)
+            && $bValues === ['[not kept by this scan]', '[not kept by this scan]']
+            && $bIs['B-1']['problem'] === 'Male code taken.');
     }
 
     /* =====================================================================
@@ -729,6 +781,40 @@ namespace {
         check('record ids (control): any other log mode names records raw, with no hasher',
             $rawPosture['recordIds'] === FindingRowMapper::IDS_RAW && $rawPosture['hashRecordId'] === null
             && mapper($rawPosture)->toFinding(row(['record_id_bin' => 'PATIENT-0042']))['record'] === 'PATIENT-0042');
+        // rvc2-4: A "log-values" READ THAT THROWS HASHES. The posture asked
+        // logMode(), whose answer to a failed read was "hashed" - for the log,
+        // values kept out; for a report, raw record ids.
+        $failing = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
+            public $logValuesThrows = true;
+            public function getProjectSetting($k, $pid = null) {
+                if ($k === 'log-values' && $this->logValuesThrows) throw new \RuntimeException('settings read failed');
+                return parent::getProjectSetting($k, $pid);
+            }
+        };
+        $failing->projectSettings = ['log-values' => 'hashed', 'scan-value-storage' => 'raw'];
+        $failing->projectIdReturn = PID;
+        $fp = $failing->scanRecordIdPosture(PID);
+        check('record ids rvc2-4: a log-values read that throws names records hashed, not raw',
+            $fp['recordIds'] === FindingRowMapper::IDS_HASHED && is_callable($fp['hashRecordId'])
+            && mapper($fp)->toFinding(row(['record_id_bin' => 'PATIENT-0042']))['record'] !== 'PATIENT-0042');
+        $legacyFail = $failing->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']);
+        $legacyShown = isset($legacyFail['violations'][0]['record']) ? $legacyFail['violations'][0]['record'] : null;
+        check('record ids rvc2-4: and so does the legacy report',
+            is_string($legacyShown) && $legacyShown !== 'PATIENT-0042' && strpos(json_encode($legacyFail), 'PATIENT-0042') === false);
+        $failing->logValuesThrows = false;
+        check('record ids rvc2-4 (control): the same project read in full names records as its mode says',
+            $failing->scanRecordIdPosture(PID)['recordIds'] === FindingRowMapper::IDS_RAW);
+        check('record ids rvc2-4: a stored mode this build does not know hashes too',
+            mkMod($dict, $data, [], ['log-values' => 'NONE '])->scanRecordIdPosture(PID)['recordIds'] === FindingRowMapper::IDS_HASHED
+            && mkMod($dict, $data, [], ['log-values' => 'off'])->scanRecordIdPosture(PID)['recordIds'] === FindingRowMapper::IDS_RAW);
+        // And the legacy Value cell: a record-id field nobody could name is any field.
+        $rv = new \ReflectionMethod(\INSPIRE\UniversalValidator\UniversalValidator::class, 'reportValue');
+        $rv->setAccessible(true);
+        $hashedPlan = ['valueMode' => 'raw', 'identifiers' => [], 'hashRecordIds' => true, 'recordIdField' => ''];
+        check('record ids rvc2-4: under hashed ids with the record-id field unknown, a value is withheld',
+            $rv->invoke(null, ['field' => 'req', 'value' => 'PATIENT-0042'], $hashedPlan) === '[identifier withheld]');
+        check('record ids rvc2-4 (control): with the field known, another field\'s value is shown',
+            $rv->invoke(null, ['field' => 'req', 'value' => 'PATIENT-0042'], ['recordIdField' => 'record_id'] + $hashedPlan) === 'PATIENT-0042');
         check('record ids: the raw id is nowhere in the mapped finding',
             strpos(json_encode($f), 'PATIENT-0042') === false);
         $line = (new ScanReport($map, dims(), runRow()))->csvLine(row(['record_id_bin' => 'PATIENT-0042']));
@@ -1026,15 +1112,102 @@ namespace {
         check('facts: the coverage sentence is the page\'s own, truncation included',
             $p['coverageSentence'] === ScanPageView::coverageSentence(ScanOutcome::COV_PARTIAL, ScanOutcome::DETAIL_TRUNCATED)
             && strpos($p['coverageSentence'], 'not kept') !== false);
-        check('facts: the keys are the ones wave 11 was promised',
+        // review rvf1-2, deferred to the report: the header of a group run
+        // whose records all moved to another group said they were deleted.
+        $emptyRow = ['terminal' => ScanOutcome::PARTIAL, 'coverage' => ScanOutcome::EMPTY_SCOPE,
+                     'detail' => ScanOutcome::DETAIL_COMPLETE, 'values_state' => 'locations', 'clean' => 0];
+        $emptyFacts = function (array $run, $emptied) {
+            return (new ScanReport(mapper(['valuesState' => $run['values_state']]), dims(), runRow($run)))
+                ->runFacts(null, $emptied)['coverageSentence'];
+        };
+        check('facts rvf1-2: an empty scope its records left says they moved, not that they were deleted',
+            $emptyFacts($emptyRow, ['departed' => 5, 'removed' => 0]) === ScanPageView::EMPTY_SCOPE_LEFT
+            && strpos($emptyFacts($emptyRow, ['departed' => 5, 'removed' => 0]), 'deleted') === false);
+        check('facts rvf1-2: some moved and the rest were deleted, and it says both',
+            $emptyFacts($emptyRow, ['departed' => 3, 'removed' => 2]) === ScanPageView::EMPTY_SCOPE_LEFT_DELETED);
+        check('facts rvf1-2: and the truncation note still follows it',
+            $emptyFacts(['detail' => ScanOutcome::DETAIL_TRUNCATED] + $emptyRow, ['departed' => 1, 'removed' => 0])
+            === ScanPageView::EMPTY_SCOPE_LEFT . ' ' . ScanPageView::DETAIL_TRUNCATED);
+        check('facts rvf1-2 control: an empty scope no record left, or one the caller did not count, keeps the deleted sentence',
+            $emptyFacts($emptyRow, ['departed' => 0, 'removed' => 4]) === ScanPageView::coverageSentence(ScanOutcome::EMPTY_SCOPE)
+            && $emptyFacts($emptyRow, null) === ScanPageView::coverageSentence(ScanOutcome::EMPTY_SCOPE));
+        check('facts rvf1-2 control: departures change no other coverage sentence',
+            $emptyFacts($complete + ['clean' => 1], ['departed' => 2, 'removed' => 0])
+            === ScanPageView::coverageSentence(ScanOutcome::FENCED, ScanOutcome::DETAIL_COMPLETE));
+
+        check('facts: the keys are the ones wave 11 was promised, and the day dates were judged as of (W10BF-3)',
             array_keys($p) === ['schema', 'columns', 'legend', 'coverage', 'detail', 'coverageSentence', 'mayCertify',
-                                'suffix', 'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows']);
+                                'suffix', 'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows', 'asOf']);
+        check('W10BF-3: the report says the day the run froze for its date rules, and nothing for a run with none',
+            $p['asOf'] === null
+            && $facts($complete + ['clean' => 1, 'policy_json' => json_encode(['asOf' =>
+                   ['today' => '2026-10-21', 'now' => '2026-10-21 23:59:30']])])['asOf'] === '2026-10-21'
+            && $facts($complete + ['clean' => 1, 'policy_json' => json_encode(['asOf' =>
+                   ['today' => '2026-10-21', 'now' => '2026-10-22 00:00:30']])])['asOf'] === null);
         check('facts: schema, columns and legend describe the file',
             $p['schema'] === ScanReport::SCHEMA && in_array('record', $p['columns'], true)
             && strpos($p['legend'], 'record=Record') !== false && $p['valuesState'] === 'locations');
         check('facts: the expected row count is the caller\'s, and never negative',
             $p['expectedRows'] === null && $facts($partial, null, 12)['expectedRows'] === 12
             && $facts($partial, null, -4)['expectedRows'] === 0);
+
+        // rv11a2-5: ONE SUFFIX. runFacts() said `_CANCELLED` where the marks
+        // beside it in the same answer said `_INCOMPLETE_CANCELLED`, for every
+        // state ScanOutcome::derive() produces except a certified one.
+        $derived = ['failed' => ['failed' => true], 'cancelled' => ['cancelled' => true],
+            'expired' => ['expired' => true], 'empty scope' => ['emptyScope' => true],
+            'blocked' => ['blocked' => true, 'manifestDone' => true, 'fenced' => true],
+            'manifest not done' => ['manifestDone' => false],
+            'manifest only' => ['manifestDone' => true, 'fenced' => false],
+            'manifest only, cut' => ['manifestDone' => true, 'fenced' => false, 'truncated' => true],
+            'fenced, cut' => ['manifestDone' => true, 'fenced' => true, 'truncated' => true,
+                              'violations' => 900, 'ruleProblems' => 0],
+            'found 3' => ['manifestDone' => true, 'fenced' => true, 'violations' => 3, 'ruleProblems' => 0],
+            'clean' => ['manifestDone' => true, 'fenced' => true, 'violations' => 0, 'ruleProblems' => 0]];
+        $disagree = [];
+        foreach ($derived as $name => $f) {
+            $o = ScanOutcome::derive($f);
+            $row = ['terminal' => $o['terminal'], 'coverage' => $o['coverage'], 'detail' => $o['detail'],
+                    'clean' => ScanOutcome::cleanColumn($o), 'values_state' => 'raw'];
+            if ($facts($row)['suffix'] !== ScanReport::incompleteMarks(runRow($row))['suffix']) $disagree[] = $name;
+        }
+        check('rv11a2-5: the report\'s suffix is the marks\' suffix for every state derive() produces',
+            $disagree === []);
+        check('rv11a2-5: so a stopped run\'s report is named incomplete, as README promises',
+            $facts(['terminal' => ScanOutcome::CANCELLED, 'coverage' => ScanOutcome::COV_PARTIAL,
+                    'detail' => ScanOutcome::DETAIL_COMPLETE, 'clean' => null])['suffix'] === '_INCOMPLETE_CANCELLED'
+            && $facts($complete + ['clean' => 0])['suffix'] === '_NOT-CERTIFIED');
+
+        // rv11a2-3: THE TERMINAL ROW DOES NOT CONTRADICT ITSELF. It opened
+        // "This scan did not cover the whole project" for every incomplete
+        // run, ahead of "Every record was checked" for the run that examined
+        // every record and passed the detail limit. Every derive() state.
+        $rows = [];
+        $contradicts = [];
+        foreach ($derived as $name => $f) {
+            $o = ScanOutcome::derive($f);
+            $m = ScanReport::incompleteMarks(['terminal' => $o['terminal'], 'coverage' => $o['coverage'],
+                                              'detail' => $o['detail'], 'clean' => ScanOutcome::cleanColumn($o)]);
+            $rows[$name] = $m['row'];
+            if ($m['row'] !== null && strpos($m['row'], 'did not cover') !== false
+                    && stripos($m['row'], 'every record') !== false) {
+                $contradicts[] = $name;
+            }
+        }
+        check('rv11a2-3: no terminal row says the scan did not cover the project and that every record was checked',
+            $contradicts === []);
+        check('rv11a2-3: a run that examined every record and passed the detail limit says the file lacks findings',
+            $rows['fenced, cut'] === ScanReport::ROW_CUT . ' '
+                . ScanPageView::coverageSentence(ScanOutcome::FENCED, ScanOutcome::DETAIL_TRUNCATED));
+        check('rv11a2-3: a manifest-only run says it does not certify, ahead of what it checked',
+            $rows['manifest only'] === ScanReport::ROW_UNCERTIFIED . ' '
+                . ScanPageView::coverageSentence(ScanOutcome::MANIFEST)
+            && strpos($rows['manifest only, cut'], ScanReport::ROW_UNCERTIFIED) === 0);
+        check('rv11a2-3 (control): a stopped, failed or blocked run still says it did not cover the project',
+            strpos($rows['cancelled'], ScanReport::ROW_UNCOVERED) === 0
+            && strpos($rows['failed'], ScanReport::ROW_UNCOVERED) === 0
+            && strpos($rows['blocked'], ScanReport::ROW_UNCOVERED) === 0
+            && $rows['clean'] === null && $rows['found 3'] === null);
 
         $bad = dims(); $bad->degraded = ['events' => 'the event map could not be read'];
         $deg = $facts($complete + ['clean' => 1], $bad);

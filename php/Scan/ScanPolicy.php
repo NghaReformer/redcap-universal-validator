@@ -148,6 +148,16 @@ final class ScanPolicy
      * presentation. Returns true when the new policy is stricter in any respect,
      * because a reader must never keep a preview the project has just decided
      * they should not have.
+     *
+     * THE RECORD-ID POSTURE IS COMPARED ONLY WHEN THE OLD POLICY STATES ONE
+     * (review rvc1-1). It has been frozen since W10BF-2; a run planned by the
+     * build before that froze a policy without the key, and a missing key
+     * read as "raw ids". So every such run in flight across the upgrade, on a
+     * project that logs values as "none" the whole time, was stopped at its
+     * next work request as a privacy tightening that never happened. A policy
+     * that says nothing about the posture cannot show it moved. Nothing the
+     * run writes depends on it: a report and its file take the posture from
+     * the setting when they are read (scanRecordIdPosture()).
      */
     public static function tightened(array $old, array $new)
     {
@@ -157,15 +167,25 @@ final class ScanPolicy
             $n = (int) self::get($new, $k, PHP_INT_MAX);
             if ($n < $o) return true;
         }
-        if (empty($old['hashRecordIds']) && !empty($new['hashRecordIds'])) return true;
+        if (array_key_exists('hashRecordIds', $old) && empty($old['hashRecordIds'])
+                && !empty($new['hashRecordIds'])) {
+            return true;
+        }
         return false;
     }
 
-    /** When a value preview stored now must stop being readable. */
+    /**
+     * When a value preview stored now must stop being readable, in UTC.
+     *
+     * UTC because the purge and the report compare it with
+     * ScanRetention::now() and the mapper's `now`, both gmdate() (W7-R6).
+     * date() wrote the server's zone: east of Greenwich a preview stayed
+     * readable hours past its window, west of it it expired hours early.
+     */
     public static function valueExpiry(array $policy, $now)
     {
         $days = (int) self::get($policy, 'valueDays', self::D_VALUE_DAYS);
-        return date('Y-m-d H:i:s', ((int) $now) + ($days * 86400));
+        return gmdate('Y-m-d H:i:s', ((int) $now) + ($days * 86400));
     }
 
     /** Has the detail budget been spent? Either limit alone is enough. */

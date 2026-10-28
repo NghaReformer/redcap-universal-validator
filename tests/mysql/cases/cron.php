@@ -33,6 +33,18 @@ if (!class_exists('UvCronModule', false)) {
         public function getUsername() { return 'alice'; }
     }
 
+    /** A user of the project with no design rights, who may not scan. */
+    class UvCronPlainUser
+    {
+        public function hasDesignRights() { return false; }
+        public function getRights($pid = null)
+        {
+            return array('design' => '0', 'data_export_tool' => '0', 'group_id' => null,
+                         'forms' => array('demographics' => '1'));
+        }
+        public function getUsername() { return 'mallory'; }
+    }
+
     /**
      * The framework edge: query() over the real connection, settings from two
      * arrays, and the one rule perf.php's module plans with.
@@ -43,6 +55,8 @@ if (!class_exists('UvCronModule', false)) {
         public $log = array();
         public $sys = array();
         public $proj = array();
+        /** @var object|null who is signed in; the designer when null */
+        public $user = null;
 
         public function __construct($c) { $this->c = $c; }
 
@@ -67,7 +81,7 @@ if (!class_exists('UvCronModule', false)) {
             if ($k === ScanService::PROJ_FLAG) return '1';
             return isset($this->proj[(int) $pid][$k]) ? $this->proj[(int) $pid][$k] : null;
         }
-        public function getUser() { return new UvCronUser(); }
+        public function getUser() { return $this->user !== null ? $this->user : new UvCronUser(); }
         public function log($event, $context = array()) { return 1; }
         public function durableScanContext($pid, array $opts = array(), $dag = null)
         {
@@ -151,6 +165,17 @@ $SP = 970;
         . gmdate('Y-m-d H:i:s', time() - 30 * 3600) . "', progress_at = NULL, lease_expires_at = NULL"
         . ' WHERE run_id = ' . $oldId);
     $m = new UvCronModule($A);
+    // FIRST, SOMEBODY WHO MAY NOT SCAN PRESSES START (review rv10a2-2): they
+    // are refused, and the run is left for somebody who may.
+    $m->user = new UvCronPlainUser();
+    $refused = (new ScanService($m))->start($SP);
+    $m->user = null;
+    $kept = $store->run($SP, $oldId);
+    $byMallory = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+        . ' WHERE project_id = ? AND run_id = ?', array($SP, $oldId));
+    check('start: a user without design rights is refused before the abandoned run is touched',
+        $refused['ok'] === false && $kept['terminal'] === null && (int) $kept['lease_epoch'] === $oldEpoch
+        && (int) $byMallory[0][0] === 0);
     $started = (new ScanService($m))->start($SP);
     check('start: a project held by an abandoned run starts a new scan (got ' . json_encode($started) . ')',
         $started['ok'] === true && (int) $started['run_id'] > $oldId);
@@ -261,6 +286,20 @@ $runRow = function ($runId) use ($dbA) {
     // 973: a whole-project scan, then one of a single group, both complete.
     $w1 = $plant(973, 2);
     $s2 = $plant(973, 1, null, true, array('scope_dag' => '7'));
+    // 974: its last record finished thirty hours ago and its finalizer touched
+    // it ten seconds ago (review rv10a1-1). The status page calls it working;
+    // the census must not name it.
+    $fin = $plant(974, 1, null, false);
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = 'unique-finalize', progress_at = '"
+        . gmdate('Y-m-d H:i:s', time() - 30 * 3600) . "', updated_at = '" . gmdate('Y-m-d H:i:s', time() - 10)
+        . "', lease_expires_at = '" . gmdate('Y-m-d H:i:s', time() - 29 * 3600) . "' WHERE run_id = " . (int) $fin['run']);
+    // 975: stopped by its user while a worker held it, and the worker never
+    // came back (review rv10a1-2). The pass ends it as cancelled, as Stop
+    // would have; an expiry would say it was abandoned.
+    $cx = $plant(975, 1, null, false);
+    (new SqlScanStore($dbA))->cancel(975, $cx['run'], 'alice');
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET progress_at = '" . gmdate('Y-m-d H:i:s', time() - 30 * 3600)
+        . "', lease_expires_at = NULL WHERE run_id = " . (int) $cx['run']);
 
     $logs = array();
     $rec = new UvRecordingDb($dbA);
@@ -271,6 +310,17 @@ $runRow = function ($runId) use ($dbA) {
     check('reap pass: finished in one pass, the lap complete', $r['out']['more'] === 0 && $r['state']['after'] === 0);
     check('reap pass: the abandoned run is expired', $runRow($stale['run'])[0] === ScanOutcome::EXPIRED
         && $r['out']['runs_expired'] === 1);
+    $named974 = array_filter($rec->matching('select', array('SELECT run_id FROM', 'lease_expires_at')),
+        function ($s) { return in_array(974, $s[2], true); });
+    check('reap pass: a run finalising now is not named by the census, however old its last record',
+        $runRow($fin['run'])[0] === null && $named974 === array());
+    $cxRow = (new SqlScanStore($dbA))->run(975, $cx['run']);
+    $cxExpired = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+        . ' WHERE project_id = ? AND event = ?', array(975, ScanStore::AUDIT_EXPIRE));
+    check('reap pass: a stale run its user stopped ends as cancelled with what it found counted, never as abandoned',
+        $cxRow['terminal'] === ScanOutcome::CANCELLED && $r['out']['runs_stopped'] === 1
+        && strpos((string) $cxRow['terminal_reason'], 'abandoned') === false
+        && (int) $cxRow['manifest_done'] === 1 && (int) $cxExpired[0][0] === 0);
     check('reap pass: the free slots above the lowered limit are gone (W1-N1)',
         $r['out']['slots_removed'] === 3
         && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_worker_slot'))[0][0] === 2);
@@ -298,14 +348,88 @@ $runRow = function ($runId) use ($dbA) {
     check('reap pass: a second pass has nothing to do and sends no supersede',
         $again['out']['superseded'] === 0 && $again['out']['runs_expired'] === 0
         && $rec->matching('select', array('supersede_cursor', 'FOR UPDATE')) === array());
+    // THE CENSUS DOES NOT NAME A GROUP'S SCAN (review rv10a1-4). 973's scoped
+    // run completed with its cursor below its generation, and always will:
+    // it supersedes nothing. Named by the census, it would cost a project
+    // visit and a list read on every pass, for ever.
+    check('reap pass: and a completed scan of one group is no project\'s work in the census',
+        $again['out']['projects'] === 0 && count($rec->log) === 2
+        && $rec->matching('select', array('scope_dag IS NULL', 'ORDER BY generation_id')) === array());
     check('reap pass: nothing failed', $r['out']['failed'] === 0 && $again['out']['failed'] === 0);
+}
+
+// -- AN EXPIRY AND ITS AUDIT ARE ONE WRITE (review rv10a1-5) --------------------
+//
+// The audit insert fails once. The expiry goes back with it, so the run is
+// still stale for the next pass, which writes both; before, the run stayed
+// expired with no record of who expired it, and no pass ever wrote one.
+{
+    $ab = $plant(976, 1, null, false);
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET progress_at = '" . gmdate('Y-m-d H:i:s', time() - 30 * 3600)
+        . "', lease_expires_at = NULL WHERE run_id = " . (int) $ab['run']);
+    $abStore = new SqlScanStore($dbA);
+    $abEpoch = (int) $abStore->run(976, $ab['run'])['lease_epoch'];
+    $failAudit = true;
+    $hook = new UvHookDb($dbA);
+    $hook->before = function ($kind, $sql, array $params) use (&$failAudit) {
+        if ($failAudit && $kind === 'exec' && strpos($sql, 'INSERT INTO ' . Schema::table('scan_audit')) !== false) {
+            throw new \RuntimeException('Lock wait timeout exceeded; try restarting transaction', 1205);
+        }
+    };
+    $expireAudits = function () use ($dbA, $ab) {
+        return (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+            . ' WHERE project_id = ? AND run_id = ? AND event = ?', array(976, $ab['run'], ScanStore::AUDIT_EXPIRE))[0][0];
+    };
+    $logs = array();
+    $f1 = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($hook, array('policy' => $policyOf,
+        'log' => function ($e, array $c) use (&$logs) { $logs[] = array($e, $c); })))->reap(array(), 60.0);
+    $abRow = $abStore->run(976, $ab['run']);
+    check('expire: an audit that fails takes the expiry back with it, and the pass counts a failure, not an expiry',
+        $abRow['terminal'] === null && (int) $abRow['lease_epoch'] === $abEpoch && $expireAudits() === 0
+        && $f1['out']['runs_expired'] === 0 && $f1['out']['failed'] === 1);
+    $failAudit = false;
+    $f2 = $maint()->reap(array(), 60.0);
+    check('expire: and the next pass writes the expiry and its audit together',
+        $abStore->run(976, $ab['run'])['terminal'] === ScanOutcome::EXPIRED && $expireAudits() === 1
+        && $f2['out']['runs_expired'] === 1);
+}
+
+// -- THE WRITE ASKS THE READ'S QUESTION AGAIN (review rv10a2-6) -----------------
+//
+// The run's worker comes back between expireAbandoned()'s read and its write:
+// on the second connection it commits progress (977), or renews its lease
+// without progress (978). The UPDATE carries the whole predicate again, so
+// neither run is touched and nothing is audited.
+{
+    $races = array(
+        977 => 'progress_at = UTC_TIMESTAMP()',
+        978 => "lease_owner = 'w-back', lease_expires_at = UTC_TIMESTAMP() + INTERVAL 5 MINUTE",
+    );
+    foreach ($races as $rp => $back) {
+        $rr = $plant($rp, 1, null, false);
+        $A->query('UPDATE ' . Schema::table('scan_run') . " SET progress_at = '" . gmdate('Y-m-d H:i:s', time() - 30 * 3600)
+            . "', lease_expires_at = NULL WHERE run_id = " . (int) $rr['run']);
+        $hook = new UvHookDb($dbA);
+        $hook->before = function ($kind, $sql, array $params) use ($B, $rr, $back) {
+            if ($kind === 'exec' && strpos($sql, 'lease_epoch = lease_epoch + 1') !== false) {
+                $B->query('UPDATE ' . Schema::table('scan_run') . ' SET ' . $back . ' WHERE run_id = ' . (int) $rr['run']);
+            }
+        };
+        $n = (new SqlScanStore($hook))->expireAbandoned($rp, 24, 'cron');
+        $after = (new SqlScanStore($dbA))->run($rp, $rr['run']);
+        $aud = (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+            . ' WHERE project_id = ? AND event = ?', array($rp, ScanStore::AUDIT_EXPIRE))[0][0];
+        check('expire race (' . ($rp === 977 ? 'progress' : 'lease') . '): a run whose worker came back between the read '
+            . 'and the write is left alone, and nothing is audited',
+            $n === 0 && $after['terminal'] === null && $aud === 0);
+    }
 }
 
 // -- THE RETENTION PASS: revocation, purge, the value sweep ---------------------
 {
     // The projects above are done with; the lap below starts at the first of
     // these, so the ticking clock's arithmetic is about them alone.
-    foreach (array(970, 971, 972, 973) as $p) uv_clear_project($dbA, $p);
+    foreach (array(970, 971, 972, 973, 974, 975, 976, 977, 978) as $p) uv_clear_project($dbA, $p);
     $old = gmdate('Y-m-d H:i:s', time() - 20 * 86400);
     // 980: kept raw values under a 30-day window; the project now keeps none.
     $raw = array('values_state' => 'raw', 'policy_json' => json_encode(array('valueMode' => 'raw', 'valueDays' => 30)));
@@ -387,6 +511,28 @@ $runRow = function ($runId) use ($dbA) {
     check('expire: and is started again after it', count($rec->matching('exec', array('value_bin = NULL', 'finding_id > ?'))) >= 1);
     check('retain: nothing failed', $r1['out']['failed'] === 0 && $r2['out']['failed'] === 0 && $r3['out']['failed'] === 0);
 
+    // W10AF-N6. A RUN STARTED UNDER THE NEW POLICY BEFORE A PASS NOTICED THE
+    // CHANGE KEEPS ITS PREVIEWS. 988 kept raw values for 30 days and now
+    // keeps them for 7: its first run was planned under 30, its second under
+    // 7, both before the pass. The bump reached every run of the project and
+    // revoked both.
+    $raw30 = array('values_state' => 'raw', 'policy_json' => json_encode(array('valueMode' => 'raw', 'valueDays' => 30)));
+    $raw7 = array('values_state' => 'raw', 'policy_json' => json_encode(array('valueMode' => 'raw', 'valueDays' => 7)));
+    $g1 = $plant(988, 2, '2999-01-01 00:00:00', true, $raw30);
+    $g2 = $plant(988, 2, '2999-01-01 00:00:00', true, $raw7);
+    $PRJ[988] = array('scan-value-storage' => 'raw', 'scan-value-retention-days' => '7');
+    $r6 = $maint()->retain(array(), 60.0);
+    $rev6 = $dbA->select('SELECT run_id, policy_revision, values_state FROM ' . Schema::table('scan_run')
+        . ' WHERE project_id = ? ORDER BY run_id', array(988));
+    check('revoke W10AF-N6: the run planned under the old policy is revoked',
+        $runRow($g1['run'])[4] === 'expired'
+        && $countWhere('project_id = ? AND generation_id = ? AND value_bin IS NOT NULL', array(988, $g1['gen'])) === 0
+        && !isset($r6['state']['revoke'][988]) && $r6['out']['failed'] === 0);
+    check('revoke W10AF-N6: the run planned under the policy now in force keeps its previews and its revision',
+        $runRow($g2['run'])[4] === 'raw'
+        && $countWhere('project_id = ? AND generation_id = ? AND value_bin IS NOT NULL', array(988, $g2['gen'])) === 2
+        && count($rev6) === 2 && (int) $rev6[1][1] === (int) $rev6[0][1] - 1);
+
     // A PROJECT'S PURGE WAITS FOR ITS REVOCATION (R8-3). The continuation of
     // 986's revocation fails this pass, so the lap reaches 986 with budget in
     // hand and a run past retention: purging it would change the generations
@@ -395,21 +541,43 @@ $runRow = function ($runId) use ($dbA) {
     $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '" . $old . "', values_state = 'expired'"
         . ' WHERE run_id = ' . (int) $w1['run']);
     $PRJ[986] = array('scan-run-retention-days' => '10');
+    // 987: the intent of a revocation was stored and its bump fails this pass,
+    // so the lap reaches 987 with its run still keeping raw values under a
+    // policy that now keeps none (review rv10a1-4). Judged again, it would
+    // store a second intent over the first, log a second revocation and fail
+    // a second time; the lap sends nothing for it.
+    $x1 = $plant(987, 1, '2999-01-01 00:00:00', true, $raw);
+    $PRJ[987] = array('scan-value-storage' => 'locations');
     $hook = new UvHookDb($dbA);
     $hook->before = function ($kind, $sql, array $params) {
         if (strpos($sql, 'SELECT DISTINCT generation_id') !== false && (int) $params[0] === 986) {
             throw new \RuntimeException('the revocation read failed');
         }
+        if (strpos($sql, 'SET policy_revision = ?') !== false && in_array(987, $params, true)) {
+            throw new \RuntimeException('the revocation bump failed');
+        }
     };
+    $rec = new UvRecordingDb($hook);
     $logs = array();
-    $mtw = new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($hook, array('policy' => $policyOf,
+    $mtw = new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($rec, array('policy' => $policyOf,
         'log' => function ($e, array $c) use (&$logs) { $logs[] = array($e, $c); }));
-    $wait = $mtw->retain(array('revoke' => array(986 => array('revision' => 2, 'bumped' => true, 'cursor' => null))), 60.0);
+    $intent987 = array('revision' => 2, 'bumped' => false, 'cursor' => null);
+    $wait = $mtw->retain(array('revoke' => array(986 => array('revision' => 2, 'bumped' => true, 'cursor' => null),
+        987 => $intent987)), 60.0);
     $said = array();
-    foreach ($logs as $l) if ($l[0] === 'scan-cron-step-failed') $said[] = $l[1]['step'] . ':' . $l[1]['project_id'];
+    $revoked = 0;
+    foreach ($logs as $l) {
+        if ($l[0] === 'scan-cron-step-failed') $said[] = $l[1]['step'] . ':' . $l[1]['project_id'];
+        if ($l[0] === 'scan-cron-revoke') $revoked++;
+    }
     check('purge: a project whose revocation is unfinished is not purged, though its run is past retention',
         $runRow($w1['run']) !== null && $wait['out']['runs_purged'] === 0 && isset($wait['state']['revoke'][986])
-        && $said === array('revoke:986'));
+        && $said === array('revoke:986', 'revoke:987'));
+    $judged = array_filter($rec->matching('select', array('SELECT values_state, policy_json')), function ($s) {
+        return in_array(987, $s[2], true); });
+    check('revoke: the lap sends nothing for a project whose revocation is in hand, and keeps its intent',
+        $judged === array() && $revoked === 0 && $wait['state']['revoke'][987] === $intent987
+        && $runRow($x1['run'])[4] === 'raw');
     $done = $maint()->retain($wait['state'], 60.0);
     check('purge: and is purged by the pass that finishes the revocation',
         !isset($done['state']['revoke'][986]) && $runRow($w1['run']) === null && $done['out']['failed'] === 0);
@@ -783,6 +951,122 @@ $runRow = function ($runId) use ($dbA) {
     foreach (array(2300, 2301) as $p) uv_clear_project($dbA, $p);
 }
 
+// -- A PASS STOPPED INSIDE A PROJECT RESUMES AT THAT PROJECT (review rv10a1-6) --
+//
+// 2400 and 2401 each have three finished runs past their retention, a purge
+// call per run. The pass is told to stop once 2400's first run is gone, so it
+// stops inside 2400; the cursor it hands back is the project before, and the
+// next pass works 2400 first. Handing back 2400 itself would leave its last
+// two runs for a whole lap.
+{
+    $old = gmdate('Y-m-d H:i:s', time() - 20 * 86400);
+    foreach (array(2400, 2401) as $p) {
+        for ($i = 0; $i < 3; $i++) {
+            $x = $plant($p, 1);
+            $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '" . $old . "' WHERE run_id = " . (int) $x['run']);
+        }
+        $PRJ[$p] = array('scan-run-retention-days' => '10');
+    }
+    $gone = false;
+    $hook = new UvHookDb($dbA);
+    $hook->before = function ($kind, $sql, array $params) use (&$gone) {
+        if ($kind === 'exec' && strpos($sql, 'DELETE FROM ' . Schema::table('scan_run')) !== false
+            && in_array(2400, $params, true)) {
+            $gone = true;
+        }
+    };
+    $entered = array();
+    $lapOf = function ($db, callable $stopped) use ($policyOf, &$entered) {
+        return new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($db, array('policy' => $policyOf,
+            'stopped' => $stopped, 'enter' => function ($pid) use (&$entered) { $entered[] = (int) $pid; }));
+    };
+    $runsOf = function ($p) use ($dbA) {
+        return (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run') . ' WHERE project_id = ?', array($p))[0][0];
+    };
+    $p1 = $lapOf($hook, function () use (&$gone) { return $gone; })->retain(array(), 60.0);
+    $entered1 = $entered;
+    $left1 = $runsOf(2400);
+    $entered = array();
+    $p2 = $lapOf($dbA, function () { return false; })->retain($p1['state'], 60.0);
+    check('lap: a pass stopped inside a project hands back the project before it',
+        $p1['out']['stopped'] === 1 && $entered1 === array(2400) && $p1['state']['after'] === 2399
+        && $left1 === 2);
+    check('lap: and the next pass works that project first, and finishes both',
+        isset($entered[0]) && $entered[0] === 2400 && $runsOf(2400) === 0 && $runsOf(2401) === 0);
+    foreach (array(2400, 2401) as $p) uv_clear_project($dbA, $p);
+}
+
+// -- A RUN BEING REMOVED IS NO RUN TO ITS READERS (review rv10a1-3) -------------
+//
+// A large run is purged a page per call across passes, its row last. Pages of
+// one row stand in for a run of 500,000 records. From the first page on,
+// status() answers as it will once the row is gone; before, the run read
+// `complete` with 0 records done and 0 findings while its three were stored.
+{
+    uv_redcap_project($A, 2402);
+    // The policy a planner freezes says which other projects the run asked:
+    // none. A run without that is refused to every reader anyway.
+    $pr = $plant(2402, 3, null, true, array('policy_json' => json_encode(array('crossLookups' => array()))));
+    $A->query('INSERT INTO ' . Schema::table('scan_aggregate') . " (run_id, kind, axis1, axis2, cnt) VALUES ("
+        . (int) $pr['run'] . ", 'rollup-instrument', 'fa', '', 3)");
+    $aged = gmdate('Y-m-d H:i:s', time() - 100 * 86400);
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '" . $aged . "' WHERE run_id = " . (int) $pr['run']);
+    $readers = new ScanService(new UvCronModule($A));
+    $before = $readers->status(2402, $pr['run']);
+    $ret = new \INSPIRE\UniversalValidator\Scan\ScanRetention($dbA);
+    $c1 = $ret->purgeRuns(2402, 90, 1);
+    $mid = (new ScanService(new UvCronModule($A)))->status(2402, $pr['run']);
+    $markedAge = $dbA->select('SELECT updated_at FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?', array($pr['run']));
+    check('remove: a run reads as itself before its purge begins', $before['ok'] === true && $before['findings'] === 3);
+    check('remove: from its first page, a run being removed is no run to status(), while its findings are still stored',
+        $c1['done'] === false && $mid['ok'] === false && $mid['why'] === ScanService::NO_RUN
+        && $countWhere('project_id = ? AND generation_id = ?', array(2402, $pr['gen'])) === 3);
+    check('remove: and the mark leaves the age the purge is judged by alone',
+        isset($markedAge[0][0]) && (string) $markedAge[0][0] === $aged);
+    $calls = 1;
+    while ($calls < 50 && empty($ret->purgeRuns(2402, 90, 1)['done'])) $calls++;
+    check('remove: and the purge still finishes, taking the row last',
+        $runRow($pr['run']) === null && $countWhere('project_id = ?', array(2402)) === 0 && $calls > 3);
+    uv_clear_project($dbA, 2402);
+}
+
+// -- A REMOVAL BEGUN IS FINISHED AFTER THE PROJECT RAISES ITS RETENTION (review rvf2-3)
+//
+// The reviewer's repro: one page of a 100-day-old run's purge at 30 days, and
+// the project then keeps runs for 365. The run stayed marked, no run to any
+// reader, with its findings kept, through every pass: the census judged the
+// project by its oldest run's age, and the purge picked by age alone. A
+// second finished run, an hour old, is due at no window and stays.
+{
+    $sysWas = $SYS;
+    $SYS['scan-system-max-run-retention-days'] = '365';
+    $PRJ[2403] = array('scan-run-retention-days' => '365');
+    $old = $plant(2403, 3);
+    $young = $plant(2403, 1);
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET updated_at = '"
+        . gmdate('Y-m-d H:i:s', time() - 100 * 86400) . "' WHERE run_id = " . (int) $old['run']);
+    $c1 = (new \INSPIRE\UniversalValidator\Scan\ScanRetention($dbA))->purgeRuns(2403, 30, 1);
+    $store = new SqlScanStore($dbA);
+    check('remove rvf2-3: the old run\'s removal has begun, and it reads as gone with its findings stored',
+        $c1['done'] === false && $store->run(2403, $old['run']) === null
+        && $countWhere('project_id = ? AND generation_id = ?', array(2403, $old['gen'])) === 3);
+    $logs = array();
+    $r = $maint()->retain(array(), 60.0);
+    echo '  rvf2-3 retain at 365 days: ' . json_encode($r['out']) . "\n";
+    check('remove rvf2-3: the next pass at 365 days finishes the removal, run row and findings',
+        $r['out']['runs_purged'] >= 1 && $r['out']['failed'] === 0 && $runRow($old['run']) === null
+        && $countWhere('project_id = ? AND generation_id = ?', array(2403, $old['gen'])) === 0);
+    check('remove rvf2-3: and the hour-old run keeps everything',
+        $store->run(2403, $young['run']) !== null
+        && $countWhere('project_id = ? AND generation_id = ?', array(2403, $young['gen'])) === 1);
+    $again = $maint()->retain(array(), 60.0);
+    check('remove rvf2-3: a pass after it has nothing of the project\'s to purge',
+        $again['out']['runs_purged'] === 0 && $again['out']['rows_purged'] === 0 && $again['out']['failed'] === 0);
+    uv_clear_project($dbA, 2403);
+    unset($PRJ[2403]);
+    $SYS = $sysWas;
+}
+
 // -- THE MODULE SWITCHED OFF (M17) ---------------------------------------------
 //
 // 1001 is mid-scan, its worker holding a slot; 1002 was stopped by a user and
@@ -813,14 +1097,24 @@ $runRow = function ($runId) use ($dbA) {
     check('disable: the leased slot is freed, and both active runs are stopped',
         $r['slots_released'] === 1 && $r['runs_stopped'] === 2 && $r['failed'] === 0
         && $slots->census()['held'] === 0);
-    foreach (array(array(1001, $live), array(1002, $stop)) as $pair) {
+    // rvf2-2: alice's own Stop keeps its own reason. Only the run the disable
+    // stopped is told the module was disabled; hers was finished with the
+    // plain cancel sentence, beside an audit that names her.
+    $cancelWhy = ScanOutcome::derive(array('cancelled' => true))['why'];
+    foreach (array(array(1001, $live, \INSPIRE\UniversalValidator\Scan\ScanMaintenance::DISABLED_WHY),
+                   array(1002, $stop, $cancelWhy)) as $pair) {
         $row = $store->run($pair[0], $pair[1]['run']);
         $slot = $dbA->select('SELECT active_slot FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?',
             array($pair[1]['run']));
-        check('disable: ' . $pair[0] . ' ends as stopped, with the reason, and leaves the project free',
+        check('disable: ' . $pair[0] . ' ends as stopped, with ' . ($pair[0] === 1001 ? 'the disable\'s reason'
+                : 'its user\'s own stop, not the disable\'s') . ', and leaves the project free',
             $row['terminal'] === ScanOutcome::CANCELLED && $slot[0][0] === null
-            && $row['terminal_reason'] === \INSPIRE\UniversalValidator\Scan\ScanMaintenance::DISABLED_WHY);
+            && $row['terminal_reason'] === $pair[2]);
     }
+    $alice = $dbA->select('SELECT actor FROM ' . Schema::table('scan_audit')
+        . " WHERE project_id = ? AND run_id = ? AND event = 'cancel' ORDER BY audit_id", array(1002, $stop['run']));
+    check('disable rvf2-2: and her run\'s audit still names only her',
+        count($alice) === 1 && $alice[0][0] === 'alice');
     $au = $dbA->select('SELECT actor FROM ' . Schema::table('scan_audit')
         . " WHERE project_id = ? AND run_id = ? AND event = 'cancel' ORDER BY audit_id", array(1001, $live['run']));
     check('disable: the stop is audited as the system\'s', count($au) === 1 && $au[0][0] === 'system');
@@ -838,6 +1132,203 @@ $runRow = function ($runId) use ($dbA) {
         && $again['slots_released'] === 0 && $again['failed'] === 0);
     check('disable: and the project can be scanned again once enabled',
         $store->startRun(1001, array('created_by' => 'alice'))['ok'] === true);
+}
+
+// -- THE MODULE DISABLED FOR ONE PROJECT (review rv10a2-7) ----------------------
+//
+// 1004 and 1005 are both mid-scan, each worker holding a slot. Disabling the
+// module for 1004 stops its run, with that project's sentence, frees its
+// worker's slot and nothing else, and leaves 1005 scanning.
+{
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+    $slots = new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbA);
+    $slots->provision(2);
+    $store = new SqlScanStore($dbA);
+    $off = $plant(1004, 1, null, false);
+    $on = $plant(1005, 1, null, false);
+    $offEpoch = (int) $store->run(1004, $off['run'])['lease_epoch'];
+    $offLease = $slots->acquire('w4', $off['run'], 600);
+    $onLease = $slots->acquire('w5', $on['run'], 600);
+    $onRow = $runRow($on['run']);
+    $rec = new UvRecordingDb($dbA);
+    $d = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($rec, array('policy' => $policyOf)))->disableProject(1004);
+    echo '  project disable: ' . json_encode($d) . ', ' . count($rec->log) . " statements\n";
+    $why = \INSPIRE\UniversalValidator\Scan\ScanMaintenance::PROJECT_DISABLED_WHY;
+    $row = $store->run(1004, $off['run']);
+    check('project disable: its run ends as stopped, with the project\'s sentence, and leaves the project free',
+        $d['runs_stopped'] === 1 && $d['failed'] === 0 && $row['terminal'] === ScanOutcome::CANCELLED
+        && $row['terminal_reason'] === $why
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
+            . ' WHERE project_id = 1004 AND active_slot = 1')[0][0] === 0);
+    check('project disable: the stop is audited once, as the system\'s',
+        (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+            . " WHERE project_id = 1004 AND run_id = ? AND event = 'cancel' AND actor = 'system'",
+            array($off['run']))[0][0] === 1);
+    check('project disable: its worker is refused at its next fence, and only its slot is freed',
+        $d['slots_released'] === 1
+        && $store->commitBatch($off['run'], 'w4', $offEpoch, array('bytes' => 0, 'findings' => array(),
+            'records' => array())) !== true
+        && $slots->renew($offLease['slot_no'], 'w4', $offLease['epoch'], 600) === false
+        && $slots->renew($onLease['slot_no'], 'w5', $onLease['epoch'], 600) === true);
+    check('project disable: another project\'s run is not touched', $runRow($on['run']) === $onRow);
+    $again = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($dbA, array('policy' => $policyOf)))->disableProject(1004);
+    check('project disable: a second one finds nothing to stop',
+        $again === array('runs_stopped' => 0, 'slots_released' => 0, 'failed' => 0));
+    // rvf2-2: a run its user had already stopped is finished, and keeps the
+    // user's stop rather than the project disable's sentence.
+    $byBob = $plant(1006, 1, null, false);
+    $store->cancel(1006, $byBob['run'], 'bob');
+    $dB = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($dbA, array('policy' => $policyOf)))->disableProject(1006);
+    $rowB = $store->run(1006, $byBob['run']);
+    check('project disable rvf2-2: a run its user had stopped is finished with the user\'s stop, not the disable\'s',
+        $dB['runs_stopped'] === 1 && $rowB['terminal'] === ScanOutcome::CANCELLED
+        && $rowB['terminal_reason'] === ScanOutcome::derive(array('cancelled' => true))['why']
+        && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+            . " WHERE project_id = 1006 AND event = 'cancel' AND actor = 'system'")[0][0] === 0);
+    foreach (array(1004, 1005, 1006) as $p) uv_clear_project($dbA, $p);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+}
+
+// -- A START THAT SAVES ITS RUN WHILE THE MODULE IS BEING SWITCHED OFF (review rvf2-1)
+//
+// The disable hooks write their marker and then read the active runs. A Start
+// that passed available() before the marker saved its run after that read,
+// and the run held the project through the disable. Here the marker lands
+// while Start plans: on 1007 the server's, on 1008 the project's with the
+// project hook's whole walk run in between. Start asks again once its run
+// exists, ends the run as the hook ends one, and refuses.
+{
+    $offModule = function ($A) {
+        return new class($A) extends UvCronModule {
+            /** @var callable|null run once, while Start plans, before the run exists */
+            public $during = null;
+            public function durableScanContext($pid, array $opts = array(), $dag = null)
+            {
+                if ($this->during !== null && array_key_exists('generation', $opts) && $opts['generation'] === null) {
+                    $f = $this->during;
+                    $this->during = null;
+                    $f($this, (int) $pid);
+                }
+                return parent::durableScanContext($pid, $opts, $dag);
+            }
+        };
+    };
+    $store = new SqlScanStore($dbA);
+    $RUNT = Schema::table('scan_run');
+    $AUD = Schema::table('scan_audit');
+    $hookOut = null;
+    $cases = array(
+        1007 => array(ScanService::OFF_SERVER, \INSPIRE\UniversalValidator\Scan\ScanMaintenance::DISABLED_WHY,
+            function ($m, $pid) { $m->sys[ScanService::DISABLED_AT] = (string) time(); },
+            function ($m, $pid) { $m->sys[ScanService::ENABLED_AT] = $m->sys[ScanService::DISABLED_AT]; }),
+        1008 => array(ScanService::OFF_PROJECT, \INSPIRE\UniversalValidator\Scan\ScanMaintenance::PROJECT_DISABLED_WHY,
+            function ($m, $pid) use ($dbA, $policyOf, &$hookOut) {
+                $m->proj[$pid][ScanService::PROJECT_DISABLED_AT] = (string) time();
+                $hookOut = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($dbA,
+                    array('policy' => $policyOf)))->disableProject($pid);
+            },
+            function ($m, $pid) {
+                $m->proj[$pid][ScanService::PROJECT_ENABLED_AT] = $m->proj[$pid][ScanService::PROJECT_DISABLED_AT];
+            }),
+    );
+    foreach ($cases as $p => $c) {
+        uv_redcap_project($A, $p);
+        $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (" . $p . ", 'S1', NULL)");
+        $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
+            VALUES (" . $p . ", 1, 'S1', 'record_id', 'S1')");
+        $A->query('INSERT INTO redcap_log_event (log_event_id, project_id, pk, event) VALUES ('
+            . (7000 + $p) . ', ' . $p . ", 'S1', 'UPDATE')");
+        $m = $offModule($A);
+        $m->during = $c[2];
+        $res = (new ScanService($m))->start($p);
+        $runs = $dbA->select('SELECT run_id, phase, terminal, terminal_reason, active_slot FROM ' . $RUNT
+            . ' WHERE project_id = ? ORDER BY run_id', array($p));
+        $trail = array();
+        foreach ($dbA->select('SELECT event, actor FROM ' . $AUD . ' WHERE project_id = ? ORDER BY audit_id', array($p)) as $a) {
+            $trail[] = $a[0] . ':' . $a[1];
+        }
+        echo '  rvf2-1 ' . $p . ': ' . json_encode($res) . ' ' . json_encode($runs) . ' ' . json_encode($trail) . "\n";
+        check('rvf2-1 ' . $p . ': a Start that saves its run while the module is being switched off is refused, and says why',
+            $res['ok'] === false && $res['run_id'] === null && $res['why'] === $c[0]);
+        check('rvf2-1 ' . $p . ': its run ends stopped, with the disable\'s sentence, and leaves the project free',
+            count($runs) === 1 && $runs[0][1] === \INSPIRE\UniversalValidator\Scan\ScanPhase::TERMINAL
+            && $runs[0][2] === ScanOutcome::CANCELLED
+            && $runs[0][3] === $c[1] && $runs[0][4] === null);
+        check('rvf2-1 ' . $p . ': its trail names the starter, then the system\'s stop',
+            $trail === array('start:alice', 'cancel:system'));
+        if ($p === 1008) {
+            check('rvf2-1 1008: the project hook\'s walk had found no run to stop',
+                is_array($hookOut) && $hookOut['runs_stopped'] === 0 && $hookOut['failed'] === 0);
+        }
+        $c[3]($m, $p);
+        $next = (new ScanService($m))->start($p);
+        check('rvf2-1 ' . $p . ': once the module is enabled again, Start opens a run',
+            $next['ok'] === true && (int) $next['run_id'] > (int) $runs[0][0]);
+        uv_clear_project($dbA, $p);
+    }
+}
+
+// -- A DISABLE OVER MORE THAN ONE PAGE, WITH NO TIME TO FINISH (rv10a2-3, rv10a2-5)
+//
+// DISABLE_PAGE + 1 active runs, and a budget of nothing: every run is stopped,
+// the one on the second page too, in a few statements, and none is finished.
+// A Start in another request lands while the walk stops the last page; the
+// second read stops its run too. What the walk left is finished later, with
+// the disable's sentence, by whichever request reaches it.
+{
+    foreach (array(1001, 1002, 1003) as $p) uv_clear_project($dbA, $p);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+    (new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbA))->provision(2);
+    $store = new SqlScanStore($dbA);
+    $N = \INSPIRE\UniversalValidator\Scan\ScanMaintenance::DISABLE_PAGE + 1;
+    $A->query('START TRANSACTION');
+    for ($p = 0; $p < $N; $p++) $store->startRun(3000 + $p, array('created_by' => 'u' . $p));
+    $A->query('COMMIT');
+    $lastId = (int) $dbA->select('SELECT MAX(run_id) FROM ' . Schema::table('scan_run'))[0][0];
+    $late = null;
+    $storeB = new SqlScanStore($dbB);
+    $hook = new UvHookDb($dbA);
+    $hook->before = function ($kind, $sql, array $params) use (&$late, $lastId, $storeB) {
+        if ($late === null && $kind === 'exec' && strpos($sql, 'cancel_requested_at') !== false
+            && in_array($lastId, $params, true)) {
+            $late = $storeB->startRun(3999, array('created_by' => 'late-user'));
+        }
+    };
+    $rec = new UvRecordingDb($hook);
+    $d = (new \INSPIRE\UniversalValidator\Scan\ScanMaintenance($rec, array('policy' => $policyOf)))->disable(0.0);
+    echo '  disable over ' . ($N + 1) . ' runs, no time to finish: ' . json_encode($d) . ', '
+        . count($rec->log) . " statements\n";
+    $count = function ($where, array $params) use ($dbA) {
+        return (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run') . ' WHERE ' . $where, $params)[0][0];
+    };
+    $why = \INSPIRE\UniversalValidator\Scan\ScanMaintenance::DISABLED_WHY;
+    check('disable: more runs than one page are every one stopped, the second page too, with the reason on the row',
+        $count('active_slot = 1 AND phase = ? AND terminal_reason = ?', array('cancelling', $why)) === $N + 1
+        && $count('active_slot = 1 AND phase <> ?', array('cancelling')) === 0
+        && $d['runs_left'] === $N + 1 && $d['runs_stopped'] === 0 && $d['failed'] === 0);
+    check('disable: a run started while the walk went on is stopped by the second read',
+        is_array($late) && $late['ok'] === true && $d['late'] === 1
+        && $store->run(3999, (int) $late['run']['run_id'])['phase'] === 'cancelling');
+    check('disable: every stop is audited once, as the system\'s',
+        (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_audit')
+            . " WHERE project_id >= 3000 AND event = 'cancel' AND actor = 'system'")[0][0] === $N + 1);
+    check('disable: and stopping them costs statements by the page, not by the run',
+        count($rec->log) <= 12);
+    // Left for later: a request with no reason of its own finishes the run
+    // with the disable's, Start's reap and the cron's alike.
+    $r0 = (int) $dbA->select('SELECT run_id FROM ' . Schema::table('scan_run') . ' WHERE project_id = 3000')[0][0];
+    \INSPIRE\UniversalValidator\Scan\ScanPromotion::finishCancelled($store, 3000, $r0, array());
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET created_at = '" . gmdate('Y-m-d H:i:s', time() - 30 * 3600)
+        . "' WHERE project_id = 3001");
+    $rp = $maint()->reap(array('after' => 3000), 60.0);
+    $r1 = (int) $dbA->select('SELECT run_id FROM ' . Schema::table('scan_run') . ' WHERE project_id = 3001')[0][0];
+    check('disable: a run it left stopping is finished later as cancelled, with the disable\'s sentence',
+        $store->run(3000, $r0)['terminal'] === ScanOutcome::CANCELLED && $store->run(3000, $r0)['terminal_reason'] === $why
+        && $rp['out']['runs_stopped'] === 1
+        && $store->run(3001, $r1)['terminal'] === ScanOutcome::CANCELLED && $store->run(3001, $r1)['terminal_reason'] === $why);
+    foreach (array('scan_run', 'scan_audit') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t) . ' WHERE project_id >= 3000');
+    }
 }
 
 // -- THE OPT-IN DROP, last: it leaves nothing for a section after it -------------

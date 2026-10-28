@@ -99,6 +99,29 @@ final class DbError
     }
 
     /**
+     * Did the statement fail because a table is not there (errno 1146)?
+     *
+     * A maintenance pass that hits it stops, rather than failing every
+     * project left in its page the same way (review rv10a2-4): the tables
+     * were dropped under it, by a disable that opted in to the drop or by
+     * hand, and nothing the pass does next can succeed. The errno where the
+     * driver gives one, else the server's own sentence, which the framework's
+     * wrapper keeps in its message; through every previous exception, since
+     * the store wraps what the connection threw.
+     */
+    public static function isMissingTable(\Throwable $e)
+    {
+        for ($depth = 0; $e !== null && $depth < 8; $e = $e->getPrevious(), $depth++) {
+            if ((int) $e->getCode() === 1146 || (string) $e->getCode() === '42S02') return true;
+            $raw = (string) $e->getMessage();
+            $w = strlen($raw) > 2 * self::WINDOW
+                ? substr($raw, 0, self::WINDOW) . ' ' . substr($raw, -self::WINDOW) : $raw;
+            if (preg_match("/Table '[^']{1,140}' doesn't exist/", $w)) return true;
+        }
+        return false;
+    }
+
+    /**
      * One window against the known shapes.
      *
      * Unanchored on purpose, so a shape is still found inside a wrapper's

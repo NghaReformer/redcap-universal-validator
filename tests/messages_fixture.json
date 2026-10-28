@@ -1,0 +1,402 @@
+{
+  "_comment": [
+    "The message parity fixture (W7-R8). The report and the form word a finding in two runtimes that do not",
+    "read each other: the report renders php/messages/catalog.json through MessageCatalog, and js/engine.js",
+    "carries its own sentences. This file is what holds the two together.",
+    "",
+    "Each case is one catalogue key: a rule in the shape the page hands the engine, a finding of that rule, and",
+    "the values a form would hold. For each audience it carries two sentences:",
+    "  catalogue - for staff, the report's \"What is wrong\" cell (ScanColumns over a ScanDimensions built from",
+    "              the rule, so the detail sentence comes as the panel and the CSV get it); for a survey,",
+    "              MessageCatalog::explain() with the survey audience;",
+    "  engine    - what the form shows for the same rule and values: the text of the field's message region,",
+    "              without its status mark.",
+    "\"parity\" is \"same\" when the two are one sentence and \"differs\" when they are not.",
+    "tests/messages_fixture_php.php renders the catalogue side and tests/messages_fixture_js.cjs the engine",
+    "side. Both fail when a sentence changes and this file does not, and when a parity mark stops being true.",
+    "",
+    "A case whose form is null is one the form never shows; formAbsent says why. Every catalogue key has a",
+    "case without a variant, and the PHP test fails for a key added to the catalogue without one. A variant",
+    "is the same key worded by the rule's own message.",
+    "",
+    "Most sentences differ. The engine words a finding with the live values (the dates of the window, the",
+    "record that holds the value) and, for most checks, tells a respondent what it tells staff. The catalogue",
+    "words a finding for a table, and its survey line is shown on no page. Moving either side's wording is a",
+    "decision about the other side too, so change this file in the same commit."
+  ],
+  "cases": [
+    {
+      "key": "required/required-blank",
+      "rule": {"type": "required", "fields": ["phone"]},
+      "finding": {"type": "required", "reason": "required-blank", "field": "phone"},
+      "form": {"values": {"phone": ""}, "field": "phone"},
+      "staff":  {"catalogue": "This field must not be left blank.", "engine": "This field must not be left blank.", "parity": "same"},
+      "survey": {"catalogue": "This field is required.", "engine": "This field must not be left blank.", "parity": "differs"}
+    },
+    {
+      "key": "required/required-blank", "variant": "the rule's own message",
+      "rule": {"type": "required", "fields": ["phone"], "message": "Phone number is needed."},
+      "finding": {"type": "required", "reason": "required-blank", "field": "phone"},
+      "form": {"values": {"phone": ""}, "field": "phone"},
+      "staff":  {"catalogue": "Phone number is needed.", "engine": "Phone number is needed.", "parity": "same"},
+      "survey": {"catalogue": "Phone number is needed.", "engine": "Phone number is needed.", "parity": "same"}
+    },
+    {
+      "key": "unique/duplicate-value",
+      "rule": {"type": "unique", "fields": ["pid"], "uniqueSurveys": true},
+      "finding": {"type": "unique", "reason": "duplicate-value", "field": "pid"},
+      "form": {"values": {"pid": "AB100"}, "field": "pid", "replies": {"staff": {"used": true, "record": "7"}, "survey": {"used": true, "record": null}}},
+      "staff":  {"catalogue": "This value is already recorded on another record.", "engine": "This value is already recorded (record 7).", "parity": "differs"},
+      "survey": {"catalogue": "This value is already recorded.", "engine": "This value is already recorded.", "parity": "same"}
+    },
+    {
+      "key": "unique/duplicate",
+      "rule": {"type": "unique", "fields": ["pid"]},
+      "finding": {"type": "unique", "reason": "duplicate", "field": "pid"},
+      "form": null,
+      "formAbsent": "The form asks whether the value is already recorded on another record, which is unique/duplicate-value. A value that two saved records hold at once is found by a scan.",
+      "staff":  {"catalogue": "This value is recorded more than once where this rule requires it to be unique.", "engine": null},
+      "survey": {"catalogue": "This value is already recorded.", "engine": null}
+    },
+    {
+      "key": "choices/hidden-choice",
+      "rule": {"type": "choices", "fields": ["method"], "choicesHide": ["9"], "choicesAll": ["1", "2", "9"]},
+      "finding": {"type": "choices", "reason": "hidden-choice", "field": "method"},
+      "form": {"values": {"method": "9"}, "options": {"method": ["", "1", "2", "9"]}, "field": "method"},
+      "staff":  {"catalogue": "The saved answer is no longer one of the available choices for this field.", "engine": "The selected choice is no longer available — pick one of the choices shown (the current answer is kept until you do).", "parity": "differs"},
+      "survey": {"catalogue": "The selected choice is no longer available.", "engine": "The selected choice is no longer available — pick one of the choices shown (the current answer is kept until you do).", "parity": "differs"}
+    },
+    {
+      "key": "window/window-early",
+      "rule": {"type": "window", "fields": ["visit_date_2"], "windowFrom": "[visit_date_bl]", "windowFromOp": ["ref", "visit_date_bl", null], "windowLo": 21, "windowHi": 35, "windowUnit": "days", "dateType": "date", "dateFormat": "dmy", "fromType": "date", "fromFormat": "dmy"},
+      "finding": {"type": "window", "reason": "window-early", "field": "visit_date_2"},
+      "form": {"values": {"visit_date_bl": "01-03-2026", "visit_date_2": "15-03-2026"}, "field": "visit_date_2"},
+      "staff":  {"catalogue": "The date is earlier than its allowed window. The window opens 21 days after [visit_date_bl].", "engine": "This date must be between 22-03-2026 and 05-04-2026. (21 to 35 days after [visit_date_bl])", "parity": "differs"},
+      "survey": {"catalogue": "This date is too early.", "engine": "This date must be between 22-03-2026 and 05-04-2026.", "parity": "differs"}
+    },
+    {
+      "key": "window/window-late",
+      "rule": {"type": "window", "fields": ["visit_date_2"], "windowFrom": "[visit_date_bl]", "windowFromOp": ["ref", "visit_date_bl", null], "windowLo": 21, "windowHi": 35, "windowUnit": "days", "dateType": "date", "dateFormat": "dmy", "fromType": "date", "fromFormat": "dmy"},
+      "finding": {"type": "window", "reason": "window-late", "field": "visit_date_2"},
+      "form": {"values": {"visit_date_bl": "01-03-2026", "visit_date_2": "06-04-2026"}, "field": "visit_date_2"},
+      "staff":  {"catalogue": "The date is later than its allowed window. The window closes 35 days after [visit_date_bl].", "engine": "This date must be between 22-03-2026 and 05-04-2026. (21 to 35 days after [visit_date_bl])", "parity": "differs"},
+      "survey": {"catalogue": "This date is too late.", "engine": "This date must be between 22-03-2026 and 05-04-2026.", "parity": "differs"}
+    },
+    {
+      "key": "window/future",
+      "rule": {"type": "window", "fields": ["collected"], "windowNotFuture": true, "dateType": "date", "dateFormat": "ymd"},
+      "finding": {"type": "window", "reason": "future", "field": "collected"},
+      "form": {"values": {"collected": "2026-10-10"}, "field": "collected", "config": {"clock": {"today": "2026-10-09", "now": "2026-10-09 12:00:00"}}},
+      "staff":  {"catalogue": "The date is in the future.", "engine": "This date is after today (2026-10-09).", "parity": "differs"},
+      "survey": {"catalogue": "This date cannot be in the future.", "engine": "This date is after today (2026-10-09).", "parity": "differs"}
+    },
+    {
+      "key": "window/past",
+      "rule": {"type": "window", "fields": ["collected"], "windowNotPast": true, "dateType": "date", "dateFormat": "ymd"},
+      "finding": {"type": "window", "reason": "past", "field": "collected"},
+      "form": {"values": {"collected": "2026-10-08"}, "field": "collected", "config": {"clock": {"today": "2026-10-09", "now": "2026-10-09 12:00:00"}}},
+      "staff":  {"catalogue": "The date is in the past.", "engine": "This date is before today (2026-10-09).", "parity": "differs"},
+      "survey": {"catalogue": "This date cannot be in the past.", "engine": "This date is before today (2026-10-09).", "parity": "differs"}
+    },
+    {
+      "key": "window/*",
+      "rule": {"type": "window", "fields": ["collected"]},
+      "finding": {"type": "window", "reason": "window", "field": "collected"},
+      "form": null,
+      "formAbsent": "The report's line for a reason of this check that has no line of its own. The form has no such fallback: it words each reason it judges.",
+      "staff":  {"catalogue": "The date is outside its allowed window.", "engine": null},
+      "survey": {"catalogue": "This date is not allowed here.", "engine": null}
+    },
+    {
+      "key": "exists/not-found",
+      "rule": {"type": "exists", "fields": ["spec"], "existsSurveys": true},
+      "finding": {"type": "exists", "reason": "not-found", "field": "spec"},
+      "form": {"values": {"spec": "SP-2"}, "field": "spec", "reply": {"state": "not-found"}},
+      "staff":  {"catalogue": "The value is not saved where this rule looks for it.", "engine": "This value is not saved where it should be. Check it, or record it there first.", "parity": "differs"},
+      "survey": {"catalogue": "This value was not found.", "engine": "This value is not saved where it should be. Check it, or record it there first.", "parity": "differs"}
+    },
+    {
+      "key": "exists/filtered",
+      "rule": {"type": "exists", "fields": ["spec"], "existsSurveys": true},
+      "finding": {"type": "exists", "reason": "filtered", "field": "spec"},
+      "form": {"values": {"spec": "SP-2"}, "field": "spec", "reply": {"state": "not-found", "filtered": true}},
+      "staff":  {"catalogue": "The value is saved, but not in an entry that meets this rule's conditions.", "engine": "This value is saved, but not in an entry that meets this rule's conditions.", "parity": "differs"},
+      "survey": {"catalogue": "This value was not found.", "engine": "This value is not saved where it should be. Check it, or record it there first.", "parity": "differs"}
+    },
+    {
+      "key": "exists/*",
+      "rule": {"type": "exists", "fields": ["spec"]},
+      "finding": {"type": "exists", "reason": "exists", "field": "spec"},
+      "form": null,
+      "formAbsent": "The report's line for a reason of this check that has no line of its own. The form has no such fallback: it words each reason it judges.",
+      "staff":  {"catalogue": "The value is not saved where this rule looks for it.", "engine": null},
+      "survey": {"catalogue": "This value was not found.", "engine": null}
+    },
+    {
+      "key": "range/soft-low",
+      "rule": {"type": "range", "fields": ["hb"], "rangeSoftLo": "12", "rangeSoftHi": "17.5", "rangeHardLo": "3", "rangeHardHi": "25", "rangeUnit": "g/dL", "rangeSoftText": "12 to 17.5 g/dL", "rangeHardText": "3 to 25 g/dL"},
+      "finding": {"type": "range", "reason": "soft-low", "field": "hb"},
+      "form": {"values": {"hb": "11.9"}, "field": "hb"},
+      "staff":  {"catalogue": "The value is lower than usual for this field. Expected 12 to 17.5 g/dL.", "engine": "This value is lower than usual (expected 12 to 17.5 g/dL).", "parity": "differs"},
+      "survey": {"catalogue": "This value is lower than expected. Please check it.", "engine": "This value is lower than usual (expected 12 to 17.5 g/dL).", "parity": "differs"}
+    },
+    {
+      "key": "range/soft-high",
+      "rule": {"type": "range", "fields": ["hb"], "rangeSoftLo": "12", "rangeSoftHi": "17.5", "rangeHardLo": "3", "rangeHardHi": "25", "rangeUnit": "g/dL", "rangeSoftText": "12 to 17.5 g/dL", "rangeHardText": "3 to 25 g/dL"},
+      "finding": {"type": "range", "reason": "soft-high", "field": "hb"},
+      "form": {"values": {"hb": "18"}, "field": "hb"},
+      "staff":  {"catalogue": "The value is higher than usual for this field. Expected 12 to 17.5 g/dL.", "engine": "This value is higher than usual (expected 12 to 17.5 g/dL).", "parity": "differs"},
+      "survey": {"catalogue": "This value is higher than expected. Please check it.", "engine": "This value is higher than usual (expected 12 to 17.5 g/dL).", "parity": "differs"}
+    },
+    {
+      "key": "range/hard-low",
+      "rule": {"type": "range", "fields": ["hb"], "rangeSoftLo": "12", "rangeSoftHi": "17.5", "rangeHardLo": "3", "rangeHardHi": "25", "rangeUnit": "g/dL", "rangeSoftText": "12 to 17.5 g/dL", "rangeHardText": "3 to 25 g/dL"},
+      "finding": {"type": "range", "reason": "hard-low", "field": "hb"},
+      "form": {"values": {"hb": "2"}, "field": "hb"},
+      "staff":  {"catalogue": "The value is below the lowest plausible value for this field. Allowed 3 to 25 g/dL.", "engine": "This value is below the plausible range (allowed 3 to 25 g/dL).", "parity": "differs"},
+      "survey": {"catalogue": "This value is too low.", "engine": "This value is below the plausible range (allowed 3 to 25 g/dL).", "parity": "differs"}
+    },
+    {
+      "key": "range/hard-high",
+      "rule": {"type": "range", "fields": ["hb"], "rangeSoftLo": "12", "rangeSoftHi": "17.5", "rangeHardLo": "3", "rangeHardHi": "25", "rangeUnit": "g/dL", "rangeSoftText": "12 to 17.5 g/dL", "rangeHardText": "3 to 25 g/dL"},
+      "finding": {"type": "range", "reason": "hard-high", "field": "hb"},
+      "form": {"values": {"hb": "25.1"}, "field": "hb"},
+      "staff":  {"catalogue": "The value is above the highest plausible value for this field. Allowed 3 to 25 g/dL.", "engine": "This value is above the plausible range (allowed 3 to 25 g/dL).", "parity": "differs"},
+      "survey": {"catalogue": "This value is too high.", "engine": "This value is above the plausible range (allowed 3 to 25 g/dL).", "parity": "differs"}
+    },
+    {
+      "key": "range/plausible-low",
+      "rule": {"type": "range", "fields": ["weight"], "rangeReference": "t-days", "rangeMale": "1", "rangeFemale": "2", "rangeSoftLo": "-2", "rangeSoftHi": "2", "rangeHardLo": "-5", "rangeHardHi": "5", "rangeSoftText": "z-score -2 to 2", "rangeHardText": "z-score -5 to 5", "rangePlausibleLo": "2", "rangePlausibleHi": "30", "rangePlausibleText": "2 to 30 kg", "rangeSexOp": ["ref", "sex", null], "rangeAgeDobOp": ["ref", "dob", null], "rangeAgeAtOp": ["ref", "visit_date", null], "rangeDobType": "date", "rangeDobFormat": "dmy", "rangeAtType": "date", "rangeAtFormat": "ymd"},
+      "finding": {"type": "range", "reason": "plausible-low", "field": "weight"},
+      "form": {"values": {"sex": "3", "dob": "01-01-2026", "visit_date": "2026-01-03", "weight": "1"}, "field": "weight", "config": {"growth": {"t-days": {"title": "Test, age in days", "measure": "weight", "unit": "kg", "axis": "age", "axisUnit": "days", "lookup": "round", "valid": {"min": "0", "below": "10"}, "adjust": "who-restricted", "scale": 1, "first": 0, "male": [[1, 10, 0.1], [1, 10, 0.1], [1, 10, 0.1]], "female": [[1, 8, 0.1], [1, 8, 0.1], [1, 8, 0.1]]}}}},
+      "staff":  {"catalogue": "The value is below the plausible range of its growth rule, which judged it because its z-score could not be worked out. Allowed 2 to 30 kg.", "engine": "This value is below the plausible range (allowed 2 to 30 kg; no z-score on Test, age in days: the sex code is neither 1 (male) nor 2 (female)).", "parity": "differs"},
+      "survey": {"catalogue": "This value is too low.", "engine": "This value is below the plausible range (allowed 2 to 30 kg).", "parity": "differs"}
+    },
+    {
+      "key": "range/plausible-high",
+      "rule": {"type": "range", "fields": ["weight"], "rangeReference": "t-days", "rangeMale": "1", "rangeFemale": "2", "rangeSoftLo": "-2", "rangeSoftHi": "2", "rangeHardLo": "-5", "rangeHardHi": "5", "rangeSoftText": "z-score -2 to 2", "rangeHardText": "z-score -5 to 5", "rangePlausibleLo": "2", "rangePlausibleHi": "30", "rangePlausibleText": "2 to 30 kg", "rangeSexOp": ["ref", "sex", null], "rangeAgeDobOp": ["ref", "dob", null], "rangeAgeAtOp": ["ref", "visit_date", null], "rangeDobType": "date", "rangeDobFormat": "dmy", "rangeAtType": "date", "rangeAtFormat": "ymd"},
+      "finding": {"type": "range", "reason": "plausible-high", "field": "weight"},
+      "form": {"values": {"sex": "3", "dob": "01-01-2026", "visit_date": "2026-01-03", "weight": "95"}, "field": "weight", "config": {"growth": {"t-days": {"title": "Test, age in days", "measure": "weight", "unit": "kg", "axis": "age", "axisUnit": "days", "lookup": "round", "valid": {"min": "0", "below": "10"}, "adjust": "who-restricted", "scale": 1, "first": 0, "male": [[1, 10, 0.1], [1, 10, 0.1], [1, 10, 0.1]], "female": [[1, 8, 0.1], [1, 8, 0.1], [1, 8, 0.1]]}}}},
+      "staff":  {"catalogue": "The value is above the plausible range of its growth rule, which judged it because its z-score could not be worked out. Allowed 2 to 30 kg.", "engine": "This value is above the plausible range (allowed 2 to 30 kg; no z-score on Test, age in days: the sex code is neither 1 (male) nor 2 (female)).", "parity": "differs"},
+      "survey": {"catalogue": "This value is too high.", "engine": "This value is above the plausible range (allowed 2 to 30 kg).", "parity": "differs"}
+    },
+    {
+      "key": "range/not-a-number",
+      "rule": {"type": "range", "fields": ["hb"], "rangeSoftLo": "12", "rangeSoftHi": "17.5", "rangeHardLo": "3", "rangeHardHi": "25", "rangeUnit": "g/dL", "rangeSoftText": "12 to 17.5 g/dL", "rangeHardText": "3 to 25 g/dL"},
+      "finding": {"type": "range", "reason": "not-a-number", "field": "hb"},
+      "form": {"values": {"hb": "abc"}, "field": "hb"},
+      "staff":  {"catalogue": "The value is not a number.", "engine": "This is not a number.", "parity": "differs"},
+      "survey": {"catalogue": "Please enter a number.", "engine": "This is not a number.", "parity": "differs"}
+    },
+    {
+      "key": "range/not-positive",
+      "rule": {"type": "range", "fields": ["weight"], "rangeReference": "t-days", "rangeMale": "1", "rangeFemale": "2", "rangeSoftLo": "-2", "rangeSoftHi": "2", "rangeHardLo": "-5", "rangeHardHi": "5", "rangeSoftText": "z-score -2 to 2", "rangeHardText": "z-score -5 to 5", "rangeSexOp": ["ref", "sex", null], "rangeAgeDobOp": ["ref", "dob", null], "rangeAgeAtOp": ["ref", "visit_date", null], "rangeDobType": "date", "rangeDobFormat": "dmy", "rangeAtType": "date", "rangeAtFormat": "ymd"},
+      "finding": {"type": "range", "reason": "not-positive", "field": "weight"},
+      "form": {"values": {"sex": "1", "dob": "01-01-2026", "visit_date": "2026-01-03", "weight": "0"}, "field": "weight", "config": {"growth": {"t-days": {"title": "Test, age in days", "measure": "weight", "unit": "kg", "axis": "age", "axisUnit": "days", "lookup": "round", "valid": {"min": "0", "below": "10"}, "adjust": "who-restricted", "scale": 1, "first": 0, "male": [[1, 10, 0.1], [1, 10, 0.1], [1, 10, 0.1]], "female": [[1, 8, 0.1], [1, 8, 0.1], [1, 8, 0.1]]}}}},
+      "staff":  {"catalogue": "The measurement is 0 or below.", "engine": "A measurement must be above 0.", "parity": "differs"},
+      "survey": {"catalogue": "Please enter a measurement above 0.", "engine": "A measurement must be above 0.", "parity": "differs"}
+    },
+    {
+      "key": "range/*",
+      "rule": {"type": "range", "fields": ["hb"]},
+      "finding": {"type": "range", "reason": "range", "field": "hb"},
+      "form": null,
+      "formAbsent": "The report's line for a reason of this check that has no line of its own. The form has no such fallback: it words each reason it judges.",
+      "staff":  {"catalogue": "The value is outside its plausible range.", "engine": null},
+      "survey": {"catalogue": "This value is not allowed here.", "engine": null}
+    },
+    {
+      "key": "constraint/assert",
+      "rule": {"type": "constraint", "fields": ["end"], "assert": "[end]>=[start]"},
+      "finding": {"type": "constraint", "reason": "assert", "field": "end"},
+      "form": {"values": {"start": "2024-01-10", "end": "2024-01-05"}, "field": "end"},
+      "staff":  {"catalogue": "The value does not satisfy this rule's condition. The rule requires: [end]>=[start]", "engine": "This value fails its validation rule for this field.", "parity": "differs"},
+      "survey": {"catalogue": "This entry is not valid together with the other answers.", "engine": "This entry is not valid together with the other answers.", "parity": "same"}
+    },
+    {
+      "key": "constraint/assert", "variant": "the rule's own message",
+      "rule": {"type": "constraint", "fields": ["end"], "assert": "[end]>=[start]", "message": "End date must be on or after the start date."},
+      "finding": {"type": "constraint", "reason": "assert", "field": "end"},
+      "form": {"values": {"start": "2024-01-10", "end": "2024-01-05"}, "field": "end"},
+      "staff":  {"catalogue": "End date must be on or after the start date. The rule requires: [end]>=[start]", "engine": "End date must be on or after the start date.", "parity": "differs"},
+      "survey": {"catalogue": "End date must be on or after the start date.", "engine": "End date must be on or after the start date.", "parity": "same"}
+    },
+    {
+      "key": "single/format",
+      "rule": {"type": "single", "fields": ["sid"], "algorithm": "iso7064_mod37_36", "idPattern": "[0-9A-Z]{9}", "idLengths": [9]},
+      "finding": {"type": "single", "reason": "format", "field": "sid"},
+      "form": {"values": {"sid": "zz!"}, "field": "sid"},
+      "staff":  {"catalogue": "The value does not match the format this field requires.", "engine": "FORMAT error at character 3: expected letter/digit, got !. (The check character is only tested once the format is right.)", "parity": "differs"},
+      "survey": {"catalogue": "This entry is not in the expected format.", "engine": "FORMAT error at character 3: expected letter/digit, got !. (The check character is only tested once the format is right.)", "parity": "differs"}
+    },
+    {
+      "key": "single/check-character",
+      "rule": {"type": "single", "fields": ["sid"], "algorithm": "iso7064_mod37_36", "idPattern": "[0-9A-Z]{9}", "idLengths": [9]},
+      "finding": {"type": "single", "reason": "check-character", "field": "sid"},
+      "form": {"values": {"sid": "0ABC0000J"}, "field": "sid"},
+      "staff":  {"catalogue": "The format is right but the check character does not match, so one character is mistyped.", "engine": "The format is correct, but the CHECK character does not match — one of the characters is mistyped. Please re-scan or re-type it.", "parity": "differs"},
+      "survey": {"catalogue": "This ID looks mistyped - please check it.", "engine": "The format is correct, but the CHECK character does not match — one of the characters is mistyped. Please re-scan or re-type it.", "parity": "differs"}
+    },
+    {
+      "key": "pooled/check-character",
+      "rule": {"type": "pooled", "fields": ["pool"], "algorithm": "iso7064_mod37_36", "idPattern": "[0-9A-Z]{9}", "idLengths": [9]},
+      "finding": {"type": "pooled", "reason": "check-character", "field": "pool"},
+      "form": {"values": {"pool": "0ABC0000H0ABC0001X0DEF00093"}, "field": "pool"},
+      "staff":  {"catalogue": "At least one ID in this field has a check character that does not match, so a character is mistyped.", "engine": "3 IDs read — 1 check-character mismatch ✓ 0ABC0000H ✗ 0ABC0001X ✓ 0DEF00093", "parity": "differs"},
+      "survey": {"catalogue": "An ID here looks mistyped - please check it.", "engine": "3 IDs read — 1 check-character mismatch ✓ 0ABC0000H ✗ 0ABC0001X ✓ 0DEF00093", "parity": "differs"}
+    },
+    {
+      "key": "pooled/duplicate",
+      "rule": {"type": "pooled", "fields": ["pool"], "algorithm": "iso7064_mod37_36", "idPattern": "[0-9A-Z]{9}", "idLengths": [9]},
+      "finding": {"type": "pooled", "reason": "duplicate", "field": "pool"},
+      "form": {"values": {"pool": "0ABC0000H 0ABC0000H"}, "field": "pool"},
+      "staff":  {"catalogue": "The same ID appears more than once in this field.", "engine": "2 IDs read — 1 duplicate ✓ 0ABC0000H ⊗ 0ABC0000H (again!)", "parity": "differs"},
+      "survey": {"catalogue": "The same ID appears more than once.", "engine": "2 IDs read — 1 duplicate ✓ 0ABC0000H ⊗ 0ABC0000H (again!)", "parity": "differs"}
+    },
+    {
+      "key": "pooled/junk",
+      "rule": {"type": "pooled", "fields": ["pool"], "algorithm": "iso7064_mod37_36", "idPattern": "[0-9A-Z]{9}", "idLengths": [9]},
+      "finding": {"type": "pooled", "reason": "junk", "field": "pool"},
+      "form": {"values": {"pool": "0ABC0000H zz!"}, "field": "pool"},
+      "staff":  {"catalogue": "This field contains text that is not a recognisable ID.", "engine": "1 ID read — leftover text that is not an ID ✓ 0ABC0000H ? ZZ", "parity": "differs"},
+      "survey": {"catalogue": "Some of this entry is not a recognisable ID.", "engine": "1 ID read — leftover text that is not an ID ✓ 0ABC0000H ? ZZ", "parity": "differs"}
+    },
+    {
+      "key": "pooled/no-id",
+      "rule": {"type": "pooled", "fields": ["pool"], "algorithm": "iso7064_mod37_36", "idPattern": "[0-9A-Z]{9}", "idLengths": [9]},
+      "finding": {"type": "pooled", "reason": "no-id", "field": "pool"},
+      "form": {"values": {"pool": "zz"}, "field": "pool"},
+      "staff":  {"catalogue": "No recognisable ID could be found in this field.", "engine": "0 IDs read — no ID could be read; leftover text that is not an ID ? ZZ", "parity": "differs"},
+      "survey": {"catalogue": "No ID was found here.", "engine": "0 IDs read — no ID could be read; leftover text that is not an ID ? ZZ", "parity": "differs"}
+    },
+    {
+      "key": "pooled/count",
+      "rule": {"type": "pooled", "fields": ["pool"], "algorithm": "iso7064_mod37_36", "idPattern": "[0-9A-Z]{9}", "idLengths": [9], "expectedIds": 2},
+      "finding": {"type": "pooled", "reason": "count", "field": "pool"},
+      "form": {"values": {"pool": "0ABC0000H"}, "field": "pool"},
+      "staff":  {"catalogue": "This field does not hold the expected number of IDs.", "engine": "1 ID read — 1 IDs read but 2 expected ✓ 0ABC0000H", "parity": "differs"},
+      "survey": {"catalogue": "This entry does not hold the expected number of IDs.", "engine": "1 ID read — 1 IDs read but 2 expected ✓ 0ABC0000H", "parity": "differs"}
+    },
+    {
+      "key": "single/*",
+      "rule": {"type": "single", "fields": ["sid"]},
+      "finding": {"type": "single", "reason": "single", "field": "sid"},
+      "form": null,
+      "formAbsent": "The report's line for a reason of this check that has no line of its own. The form has no such fallback: it words each reason it judges.",
+      "staff":  {"catalogue": "This value failed the ID check configured for the field.", "engine": null},
+      "survey": {"catalogue": "This entry is not valid.", "engine": null}
+    },
+    {
+      "key": "pooled/*",
+      "rule": {"type": "pooled", "fields": ["pool"]},
+      "finding": {"type": "pooled", "reason": "pooled", "field": "pool"},
+      "form": null,
+      "formAbsent": "The report's line for a reason of this check that has no line of its own. The form has no such fallback: it words each reason it judges.",
+      "staff":  {"catalogue": "One or more IDs in this field are not valid.", "engine": null},
+      "survey": {"catalogue": "One or more IDs here are not valid.", "engine": null}
+    },
+    {
+      "key": "*/*",
+      "rule": {"type": "newcheck", "fields": ["x"]},
+      "finding": {"type": "newcheck", "reason": "stale", "field": "x"},
+      "form": null,
+      "formAbsent": "The report's last resort, for a check that has no line in the catalogue at all. The form words each check it runs itself.",
+      "staff":  {"catalogue": "Rule 1 reported \"stale\" for this value. No wording is configured for this kind of finding.", "engine": null},
+      "survey": {"catalogue": "This entry is not valid.", "engine": null}
+    },
+    {
+      "key": "unique/duplicate-value", "variant": "the rule's own message",
+      "rule": {"type": "unique", "fields": ["pid"], "uniqueSurveys": true, "message": "This participant ID is taken."},
+      "finding": {"type": "unique", "reason": "duplicate-value", "field": "pid"},
+      "form": {"values": {"pid": "AB100"}, "field": "pid", "replies": {"staff": {"used": true, "record": "7"}, "survey": {"used": true, "record": null}}},
+      "staff":  {"catalogue": "This participant ID is taken.", "engine": "This participant ID is taken.", "parity": "same"},
+      "survey": {"catalogue": "This participant ID is taken.", "engine": "This participant ID is taken.", "parity": "same"}
+    },
+    {
+      "key": "exists/filtered", "variant": "the rule's own messages",
+      "rule": {"type": "exists", "fields": ["spec"], "existsSurveys": true, "message": "Register it first.", "whereMessage": "Not eligible."},
+      "finding": {"type": "exists", "reason": "filtered", "field": "spec"},
+      "form": {"values": {"spec": "SP-2"}, "field": "spec", "reply": {"state": "not-found", "filtered": true}},
+      "staff":  {"catalogue": "Not eligible.", "engine": "Not eligible.", "parity": "same"},
+      "survey": {"catalogue": "Not eligible.", "engine": "Register it first.", "parity": "differs"}
+    },
+    {
+      "key": "range/returned-stale",
+      "rule": {"type": "range", "fields": ["wfa_z"]},
+      "finding": {"type": "range", "reason": "returned-stale", "field": "wfa_z"},
+      "form": null,
+      "formAbsent": "The form writes a growth rule's returned value again each time it computes it, so it never shows one out of date. A value an import left behind is found by the audit and the scan.",
+      "staff":  {"catalogue": "This field holds a value its growth rule returned for an earlier measurement or input. An import does not refill it; open the form and save it to write the current value.", "engine": null},
+      "survey": {"catalogue": "This value is out of date.", "engine": null}
+    },
+    {
+      "key": "delta/up",
+      "rule": {"type": "delta", "fields": ["weight"], "deltaVs": "[w0]", "deltaVsOp": ["ref", "w0", null], "deltaVsLabel": "[w0]", "deltaMax": "5", "deltaUnit": "kg", "deltaText": "a change of at most 5 kg"},
+      "finding": {"type": "delta", "reason": "up", "field": "weight"},
+      "form": {"values": {"w0": "70", "weight": "80"}, "field": "weight"},
+      "staff":  {"catalogue": "The value rose more than allowed from the value it is compared with. Allowed a change of at most 5 kg from [w0].", "engine": "This value rose by 10 kg (14.3%) from 70 kg ([w0]). Allowed: a change of at most 5 kg.", "parity": "differs"},
+      "survey": {"catalogue": "This value is much higher than before. Please check it.", "engine": "This value rose by 10 kg (14.3%) from 70 kg. Allowed: a change of at most 5 kg.", "parity": "differs"}
+    },
+    {
+      "key": "delta/down",
+      "rule": {"type": "delta", "fields": ["weight"], "deltaVs": "[w0]", "deltaVsOp": ["ref", "w0", null], "deltaVsLabel": "[w0]", "deltaMax": "5", "deltaUnit": "kg", "deltaText": "a change of at most 5 kg"},
+      "finding": {"type": "delta", "reason": "down", "field": "weight"},
+      "form": {"values": {"w0": "70", "weight": "60"}, "field": "weight"},
+      "staff":  {"catalogue": "The value fell more than allowed from the value it is compared with. Allowed a change of at most 5 kg from [w0].", "engine": "This value fell by 10 kg (14.3%) from 70 kg ([w0]). Allowed: a change of at most 5 kg.", "parity": "differs"},
+      "survey": {"catalogue": "This value is much lower than before. Please check it.", "engine": "This value fell by 10 kg (14.3%) from 70 kg. Allowed: a change of at most 5 kg.", "parity": "differs"}
+    },
+    {
+      "key": "delta/*",
+      "rule": {"type": "delta", "fields": ["weight"]},
+      "finding": {"type": "delta", "reason": "delta", "field": "weight"},
+      "form": null,
+      "formAbsent": "The report's line for a reason of this check that has no line of its own. The form has no such fallback: it words each reason it judges.",
+      "staff":  {"catalogue": "The value changed more than allowed from the value it is compared with.", "engine": null},
+      "survey": {"catalogue": "This value changed more than expected. Please check it.", "engine": null}
+    },
+    {
+      "key": "writeonce/changed",
+      "rule": {"type": "writeonce", "fields": ["consent_date"]},
+      "finding": {"type": "writeonce", "reason": "changed", "field": "consent_date"},
+      "form": null,
+      "formAbsent": "The form locks a field with @UVWRITEONCE once it holds a saved value, so the value cannot be changed there. The audit and the scan read a change made another way from the project's log.",
+      "staff":  {"catalogue": "The value was changed after its first save locked it.", "engine": null},
+      "survey": {"catalogue": "This answer was changed after it was first saved.", "engine": null}
+    },
+    {
+      "key": "writeonce/cleared",
+      "rule": {"type": "writeonce", "fields": ["consent_date"]},
+      "finding": {"type": "writeonce", "reason": "cleared", "field": "consent_date"},
+      "form": null,
+      "formAbsent": "The form locks a field with @UVWRITEONCE once it holds a saved value, so the value cannot be cleared there. The audit and the scan read a clearing made another way from the project's log.",
+      "staff":  {"catalogue": "The value was cleared after its first save locked it.", "engine": null},
+      "survey": {"catalogue": "This answer was removed after it was first saved.", "engine": null}
+    },
+    {
+      "key": "writeonce/*",
+      "rule": {"type": "writeonce", "fields": ["consent_date"]},
+      "finding": {"type": "writeonce", "reason": "writeonce", "field": "consent_date"},
+      "form": null,
+      "formAbsent": "The report's line for a reason of this check that has no line of its own. The form has no such fallback: it words each reason it judges.",
+      "staff":  {"catalogue": "The value was changed after its first save locked it.", "engine": null},
+      "survey": {"catalogue": "This answer was changed after it was first saved.", "engine": null}
+    },
+    {
+      "key": "justify/*",
+      "rule": {"type": "justify", "fields": ["weight_reason"]},
+      "finding": {"type": "justify", "reason": "justify", "field": "weight_reason"},
+      "form": null,
+      "formAbsent": "The report's line for a reason of this check that has no line of its own. The form has no such fallback: it words each reason it judges.",
+      "staff":  {"catalogue": "A reason given in another field stands for this field's broken rules.", "engine": null},
+      "survey": {"catalogue": "A reason was given for this answer.", "engine": null}
+    },
+    {
+      "key": "single/too-long",
+      "rule": {"type": "single", "fields": ["sid"], "algorithm": "iso7064_mod37_36", "idPattern": "[0-9A-Z]{9}", "idLengths": [9]},
+      "finding": {"type": "single", "reason": "too-long", "field": "sid"},
+      "form": {"values": {"sid": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}, "field": "sid"},
+      "staff":  {"catalogue": "The value is longer than 512 characters, more than any ID field holds, so it was not checked.", "engine": "This value is too long for an ID field (over 512 characters) — validation skipped.", "parity": "differs"},
+      "survey": {"catalogue": "This entry is too long.", "engine": "This value is too long for an ID field (over 512 characters) — validation skipped.", "parity": "differs"}
+    }
+  ]
+}

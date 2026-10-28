@@ -132,6 +132,10 @@ jobs:
         run: node tests/explain_js.cjs
       - name: Durable scan client (progress loop, refusals, backoff)
         run: node tests/scan_client_js.cjs
+      - name: Durable scan findings panel (keyset pages, filters, refusals, marks)
+        run: node tests/scan_panel_js.cjs
+      - name: JS message parity fixture (the form's sentence beside the report's)
+        run: node tests/messages_fixture_js.cjs
 
   php-parity:
     runs-on: ubuntu-latest
@@ -164,6 +168,11 @@ jobs:
           php tests/collection_index_php.php
           php tests/docs_examples_php.php
           python3 tests/temporal_mutations.py
+      # 28 defects of @UVEXISTS "where" and of reading a condition whole, each
+      # applied to a disposable copy and required to fail the suite named
+      # beside it. About 45 seconds; Node is on the runner image.
+      - name: '@UVEXISTS where mutations'
+        run: PHP_BIN=php python3 tests/exists_where_mutations.py
       - name: PHP syntax check
         run: |
           php -l php/CheckCharacter.php
@@ -244,6 +253,8 @@ jobs:
         run: php tests/annotation_php.php
       - name: PHP rule message as a language map (grammar, refusals, string messages unchanged)
         run: php tests/message_i18n_php.php
+      - name: PHP message parity fixture (the report's sentence beside the form's)
+        run: php tests/messages_fixture_php.php
       - name: PHP @UVCHOICES choices parser + branching
         run: php tests/choices_php.php
       - name: PHP @UVWINDOW verdict vs fixture, hooks, fold, audit and scan clock
@@ -340,9 +351,9 @@ jobs:
         run: php tests/scan_identity_php.php
       - name: Durable scan report (a stored finding renders as the legacy report does)
         run: php tests/scan_report_php.php
-      - name: Durable scan export (a stored report streams as a CSV file, page by page)
+      - name: Durable scan export (the CSV of a stored run, paged, defused, flat memory)
         run: php tests/scan_export_php.php
-      - name: Durable scan reason bits (a pooled reason as a mask, and the branch that judged it)
+      - name: Durable scan reason bits (a pooled reason's mask, the judging branch, the identity unchanged)
         run: php tests/scan_reason_bits_php.php
       - name: Durable scan store faults (a database failure is not a takeover)
         run: php tests/scan_sqlstore_fault_php.php
@@ -364,6 +375,10 @@ jobs:
         run: php tests/scan_cron_php.php
       - name: Durable scan worker (phases, stable reads, catch-up, promotion)
         run: php tests/scan_worker_php.php
+      - name: Durable scan finding count (panel, page, file and summary agree in every state)
+        run: php tests/scan_counting_php.php
+      - name: Scan docs name only settings, tables, crons, pages and actions that exist
+        run: php tests/docs_claims_php.php
       - name: Algorithm set is complete (fixture == PHP engine == allow-list == dropdown)
         run: php tests/algorithm_coverage_php.php
 

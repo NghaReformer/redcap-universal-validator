@@ -75,14 +75,24 @@ final class ScanWorker
      * batch whose every record left the group. work() answers `moved`.
      */
     private $walked = false;
+    /** @var bool the run being worked is scoped to one group: its summary is kept per group (rv11a1-4) */
+    private $groupRun = false;
+    /**
+     * @var ?string the run's opening fence (fence_open), read with the run
+     * row in work(): a record whose log goes no further than it has not
+     * changed since the run was planned (review rvc2-1, see batch())
+     */
+    private $fenceOpen = null;
 
     /**
      * @param array $deps {
      *   slots:          ?WorkerSlots  installation semaphore; null means unrationed
      *   fence:          ?RecordVersions  null means reads cannot be proved stable
      *   read:           callable(string[] $ids): array{ok:bool, data:array, why:?string}
-     *   evaluate:       callable(string $id, array $node): array{findings:array, bytes:int,
-     *                                                            contexts:int, why:?string}
+     *   evaluate:       callable(string $id, array $node, bool $settled): array{findings:array,
+     *                                 bytes:int, contexts:int, why:?string}; $settled
+     *                                 is true for a record the log shows unchanged
+     *                                 since the opening fence (review rvc2-1)
      *   budget:         WorkBudget
      *   owner:          string        who this worker is, for the leases
      *   attempts:       int           how many times one record may be retried
@@ -147,6 +157,8 @@ final class ScanWorker
             return self::stop('no scan with that reference is running for this project');
         }
         $phase = (string) $run['phase'];
+        $this->fenceOpen = (isset($run['fence_open']) && is_string($run['fence_open'])
+                            && ctype_digit($run['fence_open'])) ? $run['fence_open'] : null;
 
         // A CANCELLED RUN HAS TO BE FINISHED BY SOMEBODY.
         //
@@ -343,6 +355,7 @@ final class ScanWorker
             // finalizer is bound to it below; a row without one binds nothing
             // and the finalizer then writes nothing (review R8-5).
             $seq = isset($run['run_seq']) ? (int) $run['run_seq'] : 0;
+            $this->groupRun = isset($run['scope_dag']) && $run['scope_dag'] !== null && $run['scope_dag'] !== '';
             $r = $this->loop($pid, $runId, $phase, $epoch,
                 (int) $run['generation_id'], $seq, $opts, $keep);
             if ($listed > 0) $r['listed'] = (isset($r['listed']) ? (int) $r['listed'] : 0) + $listed;
@@ -516,10 +529,18 @@ final class ScanWorker
                 // `revisited` is the part of `verified` below the group's
                 // furthest point; only what lies past it is new ground.
                 $revisited = isset($r['revisited']) ? max(0, (int) $r['revisited']) : 0;
+                // AND DROPPING A DEPARTED RECORD'S CANDIDATES IS (review
+                // rvf2-6). That step reads nothing, writes no finding and says
+                // why, so it met the rule below and ended the request with
+                // ok:false over a group "being checked again without it":
+                // every departure needed a Continue, and a page left alone
+                // aged toward the reaper. Each candidate is dropped once, so
+                // counting them cannot keep a run moving for ever.
                 $forward = max(0, (int) $r['groups'])
                          + max(0, max(0, (int) $r['verified']) - $revisited)
                          + max(0, (int) $r['emitted']) + max(0, (int) $r['collisions'])
-                         + (isset($r['published']) ? max(0, (int) $r['published']) : 0);
+                         + (isset($r['published']) ? max(0, (int) $r['published']) : 0)
+                         + (isset($r['dropped']) ? max(0, (int) $r['dropped']) : 0);
                 $reread = isset($r['read']) ? max(0, (int) $r['read']) : 0;
                 $stepWhy = isset($r['why']) && $r['why'] !== null ? (string) $r['why'] : null;
                 // A STEP THAT DID NOTHING AND SAYS WHY IS AN ANSWER (R3S-N4).
@@ -595,7 +616,9 @@ final class ScanWorker
                 $roll = isset($this->deps['rollup']) ? $this->deps['rollup'] : null;
                 if ($roll instanceof RollupBuilder) {
                     $mark = $budget->mark('rows');
-                    $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim('rows'));
+                    // A group run's counts per group (review rv11a1-4).
+                    $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim('rows'),
+                                     $this->groupRun);
                     $listed += max(0, (int) $r['rows']);
                     if (!$r['done']) {
                         if ($r['rows'] === 0 && $r['why'] !== null) {
@@ -907,6 +930,20 @@ final class ScanWorker
                 && (!array_key_exists($id, $before) || !array_key_exists($id, $after)
                     || $before[$id] !== $after[$id]);
         };
+        // UNCHANGED SINCE THE RUN WAS PLANNED (review rvc2-1): the log shows
+        // the record, and nothing of it after the opening fence. So every
+        // value it holds was saved by the time the run froze its clock, and a
+        // date judged against that clock with no saved day is judged against
+        // a day no earlier than the one it was saved on. Anything else - no
+        // fence, a record the log does not show, one saved since - is not
+        // known to be, and findingsWindow() then judges no date against the
+        // frozen day that the request's clock would pass.
+        $open = $this->fenceOpen;
+        $settled = function ($id) use ($fence, $after, $open) {
+            if (!($fence instanceof RecordVersions) || $open === null) return false;
+            $v = array_key_exists($id, $after) ? $after[$id] : null;
+            return is_string($v) && ctype_digit($v) && SourceFence::decCmp($v, $open) <= 0;
+        };
         // WHICH OF THE RECORDS THE READ LEFT OUT ARE REALLY GONE. Asked once for
         // the whole batch, and only about records on their LAST attempt: below
         // the cap the answer changes nothing, because the record is tried again
@@ -1066,7 +1103,7 @@ final class ScanWorker
                 continue;
             }
 
-            $ev = $this->evaluate($id, $data[$id]);
+            $ev = $this->evaluate($id, $data[$id], $settled($id));
             $verdict = ($budget !== null) ? $budget->sample() : null;
             if ($verdict === 'drop') {
                 // Its findings go first, before anything else asks for memory.
@@ -1420,11 +1457,11 @@ final class ScanWorker
     }
 
     /** Evaluate one record, turning any throw into a reported failure. */
-    private function evaluate($id, array $node)
+    private function evaluate($id, array $node, $settled = false)
     {
         try {
             $fn = $this->deps['evaluate'];
-            $r = $fn($id, $node);
+            $r = $fn($id, $node, (bool) $settled);
             if (!is_array($r)) {
                 return ['findings' => [], 'bytes' => 0, 'contexts' => 0,
                         'why' => 'this record could not be examined'];

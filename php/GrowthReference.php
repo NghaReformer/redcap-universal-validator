@@ -85,6 +85,14 @@ final class GrowthReference
      */
     const POSITIONS = ['lying', 'standing'];
     const POSITION_CORRECTS = ['measurement', 'axis'];
+    /**
+     * The code of a \RuntimeException from table() whose file is there and
+     * could not be READ, as opposed to one that was read and is wrong, or is
+     * not there (W10BF-4, review rvc2-3). A scan
+     * asks such a read again rather than judge the rule a configuration
+     * error (UniversalValidator::annotateRangeDictionary).
+     */
+    const E_UNREAD = 1;
     /** A reference id: 1 to 64 lower-case letters, digits, ".", "_" or "-". */
     const ID_RE = '/^[a-z0-9][a-z0-9_.-]{0,63}$/D';
 
@@ -111,17 +119,23 @@ final class GrowthReference
      * An entry whose "source" names an entry of the index's "sources" with a
      * "title" gets it as 'sourceTitle', which the growth chart shows.
      *
+     * 'unread' names a folder whose index could not be READ - an index.json
+     * that is there and would not open - rather than one that was read and
+     * is wrong, or is not there at all (W10BF-4, review rvc2-3). Either way
+     * the folder's references are gone; only a read that failed may be asked
+     * again.
+     *
      * @return array ['references' => [id => entry + ['dir' => folder]],
      *                'pageTables' => int, 'pageCharts' => int,
      *                'problems' => [string, ...], 'refused' => [id => why],
-     *                'broken' => why|null]
+     *                'broken' => why|null, 'unread' => why|null]
      */
     public static function catalog($extraDir = null)
     {
         $extraDir = is_string($extraDir) ? trim($extraDir) : '';
         if (isset(self::$catalogMemo[$extraDir])) return self::$catalogMemo[$extraDir];
         $out = ['references' => [], 'pageTables' => self::PAGE_TABLES, 'pageCharts' => self::PAGE_CHARTS,
-                'problems' => [], 'refused' => [], 'broken' => null];
+                'problems' => [], 'refused' => [], 'broken' => null, 'unread' => null];
         $dirs = [['dir' => self::bundledDir(), 'what' => 'the bundled references', 'extra' => false]];
         if ($extraDir !== '') $dirs[] = ['dir' => rtrim($extraDir, '/\\'), 'what' => 'the reference folder in the module settings', 'extra' => true];
         foreach ($dirs as $d) {
@@ -133,6 +147,7 @@ final class GrowthReference
                     $out['broken'] = $why;
                     $out['references'] = [];
                 }
+                if (!empty($index['unread']) && $out['unread'] === null) $out['unread'] = $why;
                 continue;
             }
             foreach (['pageTables', 'pageCharts'] as $cap) {
@@ -199,8 +214,21 @@ final class GrowthReference
         $path = $dir . DIRECTORY_SEPARATOR . 'index.json';
         // The folder's path stays out of the text: it reaches the page as part
         // of a configuration error, and the administrator knows the setting.
-        if (!is_file($path) || !is_readable($path)) return ['error' => 'the folder has no readable index.json.'];
+        //
+        // NO FOLDER, OR NO index.json IN IT, IS THE CONFIGURATION (review
+        // rvc2-3). W10BF-4 made both "could not be read just now", so while an
+        // administrator's setting named a folder that is not there, every
+        // project with a reference @UVRANGE rule was refused Start and every
+        // work request did nothing, and on a project whose rules are all of
+        // that kind the run could not even be stopped. The setting says
+        // where the references are; a place with none is what it says, and
+        // the rule is a rule problem, as before W10BF-4. Only a file that is
+        // there and will not open is a read that failed, and asked again.
+        if (!is_file($path)) return ['error' => 'the folder has no index.json.'];
+        if (!is_readable($path)) return ['error' => 'the folder\'s index.json could not be opened.', 'unread' => true];
         $raw = @file_get_contents($path);
+        // A file that would not open is not one that holds bad JSON.
+        if (!is_string($raw)) return ['error' => 'the folder\'s index.json could not be opened.', 'unread' => true];
         // a byte-order mark, as Windows Notepad saves UTF-8, is not JSON
         $j = is_string($raw) ? json_decode(self::stripBom($raw), true) : null;
         if (!is_array($j)) return ['error' => 'index.json is not valid JSON.'];
@@ -354,11 +382,15 @@ final class GrowthReference
     private static function readTable(array $entry)
     {
         $path = $entry['dir'] . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $entry['file']);
-        $size = is_file($path) ? @filesize($path) : false;
-        if ($size === false) throw new \RuntimeException('the table ' . $entry['file'] . ' of "' . $entry['id'] . '" cannot be read.');
+        // A table its index names that is not there is the folder as the
+        // administrator left it, as a missing index.json is (review rvc2-3);
+        // one that is there and will not open is a read that failed.
+        if (!is_file($path)) throw new \RuntimeException('the table ' . $entry['file'] . ' of "' . $entry['id'] . '" is not in its folder.');
+        $size = @filesize($path);
+        if ($size === false) throw new \RuntimeException('the table ' . $entry['file'] . ' of "' . $entry['id'] . '" cannot be read.', self::E_UNREAD);
         if ($size > self::MAX_TABLE_BYTES) throw new \RuntimeException('the table ' . $entry['file'] . ' is larger than 4 MB.');
         $raw = @file_get_contents($path);
-        if (!is_string($raw)) throw new \RuntimeException('the table ' . $entry['file'] . ' of "' . $entry['id'] . '" cannot be read.');
+        if (!is_string($raw)) throw new \RuntimeException('the table ' . $entry['file'] . ' of "' . $entry['id'] . '" cannot be read.', self::E_UNREAD);
         if (!hash_equals($entry['sha256'], hash('sha256', $raw))) {
             throw new \RuntimeException('the table ' . $entry['file'] . ' does not match the "sha256" in index.json; it was changed or damaged.');
         }

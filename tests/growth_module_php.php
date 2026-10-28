@@ -32,7 +32,10 @@ namespace ExternalModules {
             $e = ($pid !== null && $pid !== '') ? $pid : $this->projectIdReturn;
             return $e ? $this->subSettings : [];
         }
+        /** Project setting keys whose read throws (CFXB-N3). */
+        public $settingThrows = [];
         public function getProjectSetting($k, $pid = null) {
+            if (!empty($this->settingThrows[$k])) throw new \RuntimeException('the settings could not be read');
             $e = ($pid !== null && $pid !== '') ? $pid : $this->projectIdReturn;
             if (!$e) return null;
             return isset($this->projectSettings[$k]) ? $this->projectSettings[$k] : null;
@@ -989,6 +992,18 @@ namespace {
     $hashed->redcap_save_record(149, '2', 'anthro_form', 351, null, null, null, 1);
     $hn = findings($hashed, 'uvalidate-not-evaluated');
     check('log mode none: the record is not named', $hn && !isset($hn[0]['record']) && (isset($hn[0]['record_hmac']) || isset($hn[0]['hmac_unavailable'])));
+    // CFXB-N3: a log-values read that throws, or a value this build does not
+    // know, is strict mode on the not-evaluated entry too, never the raw record.
+    foreach (['throws' => null, 'unknown' => 'strict'] as $how => $odd) {
+        $bad = mod($PL, $nodob, $FULL, 'nurse');
+        $bad->projectSettings['log-values'] = $odd === null ? 'none' : $odd;
+        if ($odd === null) $bad->settingThrows = ['log-values' => true];
+        $bad->redcap_save_record(149, '2', 'anthro_form', 351, null, null, null, 1);
+        $bn = findings($bad, 'uvalidate-not-evaluated');
+        check('CFXB-N3: log-values that ' . ($how === 'throws' ? 'cannot be read' : 'this build does not know')
+            . ': the not-evaluated entry names the record by its keyed hash only (got ' . json_encode($bn) . ')',
+            $bn && !isset($bn[0]['record']) && isset($bn[0]['record_hmac']) && !isset($bn[0]['value']));
+    }
     // the scan: the same verdicts, and the plausible range in the detail
     $m = mod($PL, $nodob, $FULL, 'nurse');
     $res = $m->scanProject(149);

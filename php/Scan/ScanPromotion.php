@@ -294,49 +294,33 @@ final class ScanPromotion
     }
 
     /**
-     * Do findingsOf() and justifiedOf() read this run's aggregates? Once the
-     * run has ended, and while it works only when its detail budget is spent
-     * (budgetUsed()). ScanService::status() asks this to read them once for
-     * both counts, and not at all on a poll that needs neither.
+     * Do findingsOf() and justifiedOf() read this run's aggregates? Only for
+     * a run that keeps no counts of its own (kept()), and then in every state
+     * (review rvf2-4). A run that keeps them answers both from its row.
+     * ScanService::status() asks this to read the aggregates once for both
+     * counts, and not at all on a poll that needs neither.
      */
     public static function countsRead(array $run)
     {
-        if (isset($run['terminal']) && $run['terminal'] !== null) return true;
-        return self::budgetUsed($run, isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0);
-    }
-
-    /**
-     * Could a working run have left findings out yet (review rv10b1-3)?
-     *
-     * The worker leaves a finding out only when the run row's detail_rows or
-     * detail_bytes has reached its limit (ScanWorker::batch(), H9), and both
-     * only grow, so a row below the limit has left nothing out. The limit
-     * read here is the one the run froze in policy_json. The worker judges by
-     * the settings as they are now, which can only be the same or higher on
-     * a run still working: a lower one is a tightening, and the worker's
-     * policy-revision guard ends the run on it before any batch is judged
-     * (R5-5). A higher one
-     * answers true early, which costs one read and never a wrong count. A
-     * stored policy that cannot be read, or lacks either limit, answers true.
-     */
-    private static function budgetUsed(array $run, $rows)
-    {
-        $raw = isset($run['policy_json']) ? $run['policy_json'] : null;
-        $p = is_string($raw) ? json_decode($raw, true) : null;
-        if (!is_array($p) || !isset($p['maxFindings'], $p['maxBytes'])) return true;
-        $bytes = isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0;
-        return ScanPolicy::budgetSpent($p, $rows, $bytes);
+        return self::kept($run) === null;
     }
 
     /**
      * How many of a run's findings a reason (@UVJUSTIFY) stands for, counted
      * as findingsOf() counts the open ones, so neither number shrinks when
-     * the run ends. A run still working answers from its counter of the
-     * stored rows that carry the flag (detail_justified). A run that ended
-     * without a verdict answers with the larger of that counter and whatever
-     * summary it built. A run that reached one answers from its summary.
-     * Each adds the ones the detail budget left out with a reason (H9), and
-     * a working run reads them only past its budget, as findingsOf() does.
+     * the run ends.
+     *
+     * A run that keeps its counts answers from its row, in every state:
+     * open_justified, the stored rows that carry the flag in the readings it
+     * holds, plus open_unstored_justified, the ones those readings left out
+     * with a reason (H9). A duplicate-value finding never carries one.
+     *
+     * A run from before schema version 8 is counted the old way. Working,
+     * from its counter of the stored rows that carry the flag
+     * (detail_justified) plus the ones the detail budget left out with a
+     * reason. Ended without a verdict, from the larger of that counter and
+     * whatever summary it built, plus those left out. Finished with a
+     * verdict, from its summary.
      *
      * @param array|null $aggregates the run's aggregates when the caller has
      *                               already read them for findingsOf()
@@ -344,16 +328,13 @@ final class ScanPromotion
      */
     public static function justifiedOf(ScanStore $store, array $run, ?array $aggregates = null)
     {
+        $kept = self::kept($run);
+        if ($kept !== null) return $kept['justified'] + $kept['unstoredJustified'];
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
         $rows = isset($run['detail_justified']) ? max(0, (int) $run['detail_justified']) : 0;
-        if ($terminal === null) {
-            $all = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
-            if (!self::budgetUsed($run, $all)) return $rows;
-            $t = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']));
-            return $rows + $t['unstoredJustified'];
-        }
         $t = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']));
         $left = $t['unstoredJustified'];
+        if ($terminal === null) return $rows + $left;
         if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) return max($rows, $t['justified'] - $left) + $left;
         return $t['justified'];
     }
@@ -371,50 +352,98 @@ final class ScanPromotion
     }
 
     /**
+     * How many findings the detail budget left out of readings the run still
+     * holds (review rvf1-3), and how many of those a reason stands for.
+     *
+     * The run row's open_unstored and open_unstored_justified, which the
+     * store keeps per record: a record that is deleted or leaves the run's
+     * group takes its counts back, and one read again has them replaced by
+     * the new reading's (review rvc1-2). The DETAIL_UNSTORED aggregate only
+     * ever grows, so a departed record's left-out findings stayed in the
+     * count and alone made the run truncated. A run that keeps no counts
+     * (kept()) is counted from the aggregate, as it always was.
+     *
+     * @param array $t tally() of the run's aggregates
+     * @return int[] [every finding left out, the ones with a reason]
+     */
+    private static function unstoredOf(array $run, array $t)
+    {
+        $kept = self::kept($run);
+        if ($kept !== null) return [$kept['unstored'], $kept['unstoredJustified']];
+        return [(int) $t['unstored'], (int) $t['unstoredJustified']];
+    }
+
+    /**
+     * The run row's own counts, or null for a run that keeps none: one that
+     * began before schema version 8, or one the previous build started while
+     * the upgrade ran (Schema::statementsV8()). A row with some of the four
+     * and not all is read the same way, as the weaker claim.
+     *
+     * @return array{findings:int, unstored:int, justified:int, unstoredJustified:int}|null
+     */
+    private static function kept(array $run)
+    {
+        $out = [];
+        foreach (['findings' => 'open_findings', 'unstored' => 'open_unstored',
+                  'justified' => 'open_justified', 'unstoredJustified' => 'open_unstored_justified'] as $k => $col) {
+            if (!isset($run[$col])) return null;
+            $out[$k] = max(0, (int) $run[$col]);
+        }
+        return $out;
+    }
+
+    /**
      * How many findings this run has to show.
      *
-     * A RUN THAT REACHED A VERDICT ANSWERS FROM ITS SUMMARY, because that is
-     * what the verdict was decided on: `detail_rows` misses every duplicate the
-     * finalizer wrote and keeps every finding catch-up superseded, so a page
-     * reading it could say "0 findings" beside a run refused `clean` for having
-     * some. A run still working has no summary yet and the counter is the only
-     * number there is.
+     * ONE NUMBER FOR A RUN THAT KEEPS ITS COUNT (reviews rvc2-2, rvc1-2,
+     * CONS-N1). A run started at schema version 8 or later answers from its
+     * row, in every state: open_findings, the findings stored by the readings
+     * it holds and the duplicate-value findings it has published, plus
+     * open_unstored, the findings those readings left out. The store keeps
+     * open_findings equal to the run's active rows in every transaction that
+     * changes them (ScanStore::commitBatch(), requeue(), noteAttempts(),
+     * notePublished()), so the findings page and the file, which list the
+     * active rows, and the summary, which counts them once every record is
+     * read and every group published, give the same number. It used to read
+     * the summary once the run had a verdict, and floor a run without one on
+     * whatever summary existed: a run stopped after catch-up sent records back
+     * to be read, or after some duplicate groups were published, counted
+     * fewer findings than its page and file listed, and a finished run's
+     * count could change at the finish. The one difference left is a working
+     * run in the duplicate check: a group not yet published is in no count,
+     * page or file until it is.
      *
-     * A RUN THAT ENDED WITHOUT A VERDICT GETS A FLOOR, OR NOTHING. Cancelled,
-     * failed and expired runs - ScanOutcome::NO_VERDICT - answered from
-     * `detail_rows` too, so a run cancelled during unique-finalize said
-     * "Nothing found yet" over the duplicates the finalizer had already
-     * written as active findings. Such a run may have a summary, part of one or
-     * none, and nothing on the row says which. So it answers with the floor
-     * promote() uses - the larger of the counter and whatever summary exists -
-     * and when that floor is zero it answers NULL: not counted. Zero there is
-     * indistinguishable from duplicates written and never summarised, and a
-     * zero that might be false is the one number this must not print.
+     * Zero is an answer for such a run, stopped or not: its rows are what it
+     * counts, and it has none.
      *
-     * THE COUNTER COUNTS OPEN ROWS ONLY: the stored rows a reason (@UVJUSTIFY)
-     * stands for (detail_justified) are left out, as the summary leaves them
-     * out of 'violations', and justifiedOf() counts them. A working run whose
-     * rows all had a reason used to show them as findings that vanished once
-     * the run was totalled.
+     * A RUN FROM BEFORE SCHEMA VERSION 8 IS COUNTED THE OLD WAY, its row
+     * keeping no count (NULL). Working, from detail_rows and the run-wide
+     * detail-unstored aggregate, one read a poll. Finished with a verdict,
+     * from its summary, which is what the verdict was decided on. Ended
+     * without one (ScanOutcome::NO_VERDICT), from the floor promote() uses -
+     * the larger of detail_rows and whatever summary exists - and NULL when
+     * that floor is zero: such a run may have written duplicates it never
+     * summarised, and a zero that might be false is the one number this must
+     * not print.
+     *
+     * THE FINDINGS PAST THE DETAIL BUDGET ARE IN EVERY ANSWER (H9): they were
+     * found and not stored, so no row and no summary holds them, and they are
+     * added to what was stored (review rv10b1-3: a working run's count froze
+     * at the budget while the worker kept finding). From the run row, with no
+     * gate (review rvf2-4), so a status poll of a run that keeps its count
+     * reads no aggregates, as the perf case pins.
+     *
+     * THE COUNT IS OF OPEN FINDINGS ONLY: the ones a reason (@UVJUSTIFY)
+     * stands for are left out, stored or left out by the budget, as the
+     * summary leaves them out of 'violations', and justifiedOf() counts them.
+     * A run that keeps its count takes open_justified and
+     * open_unstored_justified off; one from before takes detail_justified
+     * and the justified part of the aggregate. A working run whose rows all
+     * had a reason used to show them as findings that vanished once the run
+     * was totalled.
      *
      * Here rather than in ScanService so it can be asked of a store without a
      * module, a user and an entitlement around it.
-     *
-     * THE FINDINGS PAST THE DETAIL BUDGET ARE IN EVERY ANSWER (H9): they were
-     * found and not stored, so the summary cannot count them and the floor is
-     * taken over what was stored, with them added. A run still working adds
-     * them to its counter too (review rv10b1-3): the counter stops growing
-     * at the budget, so "N findings so far" froze there while the worker kept
-     * finding, and jumped when the run ended. The run's aggregates are one
-     * read on uq_aggregate's leading column, and while a run works they are
-     * its marks, that count and, in its last phase, the summary being built:
-     * rows per rule, form, reason and group, never per record. Only the open
-     * ones are added here; justifiedOf() adds the ones left out with a reason.
-     *
-     * AND ONLY PAST THE BUDGET. That read is asked only when the run row says
-     * the budget the run froze in policy_json is spent (budgetUsed()). Below
-     * it nothing has been left out, and a status poll reads no aggregates, as
-     * the perf case pins; 79a6cab read them on every poll.
      *
      * @param array|null $aggregates the run's aggregates when the caller has
      *                               already read them (countsRead()), so that
@@ -423,22 +452,36 @@ final class ScanPromotion
      */
     public static function findingsOf(ScanStore $store, array $run, ?array $aggregates = null)
     {
+        $kept = self::kept($run);
+        if ($kept !== null) {
+            return max(0, $kept['findings'] - $kept['justified'])
+                 + max(0, $kept['unstored'] - $kept['unstoredJustified']);
+        }
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
         $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
-        $all = $rows;
         $rows = max(0, $rows - (isset($run['detail_justified']) ? max(0, (int) $run['detail_justified']) : 0));
-        if ($terminal === null) {
-            if (!self::budgetUsed($run, $all)) return $rows;
-            $t = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']));
-            return $rows + $t['unstored'] - $t['unstoredJustified'];
-        }
         $t = self::tally($aggregates !== null ? $aggregates : $store->aggregates((int) $run['run_id']));
         $left = $t['unstored'] - $t['unstoredJustified'];
+        if ($terminal === null) return $rows + $left;
         if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
             $floor = max($rows, $t['violations'] - $left) + $left;
             return $floor > 0 ? $floor : null;
         }
         return $t['violations'];
+    }
+
+    /**
+     * The findings a run that keeps its count shows as rows: its row's
+     * open_findings, which the store keeps equal to its active findings (see
+     * findingsOf()), those with a reason among them. Null for a run that
+     * keeps no counts (kept()).
+     *
+     * @return int|null
+     */
+    public static function storedOf(array $run)
+    {
+        $kept = self::kept($run);
+        return $kept !== null ? $kept['findings'] : null;
     }
 
     /**
@@ -525,7 +568,8 @@ final class ScanPromotion
         // NOT "NOTHING WAS EXAMINED", which is what this note and the stored
         // sentence used to say (review R2O-1). CatchUp::step() tombstones a
         // record that was deleted after it was examined, so `done` drops to
-        // zero while the findings that examination produced stay active. The
+        // zero. Its findings are closed with it now (W5F-N4); before that they
+        // stayed active, and a run stored then counts them. The
         // classification is right - no record remains for the run to vouch
         // for, so it must never be clean - but the census cannot say whether a
         // tombstone was read first, and ScanOutcome's sentence now claims only
@@ -593,6 +637,12 @@ final class ScanPromotion
             // true, and the reader needs to see the correction next to the
             // thing it corrects.
             'emptyScope' => ($examined === 0 && $pending === 0 && !$blocked),
+            // HOW IT EMPTIED, for the sentence and nothing else (review
+            // rvf1-2). A group-scoped run whose every record moved to another
+            // group is an empty scope too, and the stored reason said its
+            // records had been deleted.
+            'departed' => $n(ScanStore::REC_DEPARTED),
+            'removed' => $n(ScanStore::REC_TOMBSTONE),
             // Unread and unstable records, undecidable duplicate groups, and
             // anything an aggregate marked blocking. A TOMBSTONE IS ABSENT FROM
             // THIS LIST on purpose - see the class note.
@@ -754,7 +804,17 @@ final class ScanPromotion
             if (isset($in[$k])) $budget[$k] = $in[$k];
         }
         $outcome = self::conclude($store, $runId, $run, $store->recordStates($runId), $budget, true);
-        if (isset($in['why']) && is_string($in['why']) && $in['why'] !== '') $outcome['why'] = $in['why'];
+        if (isset($in['why']) && is_string($in['why']) && $in['why'] !== '') {
+            $outcome['why'] = $in['why'];
+        } elseif (isset($run['phase'], $run['terminal_reason']) && $run['phase'] === ScanPhase::CANCELLING
+                  && is_string($run['terminal_reason']) && $run['terminal_reason'] !== '') {
+            // A STOP THAT SAID WHY KEEPS ITS SENTENCE, whichever request
+            // finishes the run (review rv10a2-3). Only a disable writes one on
+            // a stopped run (ScanMaintenance::stopPage()); a run it stopped and
+            // could not finish in time read as an ordinary cancel when Start
+            // or the reap cron finished it later.
+            $outcome['why'] = $run['terminal_reason'];
+        }
         return $store->finish($runId, $outcome);
     }
 
@@ -782,8 +842,14 @@ final class ScanPromotion
     {
         $aggregates = $store->aggregates($runId);
         $t = self::tally($aggregates);
+        // What the budget left out of readings the run still holds (rvf1-3),
+        // and the ones of those a reason stands for. 'violations' is the open
+        // findings: the summary's stored ones without a reason, and the ones
+        // left out without one.
+        list($unstored, $leftJustified) = self::unstoredOf($run, $t);
+        $storedOpen = $t['stored'] - ($t['justified'] - $t['unstoredJustified']);
         $f = self::facts($run, $states, array_merge($in, [
-            'violations' => $t['violations'], 'unstored' => $t['unstored'],
+            'violations' => $storedOpen + $unstored - $leftJustified, 'unstored' => $unstored,
             'ruleProblems' => $t['ruleProblems'],
             'gapCount' => $t['gaps'], 'blockingAggregates' => $store->blockingAggregates($runId),
             'windowChanges' => self::kindTotal($aggregates, self::WINDOW_KINDS)]));

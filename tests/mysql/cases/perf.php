@@ -62,8 +62,18 @@ if (!class_exists('UvPerfModule', false)) {
         private $pid;
         /** @var string[] every statement, in order */
         public $log = array();
-        /** @var int how many times the service asked for a plan */
+        /**
+         * @var int how many plans production would BUILD for what the service
+         * asked. UniversalValidator::scanPlan() keeps a plan in the request's
+         * memo under the project, the group, the value ceiling, the form-rights
+         * flag and the user, so a second ask with the same memo and key is no
+         * second plan. Since W11A-N3 every verb asks for the reader's planning
+         * context before it reads the run row, and the run's entitlement after
+         * it is that plan again; `asks` counts both.
+         */
         public $plans = 0;
+        /** @var int how many times the service asked for a context */
+        public $asks = 0;
 
         public function __construct($c, $pid) { $this->c = $c; $this->pid = (int) $pid; }
 
@@ -99,7 +109,15 @@ if (!class_exists('UvPerfModule', false)) {
          */
         public function durableScanContext($pid, array $opts = array(), $dag = null)
         {
-            $this->plans++;
+            $this->asks++;
+            $memo = (isset($opts['memo']) && $opts['memo'] instanceof \ArrayObject) ? $opts['memo'] : null;
+            $key = 'counted|' . json_encode(array((int) $pid, $dag === null ? null : (string) $dag,
+                isset($opts['valueCeiling']) ? (string) $opts['valueCeiling'] : null,
+                !empty($opts['enforceFormRights']), 'alice'));
+            if ($memo === null || !isset($memo[$key])) {
+                $this->plans++;
+                if ($memo !== null) $memo[$key] = true;
+            }
             // WHAT scanPlan() SENDS. Its dictionary and rule reads go through
             // REDCap's own API, not query(); the capability census is the part
             // that reaches the database, so it is asked here exactly as the
@@ -213,6 +231,7 @@ $RECORDS = 6;
     $request = function ($verb) use ($m) {
         $m->log = array();
         $m->plans = 0;
+        $m->asks = 0;
         $limit = ini_get('memory_limit');
         ini_set('memory_limit', '-1');
         try {
@@ -224,7 +243,8 @@ $RECORDS = 6;
         return $answer;
     };
     $report = function ($what) use ($m) {
-        echo '  perf: ' . str_pad($what, 22) . ' ' . $m->breakdown() . " plans=" . $m->plans . "\n";
+        echo '  perf: ' . str_pad($what, 22) . ' ' . $m->breakdown() . " plans=" . $m->plans
+            . " asks=" . $m->asks . "\n";
     };
 
     /* -----------------------------------------------------------------------
@@ -303,8 +323,8 @@ $RECORDS = 6;
         $m->count('FROM redcap_record_list WHERE project_id = ? LIMIT 1') === 1);
     check('perf: it asks the grants once', $m->count('SHOW GRANTS') === 1);
     check('perf: it reads the indexes of the record index once (PRF-8)', $m->count('information_schema.statistics') === 1);
-    check('perf: it opens the change log once for the fence, plus the capability probe',
-        $m->count('SELECT log_event_table') === 2);
+    check('perf: it opens the change log once, for the fence and the capability probe together (W10AF-N4)',
+        $m->count('SELECT log_event_table') === 1);
     check('perf: it reads the census once - the status reuses what promotion read',
         $m->count('SELECT state, COUNT(*)') === 1);
     check('perf: a run that is not ready reads none of its aggregates',
@@ -376,6 +396,8 @@ $RECORDS = 6;
     // Wave 10 put one more on the start, B6a's: the indexed read of this
     // project's active run that asks whether it was abandoned
     // (ScanStore::expireAbandoned()).
+    // And one more (W10A-N1): the read of the project's highest policy revision, which a
+    // new run starts at (SqlScanStore::startRun()).
     // Review rv10b1-4 put one statement on each batch a work request commits
     // under a detail budget: the run row read by its key, so the budget is
     // judged on what every worker has stored. The request with records left
@@ -387,12 +409,20 @@ $RECORDS = 6;
     // has no labels to give, so its snapshot is the state row; a project's
     // is one INSERT per 100 rows, in a transaction when it needs more than
     // one). The finishing request reads that state row by its key for
-    // labelDegraded (W7-N11), on the pass whose summary is done only.
+    // labelDegraded (W7-N11), on the pass whose summary is done only. With
+    // W10A-N1's revision read that makes the start 48, measured on the
+    // merged tree.
+    // W10AF-N4 took two statements off the start and off each work request:
+    // the capability census's change-log probe read the table name and the
+    // top of the log, and the fence read both again. The census now takes
+    // its answer from the fence's opening, so the start sends 46, the work
+    // request with records left 75 and the one that finishes 76, measured on
+    // MariaDB 10.11 and 10.5. A status poll opens the log once either way.
     $bounds = array(
-        'start'                              => array($startCount, 48),
+        'start'                              => array($startCount, 47),
         'a status poll'                      => array($pollCount, 8),
-        'a work request with records left'   => array($workCount, 78),
-        'the work request that finishes'     => array($finishCount, 80),
+        'a work request with records left'   => array($workCount, 76),
+        'the work request that finishes'     => array($finishCount, 78),
         'a status poll of a finished run'    => array($donePollCount, 9),
     );
     foreach ($bounds as $what => $b) {

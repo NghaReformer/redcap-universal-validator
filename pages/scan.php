@@ -151,6 +151,17 @@ $asked = (isset($_GET['run']) && $_GET['run'] === '1')
       || (isset($_POST['run']) && $_POST['run'] === '1')
       || (isset($_GET['csv']) && $_GET['csv'] === '1')
       || (isset($_POST['csv']) && $_POST['csv'] === '1');
+
+// THE CURRENT REPORT OF THIS READER'S SCOPE, for the findings panel (B5):
+// the run to open, a newer run that did not complete (reviews rv11b2-5), and
+// whether a whole-project scan replaced the group's last report (rv11b1-1).
+// Only when no run of theirs holds the slot: a run in progress has no report
+// yet, and the panel opens on its report once the status says it finished.
+// Locators only - scan-findings decides everything again before the run row.
+$finished = ($available['ok'] && $activeRun === null) ? $svc->finishedRun($pid, $scope) : null;
+$finishedRun = is_array($finished) ? $finished['run_id'] : null;
+$newerRun = is_array($finished) ? $finished['newer'] : null;
+$replaced = is_array($finished) && !empty($finished['replaced']);
 ?>
 <h4 id="uv-scan-heading" style="margin-top:12px"><i class="fas fa-magnifying-glass"></i> Validation scan — Universal Field Validator</h4>
 
@@ -170,7 +181,7 @@ $asked = (isset($_GET['run']) && $_GET['run'] === '1')
 <?php } ?>
 
 <p style="max-width:760px">
-When it returns, this page runs <b>every configured rule</b> (check-character / format,
+Once it can run, this page runs <b>every configured rule</b> (check-character / format,
 constraint, required, unique, choice filter) over <b>every saved record</b>, and reports each
 violation with the instrument, the value, and what is wrong in plain words. That covers what
 live form validation cannot: values imported through the Data Import Tool or the API, and
@@ -309,8 +320,71 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
     figures above are how far it had got when this page was loaded. This page needs JavaScript to
     follow it or to stop it; the scan itself is unaffected and continues either way.</p>
 <?php } ?>
+<?php if ($finishedRun !== null) { ?>
+    <p style="color:#a30">The findings of the last finished scan are shown with JavaScript.</p>
+<?php } elseif ($replaced) { ?>
+    <p style="color:#a30"><?php echo ScanPageView::h(ScanPageView::REPORT_REPLACED); ?></p>
+<?php } ?>
   </noscript>
 </div>
+
+<?php // THE FINDINGS OF A FINISHED RUN (B5), a keyset page at a time, filled by
+      // js/scan.js from scan-findings. Hidden until an answer arrives: an empty
+      // table under a heading reads as a report that found nothing. Every cell
+      // reaches the page through textContent. The caption is the table's first
+      // child, so it is announced and drawn above it; the controls are native
+      // buttons and selects, so the keyboard reaches all of them. ?>
+<section id="uv-scan-report" aria-labelledby="uv-scan-report-heading" aria-busy="false"
+         style="display:none;max-width:1100px;margin-top:14px;border:1px solid #ddd;border-radius:6px;padding:14px">
+  <h5 id="uv-scan-report-heading" style="margin-top:0">Findings of the last finished scan</h5>
+  <?php // A newer run that did not complete, beside the current report it
+        // leaves current (review rv11b2-5), and the control that opens the
+        // other of the two. Filled and shown by js/scan.js. ?>
+  <p id="uv-scan-report-other" style="display:none;font-size:13px;margin:4px 0"></p>
+  <button type="button" id="uv-scan-report-switch" class="btn btn-secondary btn-sm" style="display:none"></button>
+  <?php // README's three marks of a report that cannot certify, on the page as in
+        // the file (item 10): this banner above the table, the terminal row
+        // below it, and the file name's suffix beside the download. ?>
+  <p id="uv-scan-report-banner" role="note"
+     style="display:none;margin:6px 0;padding:6px 10px;border:1px solid #d9a441;background:#fdf6e3;color:#7a5c00;font-weight:600"></p>
+  <p id="uv-scan-report-summary" style="font-size:13px;margin:4px 0"></p>
+  <p id="uv-scan-report-count" style="font-size:13px;margin:4px 0"></p>
+  <p id="uv-scan-report-degraded" style="display:none;font-size:12px;color:#666;margin:4px 0"></p>
+  <p id="uv-scan-report-withheld" style="display:none;font-size:13px;color:#a30;margin:4px 0"></p>
+  <div id="uv-scan-report-filters" style="display:none;margin:8px 0;font-size:13px">
+<?php foreach (['form' => 'Instrument', 'reason' => 'Reason', 'type' => 'Check', 'group' => 'Data Access Group'] as $fk => $fl) { ?>
+    <span id="uv-scan-filter-<?php echo $fk; ?>-wrap" style="display:none;margin-right:12px">
+      <label for="uv-scan-filter-<?php echo $fk; ?>"><?php echo ScanPageView::h($fl); ?></label>
+      <select id="uv-scan-filter-<?php echo $fk; ?>" class="form-control-sm"></select>
+    </span>
+<?php } ?>
+  </div>
+  <div style="overflow-x:auto">
+    <table id="uv-scan-report-table" class="table table-sm table-bordered" style="display:none;font-size:12px">
+      <caption id="uv-scan-report-caption" style="caption-side:top"></caption>
+      <thead><tr id="uv-scan-report-head"></tr></thead>
+      <tbody id="uv-scan-report-body"></tbody>
+    </table>
+  </div>
+  <p id="uv-scan-report-row" role="note"
+     style="display:none;margin:6px 0;padding:6px 10px;border:1px solid #d9a441;background:#fdf6e3;color:#7a5c00;font-size:13px"></p>
+  <div id="uv-scan-report-nav" style="display:none;margin-top:6px">
+    <button type="button" id="uv-scan-report-prev" class="btn btn-secondary btn-sm">Previous page</button>
+    <button type="button" id="uv-scan-report-next" class="btn btn-secondary btn-sm">Next page</button>
+  </div>
+  <p id="uv-scan-report-note" role="status" aria-live="polite" aria-atomic="true"
+     style="margin-top:8px;font-size:13px;color:#444"></p>
+  <?php // THE DOWNLOAD IS A POST (W11F-N5). pages/export.php answers only a
+        // POST carrying run_id and the page's redcap_csrf_token, which the
+        // framework checks; the client builds that form outside REDCap's own
+        // project form when the button is pressed. The button says the file
+        // is the whole report and how many findings it holds (review
+        // rv11b1-5): the filters narrow the table, not the file. ?>
+  <p id="uv-scan-report-export-wrap" style="display:none;margin-top:8px;font-size:13px">
+    <button type="button" id="uv-scan-report-export" class="btn btn-secondary btn-sm">Download the whole report as a CSV file</button>
+    <span id="uv-scan-report-suffix" style="display:none"></span>
+  </p>
+</section>
 
 <p style="max-width:760px;color:#444;margin-top:14px;font-size:13px">
 <b>Reading the result.</b> "Every record was checked" and "every record on the opening list was
@@ -348,7 +422,23 @@ reporting a clean project.
         // been opened beside another that is driving it, and two drivers would
         // both be refused by the lease anyway. The Continue button is how a
         // person says they want this tab to take over.
-        autoResume: false
+        autoResume: false,
+        // The finished run whose findings the panel opens on, and where its
+        // CSV is downloaded from. The URL is the framework's, encoded as the
+        // labels are; the client posts the run id and the token to it, and
+        // nothing else.
+        reportRunId: <?php echo $finishedRun === null ? 'null' : (int) $finishedRun; ?>,
+        // A newer run of the same scope that did not complete, offered beside
+        // it; and whether a whole-project scan replaced the group's report.
+        reportNewerId: <?php echo $newerRun === null ? 'null' : (int) $newerRun; ?>,
+        reportReplaced: <?php echo $replaced ? 'true' : 'false'; ?>,
+        exportUrl: <?php echo json_encode((string) $module->getUrl('pages/export.php'),
+            JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>,
+        // The framework's CSRF token, which the download's POST carries
+        // (W11F-N5). Empty when the framework gives none, and then the
+        // client offers no download: a POST without it is refused anyway.
+        csrfToken: <?php echo json_encode(ScanPageView::csrfToken($module),
+            JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>
     });
 })();
 </script>
