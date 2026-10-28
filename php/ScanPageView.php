@@ -505,6 +505,8 @@ class ScanPageView
     const REPORT_LOADING   = 'Loading the findings.';
     /** {findings} is "1 finding" or "1,234 findings": the reader's whole report, unfiltered. */
     const REPORT_COUNT     = 'This report holds {findings}.';
+    /** The same, when a reason (@UVJUSTIFY) stands for some of them (J3B-2). */
+    const REPORT_COUNT_JUSTIFIED = 'This report holds {findings}, {justified} of them saved with a reason.';
     const REPORT_NONE      = 'This scan stored no findings.';
     const REPORT_EMPTY     = 'No findings match these filters.';
     const REPORT_NO_MORE   = 'No further findings match these filters.';
@@ -621,6 +623,7 @@ class ScanPageView
             'reportCaption'   => self::REPORT_CAPTION,
             'reportLoading'   => self::REPORT_LOADING,
             'reportCount'     => self::REPORT_COUNT,
+            'reportCountJustified' => self::REPORT_COUNT_JUSTIFIED,
             'reportNone'      => self::REPORT_NONE,
             'reportEmpty'     => self::REPORT_EMPTY,
             'reportNoMore'    => self::REPORT_NO_MORE,

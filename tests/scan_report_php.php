@@ -314,12 +314,29 @@ namespace {
         // Maps compare as maps: the store hands rows back in key order.
         $sorted = function ($a) { if (is_array($a)) ksort($a); return $a; };
         $same = function ($p) use ($fromSnap, $d, $sorted) { return $sorted($fromSnap->$p) === $sorted($d->$p); };
-        check('snapshot: and it is the object it was made from, property for property',
-            $fromSnap !== null && $fromSnap->rules === $d->rules && $same('rulesBySource')
-            && $same('fieldLabels') && $same('fieldForms') && $same('forms') && $same('events')
-            && $same('identifiers') && $same('degraded')
-            && $fromSnap->hasDags === $d->hasDags && $fromSnap->longitudinal === $d->longitudinal
-            && $fromSnap->singleEventProved === $d->singleEventProved);
+        // Every public property, so one added later is held to the round trip too (J3B-1).
+        $differ = [];
+        foreach ((new \ReflectionClass(ScanDimensions::class))->getProperties(\ReflectionProperty::IS_PUBLIC) as $p) {
+            if (!$p->isStatic() && ($fromSnap === null || !$same($p->getName()))) $differ[] = $p->getName();
+        }
+        check('snapshot: and it is the object it was made from, property for property (differ: ' . json_encode($differ) . ')',
+            $fromSnap !== null && !$differ);
+        // A rule a reason stands for: the stored run's report keeps the
+        // "Saved with a reason" column and its CSV cell (J3B-1).
+        $jd = dims([1 => $RULE_A + ['justifyBy' => ['a_val' => 'a_why']]], ['src-a' => 1]);
+        $jd->justifies = true;
+        $jBack = ScanDimensions::fromSnapshot($jd->toSnapshot());
+        $jCols = function ($dims) { return $dims === null ? [] : array_column(ScanColumns::all($dims), 'key'); };
+        $jReport = $jBack === null ? null : new ScanReport(mapper(), $jBack, runRow());
+        check('snapshot: a rule a reason stands for keeps the "Saved with a reason" column',
+            $jBack !== null && $jBack->justifies === true && in_array('justified', $jCols($jBack), true)
+            && $jCols($jBack) === $jCols($jd));
+        check('snapshot: ... in the CSV header and as "Yes" on a row saved with a reason',
+            $jReport !== null && strpos($jReport->csvHeaderLine(), '"justified"') !== false
+            && $jReport->present([row(['justified' => 1])])[0]['cells']['justified'] === 'Yes');
+        $nBack = ScanDimensions::fromSnapshot(dims([1 => $RULE_A], ['src-a' => 1])->toSnapshot());
+        check('snapshot: and no rule a reason stands for shows no such column',
+            $nBack !== null && $nBack->justifies === false && !in_array('justified', $jCols($nBack), true));
         check('snapshot: every row is one the store takes',
             count(\INSPIRE\UniversalValidator\Scan\FindingRowMapper::dimensionRows($snapRows)) === count($snapRows));
 
@@ -1086,9 +1103,10 @@ namespace {
      * 8. RUN FACTS: what may be said about the whole report
      * ===================================================================== */
     {
-        $facts = function (array $run, $dimsObj = null, $expected = null) {
+        $facts = function (array $run, $dimsObj = null, $expected = null, $justified = null) {
             $vs = isset($run['values_state']) ? $run['values_state'] : 'raw';
-            return (new ScanReport(mapper(['valuesState' => $vs]), $dimsObj ?: dims(), runRow($run)))->runFacts($expected);
+            return (new ScanReport(mapper(['valuesState' => $vs]), $dimsObj ?: dims(), runRow($run)))
+                ->runFacts($expected, null, $justified);
         };
         $complete = ['terminal' => ScanOutcome::COMPLETE, 'coverage' => ScanOutcome::FENCED,
                      'detail' => ScanOutcome::DETAIL_COMPLETE, 'values_state' => 'raw'];
@@ -1137,7 +1155,8 @@ namespace {
 
         check('facts: the keys are the ones wave 11 was promised, and the day dates were judged as of (W10BF-3)',
             array_keys($p) === ['schema', 'columns', 'legend', 'coverage', 'detail', 'coverageSentence', 'mayCertify',
-                                'suffix', 'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows', 'asOf']);
+                                'suffix', 'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows',
+                                'justifiedRows', 'asOf']);
         check('W10BF-3: the report says the day the run froze for its date rules, and nothing for a run with none',
             $p['asOf'] === null
             && $facts($complete + ['clean' => 1, 'policy_json' => json_encode(['asOf' =>
@@ -1150,6 +1169,9 @@ namespace {
         check('facts: the expected row count is the caller\'s, and never negative',
             $p['expectedRows'] === null && $facts($partial, null, 12)['expectedRows'] === 12
             && $facts($partial, null, -4)['expectedRows'] === 0);
+        check('facts: and so is the count of them saved with a reason (J3B-2)',
+            $p['justifiedRows'] === null
+            && $facts($partial, null, 12, 3)['justifiedRows'] === 3 && $facts($partial, null, 12, -1)['justifiedRows'] === 0);
 
         // rv11a2-5: ONE SUFFIX. runFacts() said `_CANCELLED` where the marks
         // beside it in the same answer said `_INCOMPLETE_CANCELLED`, for every

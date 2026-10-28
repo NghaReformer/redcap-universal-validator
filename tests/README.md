@@ -1175,8 +1175,9 @@ store writes and `FindingRowMapper` reads back, in both stores; the keys
 that leave the flag out of a finding's identity, so a finding saved again
 with its reason given becomes a new version and the same identity twice in
 one batch is refused; the rollup's open and justified counts, every page
-read through `ix_page_v2`; and a run whose only findings are justified,
-promoted clean.
+read through `ix_page_v2`; a run whose only findings are justified,
+promoted clean; and a run whose only findings are duplicates, promoted not
+clean with none of them counted as saved with a reason (J3B-8).
 
 ## `scan_*` — the durable validation scan
 

@@ -1730,6 +1730,35 @@ namespace INSPIRE\UniversalValidator\Scan {
     $w = $st($LB, 824, $lid, ['terminal' => null, 'detail_rows' => 4, 'detail_justified' => 1] + $OLD);
     check('J1-5: a run from before the kept counts counts the left-out findings with a reason apart too (got ' . json_encode($w) . ')',
         $w['findings'] === 5 && $w['justified'] === 2);
+
+    // J3B-2: the findings page and the file count the rows saved with a
+    // reason where expectedRows() counts the rows: from the row of a run that
+    // keeps its counts, from the summary's standing axis otherwise, a group
+    // reader their group's share, and nothing for a run without a verdict.
+    $jr = function (ArrayScanStore $s, $pid, $id, array $over, $dag = null) {
+        $run = array_merge($s->run($pid, $id), $over);
+        $agg = $s->aggregates($id);
+        return [ScanService::expectedRows($run, $agg, ['dag' => $dag]), ScanService::justifiedRows($run, $agg, ['dag' => $dag])];
+    };
+    check('J3B-2: a run that keeps its counts gives its row\'s stored rows and those of them with a reason',
+        $jr($SA, 822, $said, $kept + ['terminal' => ScanOutcome::CANCELLED]) === [5, 2]
+        && $jr($SA, 822, $said, $kept + ['terminal' => null]) === [5, 2]);
+    check('J3B-2: a finished run from before the kept counts gives its summary\'s',
+        $jr($SA, 822, $said, ['terminal' => ScanOutcome::COMPLETE] + $OLD) === [5, 2]);
+    check('J3B-2: and one from before them that ended without a verdict gives neither',
+        $jr($SA, 822, $said, ['terminal' => ScanOutcome::CANCELLED] + $OLD) === [null, null]);
+    $GA = new ArrayScanStore();
+    $gid = (int) $GA->startRun(825, ['created_by' => 'alice'])['run']['run_id'];
+    $GA->addAggregate($gid, RollupBuilder::K_DAG, '7', null, 3);
+    $GA->addAggregate($gid, RollupBuilder::K_DAG, '31', null, 2);
+    $GA->addAggregate($gid, RollupBuilder::K_STANDING, RollupBuilder::STANDING_OPEN, '7', 2);
+    $GA->addAggregate($gid, RollupBuilder::K_STANDING, RollupBuilder::STANDING_JUSTIFIED, '7', 1);
+    $GA->addAggregate($gid, RollupBuilder::K_STANDING, RollupBuilder::STANDING_JUSTIFIED, '31', 2);
+    check('J3B-2: a group reader is given their group\'s share, of the rows and of those with a reason',
+        $jr($GA, 825, $gid, $kept + ['terminal' => ScanOutcome::COMPLETE], '7') === [3, 1]
+        && $jr($GA, 825, $gid, $kept + ['terminal' => ScanOutcome::COMPLETE], '31') === [2, 2]);
+    check('J3B-2: ...and nothing for a group run without a verdict, as for its total',
+        $jr($GA, 825, $gid, $kept + ['terminal' => ScanOutcome::EXPIRED], '7') === [null, null]);
 }
 
 /* =====================================================================
@@ -5177,6 +5206,53 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('B5 export: the file is named for the project, the run and the day, and says it does not certify',
         preg_match('/^uv-scan-186-run' . $fAll . '-\d{8}_NOT-CERTIFIED\.csv$/', $wholeCsv['filename']) === 1
         && strpos($wholeCsv['text'], 'INCOMPLETE') === false);
+    check('J3B-2 (control): a project with no reason to give has no justified_rows line',
+        strpos($wholeCsv['text'], 'justified_rows') === false && $whole['report']['justifiedRows'] === 0);
+    // J3B-1, J3B-2: THE SAME RUN WITH A RULE A REASON STANDS FOR. Its label
+    // snapshot names a justifyBy for rule 1 and two of its findings carry the
+    // flag, as a run planned on a project with @UVJUSTIFY stores them. The
+    // page and the file read the snapshot, so they keep the "Saved with a
+    // reason" column, and both say how many of their rows a reason stands for.
+    $js = clone $fs;
+    $jGen = (int) $fs->run(186, $fAll)['generation_id'];
+    $jDims = \INSPIRE\UniversalValidator\ScanDimensions::fromSnapshot($fs->dimensions(186, $jGen, null, ArrayScanStore::DIM_PAGE));
+    // the fixture's one rule (E2eModule::$rules), as ScanDimensions::build() writes it with its reason field
+    $jDims->rules[1] = ['type' => 'required', 'label' => '', 'message' => '', 'messages' => [], 'assert' => '',
+                        'fields' => ['a_val'], 'detail' => [], 'justifyBy' => ['a_val' => 'a_why']];
+    $jRows = FindingRowMapper::dimensionRows($jDims->toSnapshot());
+    \Closure::bind(function () use ($jRows, $jGen, $fAll) {
+        usort($jRows, function ($a, $b) {
+            $c = strcmp($a['kind'], $b['kind']);
+            return $c !== 0 ? $c : strcmp($a['key'], $b['key']);
+        });
+        $this->dims['186:' . $jGen] = $jRows;
+        $flagged = 0;
+        foreach ($this->findings as $i => $f) {
+            if ((int) $f['project_id'] === 186 && (int) $f['generation_id'] === $jGen && !empty($f['active_slot']) && $flagged < 2) {
+                $this->findings[$i]['justified'] = 1;
+                $flagged++;
+            }
+        }
+        $this->runs[$fAll]['open_justified'] = $flagged;
+    }, $js, ArrayScanStore::class)();
+    $fm->user->rights['group_id'] = null;
+    $jPage = (new ScanService($fm, $js))->findings(186, $fAll, ['limit' => 100]);
+    $jYes = 0;
+    foreach (isset($jPage['rows']) ? $jPage['rows'] : [] as $r) if (isset($r['cells']['justified']) && $r['cells']['justified'] === 'Yes') $jYes++;
+    check('J3B-1: a stored run planned with a rule a reason stands for keeps the "Saved with a reason" column on its page (got '
+        . json_encode(isset($jPage['columns']) ? array_column($jPage['columns'], 'key') : $jPage) . ')',
+        !empty($jPage['ok']) && in_array('justified', array_column($jPage['columns'], 'key'), true) && $jYes === 2);
+    check('J3B-2: and its page says how many of its rows were saved with a reason',
+        $jPage['report']['expectedRows'] === 10 && $jPage['report']['justifiedRows'] === 2);
+    $jStatus = (new ScanService($fm, $js))->status(186, $fAll);
+    check('J3B M15: the panel is told the same, the open findings apart from those with a reason (got '
+        . json_encode([isset($jStatus['findings']) ? $jStatus['findings'] : '-', isset($jStatus['justified']) ? $jStatus['justified'] : '-']) . ')',
+        !empty($jStatus['ok']) && $jStatus['findings'] === 8 && $jStatus['justified'] === 2);
+    $jCsv = $csv($fAll, null, 186, $js);
+    check('J3B-1, J3B-2: its file has the column and says so in its head',
+        !empty($jCsv['ok']) && strpos($jCsv['text'], '"justified"') !== false
+        && strpos($jCsv['text'], '"# expected_rows","10"') !== false && strpos($jCsv['text'], '"# justified_rows","2"') !== false
+        && $jCsv['result']['rows'] === 10 && $jCsv['result']['ok'] === true);
     $mineCsv = $csv($f31, 31);
     check('B5 export group: a group reader\'s file holds their group\'s findings and not the row filed under another group',
         !empty($mineCsv['ok']) && $mineCsv['result']['rows'] === 4 && strpos($mineCsv['text'], '"R06"') === false

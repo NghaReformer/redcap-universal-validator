@@ -1597,7 +1597,11 @@ the run's group, counts nothing, and its findings are closed with it.
 Duplicate values are counted as the run publishes each duplicate group near
 its end, so the count shown while a run works can rise at the end. The
 findings saved with a reason (`@UVJUSTIFY`) are counted the same way, apart
-from the open ones: the panel gives them as "and N saved with a reason".
+from the open ones: the panel gives them as "and N saved with a reason". The
+findings page and the downloaded file list them among their rows, in the
+"Saved with a reason" column, and say how many there are: "This report holds
+12 findings, 3 of them saved with a reason." on the page, and a
+`justified_rows` line beside `expected_rows` at the head of the file.
 
 For a reader outside any group, the panel's count, the findings page's total
 and the rows of the downloaded file agree, whether the run finished or was

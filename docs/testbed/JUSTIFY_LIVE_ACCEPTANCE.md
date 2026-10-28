@@ -271,10 +271,12 @@ C1 to C4 change the page only, and each puts the reason back.
 
 ## Section H: the Validation scan
 
-The scan page on this release runs the durable scan, whose panel shows
-counts. The legacy scan has no page here (`export.php` answers 503 until the
-stored-report exporter ships). `tests/justify_live_twin_php.php` runs the
-legacy scan over the same data, so its rows are pinned offline: 17 rows
+The scan page on this release runs the durable scan. Its panel shows the
+counts, and a finished run's findings are listed below it ("Findings of this
+scan") with a button that downloads them as a CSV (`export.php`, POST only).
+H1b checks the "Saved with a reason" column there. The legacy scan has no page
+here. `tests/justify_live_twin_php.php` runs the legacy scan over the same
+data, so its rows are pinned offline too: 17 rows
 marked as saved with a reason, each naming its reason field, the column
 "Saved with a reason" reading "Yes", and `uj_wt`'s problem text "The value is
 above the highest plausible value for this field. Allowed 30 to 250 kg. It was
@@ -284,10 +286,11 @@ row is open.
 | # | Action | Expect |
 |---|---|---|
 | H1 | [only if the durable scan is enabled] Run the Validation scan | The panel reads "<F0 + 1> findings so far, and 17 saved with a reason" (with F0 = 0, "1 finding so far, and 17 saved with a reason") and "<R0> rules could not be evaluated, so this result does not certify the project." The new finding is XE-1's write-once change of F6. The 17 are XE-1's `uj_req`, `uj_wt`, `uj_id`, `uj_pool`, `uj_dia`, `uj_dose`, `uj_visit`, `uj_wt2`, `uj_mother`, `uj_hr`, `uj_ro`, `uj_temp`, `uj_off` and `uj_lock` range finding, XE-2's `uj_req`, and XE-4's `uj_req` and `uj_wt`. XE-3, never opened on this form, has none |
+| H1b | [only if the durable scan is enabled] Below the panel, open the run's findings. Then download the CSV and open it in a text editor | The table has a "Saved with a reason" column reading "Yes" on the 17 rows of H1 and blank on the others. The count line reads "This report holds <F0 + 18> findings, 17 of them saved with a reason." The file's header row has a `justified` column with "Yes" on the same 17 rows, and its head has `# expected_rows` = F0 + 18 and `# justified_rows` = 17 |
 | H2 | Data Import Tool, CSV `record_id,redcap_event_name,uj_wt_why` with the row `XE-1,visit_1_arm_1,UNK`. Import. Run the scan | "<F0 + 2> findings so far, and 16 saved with a reason". XE-1's weight now counts as a finding, because a Missing Data Code is no reason |
 | H2b | The same import with three spaces as the value, and "Overwrite existing values with blank values" = Yes. Run the scan | The counts of H2. REDCap may keep the spaces or trim them to a blank; either is no reason. Write down which (the form shows it) |
 | H2c | The same import with Scale checked twice. Run the scan | The counts of H1 again |
-| H3 | [only if the durable scan is enabled] Create a scratch project (classic, `record_id` on `my_first_instrument`). Upload a dictionary with its `record_id` row and the `uj_wt` and `uj_wt_why` rows of the fixture (form `uv_justify_test`). Enable the module with the scan settings of pid 149. Add record 1: "Weight" = 300.0, "Reason for change" = Scale checked twice. Save. Run the Validation scan | The record saves once the reason is typed. The panel reads "Nothing found yet, and 1 saved with a reason" and "Every record was checked, including changes made while it ran.", and no line says the result does not certify the project. The run is clean. A clean result also needs that coverage line; if it reads otherwise, record it |
+| H3 | [only if the durable scan is enabled] Create a scratch project (classic, `record_id` on `my_first_instrument`). Upload a dictionary with its `record_id` row and the `uj_wt` and `uj_wt_why` rows of the fixture (form `uv_justify_test`). Enable the module with the scan settings of pid 149. Add record 1: "Weight" = 300.0, "Reason for change" = Scale checked twice. Save. Run the Validation scan | The record saves once the reason is typed. The panel reads "Nothing found yet, and 1 saved with a reason" and "Every record was checked, including changes made while it ran.", and no line says the result does not certify the project. The run is clean. A clean result also needs that coverage line; if it reads otherwise, record it. Its findings below the panel read "This report holds 1 finding, 1 of them saved with a reason." |
 | H3b | Data Import Tool, CSV `record_id,uj_wt_why` with the row `1,` and "Overwrite existing values with blank values" = Yes. Run the scan | "1 finding so far" and "This result does not certify the project." Then delete the scratch project |
 
 ## Section J: what REDCap does that the code depends on

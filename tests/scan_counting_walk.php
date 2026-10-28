@@ -10,7 +10,12 @@
  * two differ) and, once the run has one, its summary (ScanPromotion::tally())
  * must agree. The walk drives one fixture into each state a run can be read
  * in: working, stopped, expired, failed, partial, complete, and stopped in
- * unique-finalize after one of its two duplicate groups was published. The
+ * unique-finalize after one of its two duplicate groups was published. It
+ * drives every state twice, the second time with R3's stored finding and
+ * the one left out beside it saved with a reason (@UVJUSTIFY): the page's
+ * count of rows saved with a reason (ScanService::justifiedRows()) is then
+ * the rows its pages list with the flag, and the panel's
+ * (ScanPromotion::justifiedOf()) adds the one left out (J3B-2). The
  * fixture has catch-up send two records back to be read again, so a run
  * stopped before the second is read again holds a reading from before the
  * requeue (rvc2-2), and the partial run's second record ends unreadable
@@ -54,7 +59,7 @@ function countingWalk(callable $newStore, $label, array $hooks)
 
     // One run of $pid, read to the point $how says. Returns the store and
     // the run row as it ends.
-    $build = function ($pid, $how) use ($newStore, $key, $groups, $groupOf, $hooks) {
+    $build = function ($pid, $how, $justify) use ($newStore, $key, $groups, $groupOf, $hooks) {
         $s = $newStore();
         $run = $s->startRun($pid, ['created_by' => 'alice', 'values_state' => 'raw'])['run'];
         $rid = (int) $run['run_id'];
@@ -64,8 +69,8 @@ function countingWalk(callable $newStore, $label, array $hooks)
         $s->writeManifest($rid, array_map(function ($id) use ($hash) {
             return ['id_bin' => $id, 'hash' => $hash($id), 'dag' => null];
         }, ['R1', 'R2', 'R3', 'R4']));
-        $finding = function ($c, $n) use ($pid, $gen, $run) {
-            return ['ordinal' => $c['ordinal'], 'project_id' => $pid, 'generation_id' => $gen,
+        $finding = function ($c, $n, $justified) use ($pid, $gen, $run) {
+            return ['justified' => $justified ? 1 : 0, 'ordinal' => $c['ordinal'], 'project_id' => $pid, 'generation_id' => $gen,
                 'identity' => hash('sha256', $pid . '|' . $c['id_bin'] . '|' . $n, true),
                 'valid_from_seq' => (int) $run['run_seq'], 'record_hash' => $c['hash'],
                 'record_id_bin' => $c['id_bin'], 'event_id' => 1, 'instance' => 1, 'host_form' => 'fa',
@@ -79,24 +84,31 @@ function countingWalk(callable $newStore, $label, array $hooks)
                 'scope_key' => 'project', 'record_hash' => $c['hash'], 'record_id_bin' => $c['id_bin'],
                 'event_id' => 1, 'instance' => 1, 'host_form' => 'fa', 'field' => 'code', 'version' => $version];
         };
-        // A batch: [record id => [state, findings, left out]] over the claims.
+        // A batch: [record id => [state, findings, left out, and of each how
+        // many a reason stands for]] over the claims.
         $commit = function (array $claims, $owner, array $plan, $version) use ($s, $rid, $ep, $finding, $candidate) {
-            $b = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => [], 'unstored' => []];
+            $b = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => [], 'unstored' => [],
+                  'unstoredJustified' => []];
             foreach ($claims as $c) {
                 if (!isset($plan[$c['id_bin']])) continue;
                 list($state, $n, $left) = $plan[$c['id_bin']];
+                $nJustified = isset($plan[$c['id_bin']][3]) ? $plan[$c['id_bin']][3] : 0;
+                $leftJustified = isset($plan[$c['id_bin']][4]) ? $plan[$c['id_bin']][4] : 0;
                 $b['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'version' => $version,
                                    'state' => $state, 'claim' => $c['claim']];
-                for ($i = 0; $i < $n; $i++) $b['findings'][] = $finding($c, $version . '-' . $i);
+                for ($i = 0; $i < $n; $i++) $b['findings'][] = $finding($c, $version . '-' . $i, $i < $nJustified);
                 if ($state === ScanStore::REC_DONE) $b['candidates'][] = $candidate($c, $version);
                 if ($left > 0) $b['unstored'][$c['ordinal']] = $left;
+                if ($leftJustified > 0) $b['unstoredJustified'][$c['ordinal']] = $leftJustified;
             }
             return $s->commitBatch($rid, $owner, $ep, $b) === true;
         };
         // Read: R1 two findings, R2 one, R3 one and one left out, R4 none.
+        // With $justify, R3's two are saved with a reason.
         $ok = $commit($s->claim($rid, 'w1', $ep, 4), 'w1', [
             'R1' => [ScanStore::REC_DONE, 2, 0], 'R2' => [ScanStore::REC_DONE, 1, 0],
-            'R3' => [ScanStore::REC_DONE, 1, 1], 'R4' => [ScanStore::REC_DONE, 0, 0]], '10');
+            'R3' => [ScanStore::REC_DONE, 1, 1, $justify ? 1 : 0, $justify ? 1 : 0],
+            'R4' => [ScanStore::REC_DONE, 0, 0]], '10');
         $ok = $ok && $s->advancePhase($rid, $ep, ScanPhase::CATCH_UP);
         // Catch-up: R1 and R2 changed, so both go back to be read again. R1
         // is read again (one finding now); R2 is not, yet.
@@ -142,10 +154,13 @@ function countingWalk(callable $newStore, $label, array $hooks)
         $pid = (int) $run['project_id'];
         $gen = (int) $run['generation_id'];
         $rows = 0;
+        $flagged = 0;
         $after = 0;
         do {
             $through = null;
-            $rows += count($s->findings($pid, $gen, ['dag' => null], [], $after, 2, $through));
+            $page = $s->findings($pid, $gen, ['dag' => null], [], $after, 2, $through);
+            $rows += count($page);
+            foreach ($page as $f) if (!empty($f['justified'])) $flagged++;
             $after = $through;
         } while ($after !== null);
         $aggregates = $s->aggregates((int) $run['run_id']);
@@ -166,7 +181,9 @@ function countingWalk(callable $newStore, $label, array $hooks)
         return ['count' => ScanPromotion::findingsOf($s, $run), 'left' => (int) $run['open_unstored'],
                 'expected' => $expected, 'rows' => $rows, 'csv' => $csv['rows'], 'csvOk' => $csv['ok'] === true
                 && strpos($text, '"# export_complete=1","rows=' . $csv['rows'] . '"') !== false,
-                'summary' => ScanPromotion::tally($aggregates)['stored']];
+                'summary' => ScanPromotion::tally($aggregates)['stored'],
+                'flagged' => $flagged, 'justifiedRows' => ScanService::justifiedRows($run, $aggregates, ['dag' => null]),
+                'justified' => ScanPromotion::justifiedOf($s, $run)];
     };
 
     // run state => [terminal, the rows it holds]. R1 one finding, R2 one,
@@ -181,25 +198,33 @@ function countingWalk(callable $newStore, $label, array $hooks)
     // Every other project id, so a store can give each one a neighbour
     // (tests/mysql/support/fixture.php: uv_neighbour() is the id after).
     $pid = 860;
-    foreach ($states as $how => $want) {
-        if (isset($hooks['before'])) $hooks['before']($pid);
-        list($s, $run, $ok) = $build($pid, $how);
-        $pid += 2;
-        $C("one number ($how): the fixture reaches the state", $ok && $run !== null
-            && $run['terminal'] === $want[0]);
-        $got = $read($s, $run);
-        $C("one number ($how): the page lists the rows the run holds (got " . json_encode($got) . ')',
-            $got['rows'] === $want[1]);
-        $C("one number ($how): the panel counts them, and the one finding left out beside them",
-            $got['count'] === $want[1] + 1 && $got['left'] === 1);
-        $C("one number ($how): the CSV writes them all and closes on its trailer",
-            $got['csv'] === $want[1] && $got['csvOk']);
-        if ($want[0] !== null) {
-            $C("one number ($how): and the page total and the file's expected_rows are the same number",
-                $got['expected'] === $want[1]);
-        }
-        if ($want[0] === ScanOutcome::PARTIAL || $want[0] === ScanOutcome::COMPLETE) {
-            $C("one number ($how): which is what the summary counted", $got['summary'] === $want[1]);
+    foreach ([false, true] as $justify) {
+        // the stored finding and the one left out that a reason stands for
+        $j = $justify ? 1 : 0;
+        foreach ($states as $state => $want) {
+            $how = $state . ($justify ? ', R3 saved with a reason' : '');
+            if (isset($hooks['before'])) $hooks['before']($pid);
+            list($s, $run, $ok) = $build($pid, $state, $justify);
+            $pid += 2;
+            $C("one number ($how): the fixture reaches the state", $ok && $run !== null
+                && $run['terminal'] === $want[0]);
+            $got = $read($s, $run);
+            $C("one number ($how): the page lists the rows the run holds (got " . json_encode($got) . ')',
+                $got['rows'] === $want[1]);
+            $C("one number ($how): the panel counts the open ones, and the one finding left out beside them",
+                $got['count'] === $want[1] + 1 - 2 * $j && $got['left'] === 1);
+            $C("one number ($how): the CSV writes them all and closes on its trailer",
+                $got['csv'] === $want[1] && $got['csvOk']);
+            if ($want[0] !== null) {
+                $C("one number ($how): and the page total and the file's expected_rows are the same number",
+                    $got['expected'] === $want[1]);
+            }
+            if ($want[0] === ScanOutcome::PARTIAL || $want[0] === ScanOutcome::COMPLETE) {
+                $C("one number ($how): which is what the summary counted", $got['summary'] === $want[1]);
+            }
+            $C("one number ($how): the page and the file count the rows saved with a reason that their pages list (J3B-2)",
+                $got['flagged'] === $j && $got['justifiedRows'] === $j);
+            $C("one number ($how): and the panel adds the one left out with a reason", $got['justified'] === 2 * $j);
         }
     }
 }

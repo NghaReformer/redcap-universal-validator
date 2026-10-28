@@ -152,8 +152,10 @@ final class ScanReport
      * @param array|null $emptied ['departed' => int, 'removed' => int]: the
      *        records that left the group and the records deleted while it ran,
      *        from the run's census; null when the caller did not read it
+     * @param int|null $justifiedRows how many of those findings a reason
+     *        (@UVJUSTIFY) stands for (ScanService::justifiedRows())
      */
-    public function runFacts($expectedRows = null, ?array $emptied = null)
+    public function runFacts($expectedRows = null, ?array $emptied = null, $justifiedRows = null)
     {
         $outcome = [
             'terminal' => $this->run['terminal'],
@@ -178,6 +180,7 @@ final class ScanReport
             'labelsDegraded'   => $this->dims->isDegraded(),
             'degradedSummary'  => $this->dims->degradedSummary(),
             'expectedRows'     => $expectedRows === null ? null : max(0, (int) $expectedRows),
+            'justifiedRows'    => $justifiedRows === null ? null : max(0, (int) $justifiedRows),
             // The day the run's date rules were judged as of (W10BF-3), or
             // null for a run whose rules read no clock (or a row read
             // without its policy).

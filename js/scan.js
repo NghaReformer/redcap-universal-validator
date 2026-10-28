@@ -1268,10 +1268,14 @@
         var d = asOfText({ asOf: rep.asOf });
         if (d) parts.push(d);
         text(el('uv-scan-report-summary'), parts.join(' '));
-        var n = rep.expectedRows, count;
+        var n = rep.expectedRows, j = rep.justifiedRows, count;
         if (typeof n === 'number' && n >= 0 && n === Math.floor(n)) {
-            count = fill(L.reportCount || 'This report holds {findings}.',
-                         { findings: grouped(n) + ' finding' + (n === 1 ? '' : 's') });
+            // the rows saved with a reason (@UVJUSTIFY), said apart as the panel says them
+            count = (typeof j === 'number' && j > 0 && j === Math.floor(j))
+                ? fill(L.reportCountJustified || 'This report holds {findings}, {justified} of them saved with a reason.',
+                       { findings: grouped(n) + ' finding' + (n === 1 ? '' : 's'), justified: grouped(j) })
+                : fill(L.reportCount || 'This report holds {findings}.',
+                       { findings: grouped(n) + ' finding' + (n === 1 ? '' : 's') });
         } else {
             count = L.foundUnknown || 'Findings not counted, because the scan ended before it could total them';
         }

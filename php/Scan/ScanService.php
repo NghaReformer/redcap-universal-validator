@@ -1350,7 +1350,7 @@ final class ScanService
         $out = ['ok' => true, 'run_id' => (int) $run['run_id'], 'withheld' => false, 'withheldWhy' => null,
                 'runScope' => self::runScope($run),
                 'columns' => $r['columns'], 'after' => $after, 'limit' => $limit, 'filter' => $applied,
-                'report' => $r['report']->runFacts($r['expected'], $r['emptied']),
+                'report' => $r['report']->runFacts($r['expected'], $r['emptied'], $r['justified']),
                 'marks' => self::incompleteMarks($r['shown'], $r['emptied'])]
              + self::decisionOf($run);
         // A RUN THAT HAS NOT PROVED ITS GROUP SHOWS NO ROWS (H10 part 1), as its
@@ -1398,7 +1398,7 @@ final class ScanService
         // `asOf` as preFenceStatus() keeps it (review rv11b1-4): the day the
         // run's date rules were judged as of counts nothing.
         $reportKeeps = ['schema', 'columns', 'legend', 'coverage', 'coverageSentence', 'mayCertify', 'suffix',
-                        'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows', 'asOf'];
+                        'valuesState', 'labelsDegraded', 'degradedSummary', 'expectedRows', 'justifiedRows', 'asOf'];
         $kept = [];
         foreach ($keep as $k) if (array_key_exists($k, $out)) $kept[$k] = $out[$k];
         $report = [];
@@ -1514,6 +1514,7 @@ final class ScanService
         // (expectedRows()).
         $aggregates = ($withheld === null) ? $store->aggregates((int) $run['run_id']) : [];
         $expected = ($withheld === null) ? self::expectedRows($run, $aggregates, $scope) : null;
+        $justified = ($withheld === null) ? self::justifiedRows($run, $aggregates, $scope) : null;
         // HOW AN EMPTY SCOPE EMPTIED (review rvf1-2, deferred to here). The
         // report's coverage sentence and its terminal row said every record
         // was deleted for a group whose records all moved to another group;
@@ -1526,7 +1527,7 @@ final class ScanService
         }
         return ['ok' => true, 'run' => $run, 'shown' => $shown, 'report' => $report, 'dims' => $dims,
                 'scope' => $scope, 'withheld' => $withheld, 'columns' => $columns, 'expected' => $expected,
-                'aggregates' => $aggregates, 'emptied' => $emptied];
+                'justified' => $justified, 'aggregates' => $aggregates, 'emptied' => $emptied];
     }
 
     /** Has a group run's group changed since its fence (ScopeDrift, review rv11a1-2)? */
@@ -1680,6 +1681,35 @@ final class ScanService
         return $n;
     }
 
+    /**
+     * Of the rows expectedRows() counts, how many a reason (@UVJUSTIFY)
+     * stands for, so the findings page and the file say them apart from the
+     * open ones, as the panel does (J3B-2). It is read where expectedRows()
+     * reads its total: the run row's open_justified for a reader outside any
+     * group of a run that keeps its counts; null where that total is null;
+     * otherwise the summary's standing axis, and for a group reader the
+     * share filed under their group, which a group run's summary keeps in
+     * axis2 (RollupBuilder::step()).
+     *
+     * @return int|null
+     */
+    public static function justifiedRows(array $run, array $aggregates, array $scope)
+    {
+        $held = ScanPromotion::storedJustifiedOf($run);
+        if ($scope['dag'] === null && $held !== null) return $held;
+        if (in_array($run['terminal'], ScanOutcome::NO_VERDICT, true)) return null;
+        $n = 0;
+        foreach ($aggregates as $a) {
+            if (!isset($a['kind'], $a['axis1']) || $a['kind'] !== RollupBuilder::K_STANDING
+                    || (string) $a['axis1'] !== RollupBuilder::STANDING_JUSTIFIED) {
+                continue;
+            }
+            if ($scope['dag'] !== null && (!isset($a['axis2']) || (string) $a['axis2'] !== $scope['dag'])) continue;
+            $n += max(0, (int) $a['cnt']);
+        }
+        return $n;
+    }
+
     // -- the export (B5) -------------------------------------------------------
 
     /** Findings one export page reads: the most a store page holds. */
@@ -1730,7 +1760,7 @@ final class ScanService
             return self::exportRefusal(['why' => $this->storageFailed($pid, $runId, $e), 'final' => false]);
         }
         $run = $r['run'];
-        $facts = $r['report']->runFacts($r['expected'], $r['emptied']);
+        $facts = $r['report']->runFacts($r['expected'], $r['emptied'], $r['justified']);
         // THE RUN'S SCOPE, NOT THE READER'S (review rv11a1-1). This line was
         // the reader's, so an unconfined reader's file of a clean run over one
         // group said "whole project" above "Every record was checked" and
@@ -1754,6 +1784,11 @@ final class ScanService
             ['columns', $facts['legend']],
             ['expected_rows', $facts['expectedRows'] === null ? 'unknown' : (string) $facts['expectedRows']],
         ];
+        // How many of those rows were saved with a reason, beside the column
+        // that marks them (J3B-2).
+        if ($r['dims']->justifies) {
+            $head[] = ['justified_rows', $facts['justifiedRows'] === null ? 'unknown' : (string) $facts['justifiedRows']];
+        }
         // README's three marks of a file that cannot certify (incompleteMarks()):
         // the banner and the terminal row go in the file, the suffix in its name.
         $marks = self::incompleteMarks($run, $r['emptied']);

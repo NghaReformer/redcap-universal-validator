@@ -122,6 +122,7 @@ UV.labels = {
   reportCaption: 'Findings of this scan, page {page}',
   reportLoading: 'Loading the findings.',
   reportCount: 'This report holds {findings}.',
+  reportCountJustified: 'This report holds {findings}, {justified} of them saved with a reason.',
   reportNone: 'This scan stored no findings.',
   reportEmpty: 'No findings match these filters.',
   reportNoMore: 'No further findings match these filters.',
@@ -464,6 +465,18 @@ function noZero(label) {
   check('rv11a2-6: and the empty pages are not pages to go back to',
     els['uv-scan-report-prev'].getAttribute('aria-disabled') === 'true'
     && els['uv-scan-report-caption'].textContent === 'Findings of this scan, page 1');
+
+  // J3B-2: the rows saved with a reason are said apart from the open ones, as the panel says them.
+  reset([page({ next: null, report: { coverageSentence: 'x', expectedRows: 3, justifiedRows: 2 } })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('J3B-2: the count says how many of its rows were saved with a reason',
+    els['uv-scan-report-count'].textContent === 'This report holds 3 findings, 2 of them saved with a reason.');
+  reset([page({ next: null, report: { coverageSentence: 'x', expectedRows: 3, justifiedRows: 0 } })]);
+  UV.attach({ reportRunId: 61 });
+  await ticks();
+  check('J3B-2: and with none saved with a reason it says nothing of them',
+    els['uv-scan-report-count'].textContent === 'This report holds 3 findings.');
 
   // "No findings" only when next is null, nothing was shown, and the report
   // counts none (rv11b1-1).

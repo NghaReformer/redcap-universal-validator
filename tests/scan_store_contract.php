@@ -572,7 +572,8 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         $mixed['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                'state' => ScanStore::REC_DONE, 'version' => '1',
                                'claim' => $c['claim']];
-        $mixed['findings'][] = $f5($c['ordinal'], $c['id_bin'], 'f' . $c['ordinal']);
+        // each with a reason (@UVJUSTIFY), so the lost one's flag is not counted either
+        $mixed['findings'][] = $f5($c['ordinal'], $c['id_bin'], 'f' . $c['ordinal']) + ['justified' => 1];
     }
     $C('a batch holding one lost record still commits',
         $s5->commitBatch($rid5, 'w1', $ep5, $mixed) === true);
@@ -583,6 +584,8 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
         isset($st5[ScanStore::REC_CLAIMED]) && (int) $st5[ScanStore::REC_CLAIMED] === 1);
     $C('and only the held record\'s finding was written',
         (int) $s5->run(720, $rid5)['detail_rows'] === 1);
+    $C('and only its reason counted, in the run\'s counter and in its kept count',
+        (int) $s5->run(720, $rid5)['detail_justified'] === 1 && (int) $s5->run(720, $rid5)['open_justified'] === 1);
     $C('so progress counts one record, not two',
         (int) $s5->run(720, $rid5)['manifest_done'] === 1);
 
@@ -2251,42 +2254,51 @@ function storeContract(callable $newStore, $label, callable $age, ?callable $clo
                             'state' => $id === 'J4' ? ScanStore::REC_TOMBSTONE : ScanStore::REC_DONE,
                             'claim' => $c['claim']];
         // J1: one open and one justified stored, three left out, one of them justified.
-        // J2: one justified stored, two left out, both justified. J3: one open stored.
-        $stored = ['J1' => [false, true], 'J2' => [true], 'J3' => [false], 'J4' => []];
+        // J2: one justified stored, two left out, both justified. J3: one open
+        // and one justified stored, one left out with a reason, so its deletion
+        // has justified parts to give back (J3B-6).
+        $stored = ['J1' => [false, true], 'J2' => [true], 'J3' => [false, true], 'J4' => []];
         foreach ($stored[$id] as $n => $j) $bJ['findings'][] = $findingJ($c['ordinal'], $id, $n, $j);
-        $left = ['J1' => [3, 1], 'J2' => [2, 2], 'J3' => [0, 0], 'J4' => [0, 0]];
+        $left = ['J1' => [3, 1], 'J2' => [2, 2], 'J3' => [1, 1], 'J4' => [0, 0]];
         if ($left[$id][0] > 0) $bJ['unstored'][$c['ordinal']] = $left[$id][0];
         if ($left[$id][1] > 0) $bJ['unstoredJustified'][$c['ordinal']] = $left[$id][1];
     }
     $C('JUSTIFY: the batch commits', $sj->commitBatch($rj, 'w1', $epJ, $bJ) === true);
     $C('JUSTIFY: the run keeps each count with its justified part (got ' . json_encode($countsJ()) . ')',
-        $countsJ() === [4, 2, 5, 3, 2]);
+        $countsJ() === [5, 3, 6, 4, 3]);
     $sj->advancePhase($rj, $epJ, ScanPhase::CATCH_UP);
     $C('JUSTIFY: a record sent back to be read again keeps both parts until its next reading',
-        $sj->requeue($rj, $epJ, [$hJ('J1')]) === 1 && $countsJ() === [4, 2, 5, 3, 2]);
-    $C('JUSTIFY: a record read again holds its new reading\'s parts only, and detail_justified does not shrink',
+        $sj->requeue($rj, $epJ, [$hJ('J1')]) === 1 && $countsJ() === [5, 3, 6, 4, 3]);
+    // J1's new reading: one stored with a reason, two left out with one, so
+    // the record it retires below holds justified parts in both (J3B-5).
+    $C('JUSTIFY: a record read again holds its new reading\'s parts only, and detail_justified does not shrink (got '
+        . json_encode($countsJ()) . ')',
         (function () use ($sj, $rj, $epJ, $countsJ, $findingJ) {
             $c = $sj->claimPending($rj, 'w2', $epJ, 10);
             if (!is_array($c) || count($c) !== 1) return false;
             $ok = $sj->commitBatch($rj, 'w2', $epJ, ['bytes' => 0,
-                'findings' => [$findingJ($c[0]['ordinal'], 'J1', 9, false)],
+                'findings' => [$findingJ($c[0]['ordinal'], 'J1', 9, true)],
                 'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
                                'state' => ScanStore::REC_DONE, 'version' => '11', 'claim' => $c[0]['claim']]],
-                'unstored' => [$c[0]['ordinal'] => 1]]) === true;
-            return $ok && $countsJ() === [3, 1, 3, 2, 2];
+                'unstored' => [$c[0]['ordinal'] => 2], 'unstoredJustified' => [$c[0]['ordinal'] => 2]]) === true;
+            return $ok && $countsJ() === [4, 3, 5, 5, 4];
         })());
     $C('JUSTIFY: a record that left the run\'s group gives both parts back (got ' . json_encode($countsJ()) . ')',
-        $sj->depart($rj, $epJ, [$hJ('J2')]) === 1 && $countsJ() === [2, 0, 1, 0, 2]);
-    $C('JUSTIFY: so does a deleted record',
-        $sj->tombstone($rj, $epJ, [$hJ('J3')]) === 1 && $countsJ() === [1, 0, 1, 0, 2]);
-    $C('JUSTIFY: and a record retired out of attempts',
+        $sj->depart($rj, $epJ, [$hJ('J2')]) === 1 && $countsJ() === [3, 2, 3, 3, 4]);
+    // Its row now holds no reading, so deleting it later gives nothing back again.
+    $sj->tombstone($rj, $epJ, [$hJ('J2')]);
+    $C('JUSTIFY: and a departed record deleted later gives nothing back twice (got ' . json_encode($countsJ()) . ')',
+        $countsJ() === [3, 2, 3, 3, 4]);
+    $C('JUSTIFY: so does a deleted record (J3B-6, got ' . json_encode($countsJ()) . ')',
+        $sj->tombstone($rj, $epJ, [$hJ('J3')]) === 1 && $countsJ() === [1, 1, 2, 2, 4]);
+    $C('JUSTIFY: and a record retired out of attempts (J3B-5)',
         (function () use ($sj, $rj, $epJ, $hJ, $countsJ) {
             if ($sj->requeue($rj, $epJ, [$hJ('J1')]) !== 1) return false;
             $c = $sj->claimPending($rj, 'w3', $epJ, 10);
             if (!is_array($c) || count($c) !== 1) return false;
             return $sj->noteAttempts($rj, $epJ, 'w3', [$c[0]['ordinal'] => $c[0]['claim']], 1,
                                      ScanStore::REC_UNREADABLE)['retired'] === 1
-                && $countsJ() === [0, 0, 0, 0, 2];
+                && $countsJ() === [0, 0, 0, 0, 4];
         })());
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------

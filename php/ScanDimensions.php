@@ -407,7 +407,9 @@ final class ScanDimensions
      * snapshot this revision can read (no state row, or another revision).
      *
      * Null is the caller's cue to label the report from the project as it is
-     * now and to say so: a run planned before snapshots existed has none. A
+     * now and to say so: a run planned before snapshots existed has none.
+     * `justifies` is not stored: a rule with a `justifyBy` sets it, as in
+     * build(), so a snapshot written before it was read back sets it too. A
      * row of a kind this revision does not know is not skipped quietly: the
      * object is marked degraded.
      *
@@ -452,6 +454,8 @@ final class ScanDimensions
                 if ($ids !== null && is_array($meta) && !empty($meta['identifier'])) $ids[$key] = true;
             } elseif ($kind === 'rule' && is_array($meta) && ctype_digit($key) && (int) $key > 0) {
                 $d->rules[(int) $key] = $meta;
+                // the "Saved with a reason" column, as build() sets it (J3B-1)
+                if (!empty($meta['justifyBy'])) $d->justifies = true;
             } elseif ($kind === 'source' && is_array($meta) && isset($meta['ordinal'])) {
                 $d->rulesBySource[$key] = (int) $meta['ordinal'];
             } else {

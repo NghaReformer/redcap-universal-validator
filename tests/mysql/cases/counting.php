@@ -73,9 +73,9 @@ require_once __DIR__ . '/../../scan_counting_walk.php';
     countingWalk(function () use ($dbA) { return new SqlScanStore($dbA); }, 'sql-store',
                  array('key' => $KEY, 'publish' => $publish, 'rollup' => $rollup, 'before' => $before));
 
-    $whole = count($planted) === 7;
+    $whole = count($planted) === 14;
     foreach ($planted as $pid => $nb) {
         $whole = $whole && is_array($nb) && uv_neighbour_findings($dbA, $pid) === 2;
     }
-    check('counting: each of the seven projects had a neighbour, whose two findings no run here touched', $whole);
+    check('counting: each of the fourteen projects had a neighbour, whose two findings no run here touched', $whole);
 }

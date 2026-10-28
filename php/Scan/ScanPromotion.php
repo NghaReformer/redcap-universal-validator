@@ -485,6 +485,19 @@ final class ScanPromotion
     }
 
     /**
+     * Of the rows storedOf() counts, the ones a reason (@UVJUSTIFY) stands
+     * for: the run row's open_justified. Null for a run that keeps no counts
+     * (kept()).
+     *
+     * @return int|null
+     */
+    public static function storedJustifiedOf(array $run)
+    {
+        $kept = self::kept($run);
+        return $kept !== null ? $kept['justified'] : null;
+    }
+
+    /**
      * Everything the decision needs, in one shape.
      *
      * Every field defaults to the SAFE reading, matching ScanOutcome::derive():

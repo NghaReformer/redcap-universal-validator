@@ -406,7 +406,7 @@ $ROLL = 984;
 // The caller's own count is not asked for; promote() reads the summary.
 {
     $s = new SqlScanStore($dbA);
-    $finish = function ($pid, array $flags) use ($s, $open, $byId, $finding, $done, $dbA, $A) {
+    $finish = function ($pid, array $flags, array $over = []) use ($s, $open, $byId, $finding, $done, $dbA, $A) {
         $ids = [];
         foreach ($flags as $i => $unused) $ids[] = 'P-' . ($i + 1);
         $o = $open($s, $pid, $ids);
@@ -414,7 +414,7 @@ $ROLL = 984;
         $b = ['bytes' => 0, 'records' => [], 'findings' => []];
         foreach ($ids as $i => $id) {
             $b['records'][] = $done($c[$id]);
-            $b['findings'][] = $finding($pid, $o['gen'], $c[$id], 'x', ['justified' => $flags[$i]]);
+            $b['findings'][] = $finding($pid, $o['gen'], $c[$id], 'x', ['justified' => $flags[$i]] + $over);
         }
         $ok = $s->commitBatch($o['run'], 'w', $o['epoch'], $b);
         foreach ([ScanPhase::CATCH_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP] as $ph) {
@@ -445,6 +445,20 @@ $ROLL = 984;
         && $p['outcome']['clean'] === false && $raw[2] !== null && (int) $raw[2] === 0);
     check('verdict (control): one finding to show, two saved with a reason',
         ScanPromotion::findingsOf($s, $run) === 1 && ScanPromotion::justifiedOf($s, $run) === 2);
+
+    // J3B-8: A RUN WHOSE ONLY FINDINGS ARE DUPLICATES. UniqueFinalizer writes
+    // them with justified 0 and reason duplicate-value, since a reason never
+    // stands for @UVUNIQUE. The summary files them as open, so the run is
+    // complete and not clean, and none of them counts as saved with a reason.
+    list($ok, $p, $raw, $run) = $finish(9886, [0, 0], ['check_type' => 'unique', 'reason_code' => 'duplicate-value']);
+    $t = ScanPromotion::tally($s->aggregates((int) $run['run_id']));
+    check('verdict (J3B-8): a run whose only findings are duplicates is complete and NOT clean, a stored 0 (got '
+        . json_encode([$raw, $t['violations'], $t['justified']]) . ')',
+        $ok === true && $p['promoted'] === true && $raw[0] === 'complete'
+        && $p['outcome']['clean'] === false && $raw[2] !== null && (int) $raw[2] === 0);
+    check('verdict (J3B-8): its summary counts both as open, none saved with a reason',
+        $t['violations'] === 2 && $t['justified'] === 0
+        && ScanPromotion::findingsOf($s, $run) === 2 && ScanPromotion::justifiedOf($s, $run) === 0);
 }
 
 // -- AN INSTALLATION AT VERSION 6, WITH FINDINGS ----------------------------
