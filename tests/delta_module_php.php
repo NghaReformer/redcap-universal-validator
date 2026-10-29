@@ -1617,16 +1617,22 @@ namespace {
     // R12-3: the lenient read, key by key. The reviewer's N5, K9, W4 and N1 offered an
     // entry that is refused, or validates nothing at times, once that tag is fixed
     // (N1 threw a TypeError on PHP 8 instead); K6 read a key the parser does not take.
+    // A warning fails the check as that TypeError does: PHP 7.4 only warns when trim()
+    // is handed a list, and reads on to the same refusal.
     foreach (['"direction":null (N5)' => ['{"vs":"previous-event","max":1,"direction":null}', ',"direction":"up"'],
               'a misspelt key, "wehn" (K9)' => ['{"vs":"previous-event","max":1,"wehn":"[flag] = \'1\'"}', ',"when":"[flag] > 0"'],
               'a "when" of only spaces, beside a tag with a "when" (W4)' => ['{"vs":"previous-event","max":"x","when":"  "}', ',"when":"[flag] > 0"'],
               'an extra key the tag does not take, "label" (K6)' => ['{"vs":"previous-event","max":1,"label":"x"}', ''],
               'a "vs" that is a list (N1)' => ['{"vs":["previous-event"],"max":1}', ''],
               'a "vs" that is a number (N1)' => ['{"vs":5,"max":1}', '']] as $how => $c) {
+        set_error_handler(function ($no, $str) { throw new \ErrorException($str, 0, $no); },
+                          E_WARNING | E_NOTICE | E_USER_WARNING | E_USER_NOTICE);
         try {
             $e = $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA=' . $c[0] . ' @UVDELTA={"vs":"[w9]","max":5' . $c[1] . '}');
         } catch (\Throwable $t) {
             $e = [get_class($t) . ': ' . $t->getMessage()];
+        } finally {
+            restore_error_handler();
         }
         check('R12-3: beside a tag that failed to parse with ' . $how . ' nothing is offered, and the refusal says why (got ' . json_encode($e) . ')',
             count($e) === 2 && $e[1] === $UNREAD11);
