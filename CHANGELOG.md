@@ -110,7 +110,7 @@ The durable scan finishes remediation waves 10 to 12 and the R5 review. A finish
 ### Verification
 
 - The suites CI names (207 commands of the `js-parity` and `php-parity` jobs) pass on PHP 8.3 and on PHP 7.4, with Node 24 locally (CI runs Node 20). On the local PHP 7.4 build, `tests/unique_scope_php.php` and `tests/exists_table_php.php` start their second and third runs through `PHP_BINARY` without mbstring and fail there; run directly with mbstring, all three of those runs pass.
-- The database suite passes on MySQL 8.0 and MariaDB 10.5: 1,636 checks each, with no table left behind. Before the round-3 fixes it passed on MySQL 5.7 and 8.0 and MariaDB 10.5 and 10.11 with 1,563 checks each; 5.7 and 10.11 were not run again after them.
+- The database suite passes on MySQL 5.7 and 8.0 and MariaDB 10.5 and 10.11: 1,636 checks each, with no table left behind.
 - Every mutation of the five mutation runners is killed: `tests/delta_mutations.py` 265, `tests/writeonce_mutations.py` 255 (its SQL ones on MariaDB 10.5), `tests/justify_mutations.py` 164 (its 22 SQL ones on MySQL 8.0), `tests/exists_where_mutations.py` 28 and `tests/temporal_mutations.py` 4.
 - CI's `package` step, run as tag `v2.4.0`, builds `universal_validator_v2.4.0.zip` with 389 files.
 - Not done yet: live acceptance on chpr-redcap.org (the sheets of `@UVDELTA`, `@UVWRITEONCE`, `@UVJUSTIFY` and the durable scan).
