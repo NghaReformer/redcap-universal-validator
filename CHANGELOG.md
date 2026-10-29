@@ -3,6 +3,15 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Each release is tagged `vX.Y.Z` and installs as the module folder `universal_validator_vX.Y.Z` (see "Version numbers" in `docs/INSTALL.md`). A build for testing on a development project says so in its entry, not in its number.
 
+## Unreleased
+
+### Security
+
+- **A record renamed into another Data Access Group stayed on the old group's scan report.** A group user's report of a durable scan is refused once a record moves into or out of the group, but the check counted a record only when its group had changed. A record renamed and assigned to another group (a site transfer on a project with group-prefixed record names) no longer existed under its old name, so it was taken as deleted. The old group's users kept its row and stored value on the findings page and in the CSV, and the file ended `export_complete=1`.
+  - A record of the run that is no longer in the project under its name now refuses the report, final, with "a record this scan held for your Data Access Group has since been renamed or deleted, so its results no longer describe your group. Run a new scan." A rename and a deletion look the same in the change log, so a deleted record of the group refuses the report too.
+  - REDCap may log a rename under the new name only, and then the old name is not in the change log since the scan. So the findings page and the file now also ask the record index about the records of each page before it is shown or written. A row whose record is in another group, or no longer in the project, refuses the page; a file stops before that page and ends as one that lost rows. This costs one statement per page for a group user, and none for a record the same file already found in the group. It also catches a move whose log entry commits late.
+  - Tests: `tests/scan_service_php.php` (10 checks: the rename logged under either name, a deletion, a move the change log does not show, and controls) and the `fence` MySQL case (6 checks on a real record index, including the statement count). Reverting either half fails its own checks.
+
 ## 2.4.0 — 2026-10-29
 
 **Three new tags and the durable scan's stored report.** `@UVDELTA`, `@UVWRITEONCE` and `@UVJUSTIFY` are new, and a finished durable scan's findings can be read on the scan page and downloaded as a CSV (see "Validation scan" below). Install it as the folder `universal_validator_v2.4.0`. Upgrading from 2.3.x applies schema versions 7 and 8: version 7 adds `uv_finding.justified` and `uv_scan_run.detail_justified` for `@UVJUSTIFY`, and version 8 is the scan's. `@UVWRITEONCE` reads REDCap's own log and user-role tables, and writes nothing to them. The scan engine revision is now `engine-9`: `engine-5` to `engine-7` for the three tags, `engine-8` because a duplicate the durable scan's finalizer writes now carries its rule's ordinal, its record's Data Access Group and the reason `duplicate-value`, and `engine-9` because the scan stores a pooled finding's reason and a branched rule's branch in a new form and keeps a group run's summary per group. A scan in progress at the upgrade ends at its next work request; start it again.

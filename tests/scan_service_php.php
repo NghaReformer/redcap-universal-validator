@@ -5686,6 +5686,68 @@ namespace INSPIRE\UniversalValidator\Scan {
         ScopeDrift::check($log9, $s9, $s9->run(211, $g9), $yes, $yes, $hash9, 2, 1)
             === ['ok' => false, 'movedIn' => 0, 'movedOut' => 0, 'why' => ScopeDrift::UNCONFIRMED, 'final' => true]);
 
+    /* rvx2-1  A RECORD RENAMED INTO ANOTHER GROUP HAS LEFT THE GROUP. The
+     * reviewer's repro: a site transfer renames R07 to S07 and assigns it to
+     * group 7. The old name was nobody's and exist() called it gone, so the
+     * walk took a deletion, and the new name is not on the run's list: the
+     * site_b reader kept R07's row and value on the page and in the file,
+     * which ended export_complete=1. */
+    $left9 = ['ok' => false, 'why' => ScopeDrift::LEFT, 'final' => true];
+    $m9->records = array_merge(array_values(array_diff($m9->records, ['R07'])), ['S07']);
+    $m9->dagOf['S07'] = '7';
+    $m9->dagNames['S07'] = 'site_a';
+    $m9->changes['R07'] = '190';
+    $m9->changes['S07'] = '191';
+    $m9->firstSeen['S07'] = '191';
+    $m9->top = '191';
+    check('rvx2-1: R07 renamed into group 7, its rename logged under the old name: the site_b page is refused, final',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100]) === $left9);
+    check('rvx2-1: and so is their file, before a line of it is written',
+        $wvCsv($m9, $s9, 211, $g9, 31) === ['ok' => false, 'http' => 403, 'why' => ScopeDrift::LEFT]);
+    // Logged under the new name only, the old name never reaches the walk,
+    // which then has nothing against the report. The rows themselves do.
+    unset($m9->changes['R07']);
+    check('rvx2-1: logged under the new name only, the walk finds nothing against the report',
+        ScopeDrift::check($log9, $s9, $s9->run(211, $g9), $yes, $yes, $hash9)['ok'] === true);
+    check('rvx2-1: but the page asks of its own rows, and is refused, final',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100]) === $left9);
+    $x9b = $wvCsv($m9, $s9, 211, $g9, 31);
+    check('rvx2-1: and the file stops before the page holding R07 is written, as one that lost rows',
+        !empty($x9b['ok']) && $x9b['result']['ok'] === false
+        && strpos($x9b['text'], 'value-of-R07') === false && strpos($x9b['text'], '"R07"') === false
+        && strpos($x9b['text'], '"# ' . ScanService::ROWS_LOST . '"') !== false
+        && strpos($x9b['text'], 'export_complete') === false);
+    $un9b = $wvPage($m9, $s9, 211, $g9, null, ['limit' => 100]);
+    check('rvx2-1 (control): an unconfined reader still reads the run, R07 included',
+        $un9b['ok'] === true && count($un9b['rows']) === 5);
+    $m9->records = array_merge(array_values(array_diff($m9->records, ['S07'])), ['R07']);
+    unset($m9->changes['S07']);
+    $m9->top = '191';
+    check('rvx2-1 (control): with R07 back under its name, the report is shown again',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100])['ok'] === true);
+    // FAILS CLOSED ON A DELETION. The walk cannot tell a record deleted from
+    // one renamed away, so a deleted record of the group refuses the report
+    // too, until a new scan.
+    $m9->records = array_values(array_diff($m9->records, ['R09']));
+    $m9->changes['R09'] = '195';
+    $m9->top = '195';
+    check('rvx2-1: a record of the group deleted since the scan refuses the report as well, final',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100]) === $left9);
+    $m9->records[] = 'R09';
+    unset($m9->changes['R09']);
+    // A MOVE THE LOG DOES NOT SHOW is caught on the rows too: R08 moved to
+    // group 7 with no entry since the fence, as an entry that commits late
+    // would leave it (CFXA-N1).
+    $m9->dagOf['R08'] = '7';
+    $m9->dagNames['R08'] = 'site_a';
+    unset($m9->changes['R08']);
+    check('rvx2-1: a move the walk cannot see refuses the page through its rows, final',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100]) === $drifted);
+    $m9->dagOf['R08'] = '31';
+    $m9->dagNames['R08'] = 'site_b';
+    check('rvx2-1 (control): R08 back in the group, the page is shown',
+        $wvPage($m9, $s9, 211, $g9, 31, ['limit' => 100])['ok'] === true);
+
     /* rv11a1-6 (a)  THE VALUE GATE IS THE POLICY NOW. A run that kept raw
      * values, read after the project tightened its storage to locations:
      * the reader's ceiling is floored by today's policy, and reverting
