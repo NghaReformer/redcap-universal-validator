@@ -451,13 +451,21 @@ final class SourceFence implements RecordVersions, ChangeLog
  *
  *   moved out  on the run's list (not departed, not deleted) and now, on an
  *              explicit answer, in another group or in none
+ *   gone       on the run's list and no longer in the project under its
+ *              name. Deleted, or RENAMED (review rvx2-1): a site transfer
+ *              on a project with group-prefixed record names renames the
+ *              record and assigns it to the other group, and the new name
+ *              is not on the run's list. The walk cannot tell the two
+ *              apart, so a gone record refuses the report like a move out.
  *   moved in   now in the group, not held by the run, and logged at or
  *              before the fence. A record first logged after the fence was
  *              created since: a change after the fence, like an edit, which
  *              the report's "through" claim already leaves out.
  *
  * It relies on what catch-up relies on: REDCap writes a log entry naming the
- * record when it changes the record's group.
+ * record when it changes the record's group. A rename may log only under the
+ * new name, and then the old name never reaches this walk; rowsStillHeld()
+ * asks again of the records on each page shown or written, and needs no log.
  *
  * FAILS CLOSED. No log, a log that no longer reaches back to the fence, and
  * more entries since the fence than one read may walk all refuse the report
@@ -488,6 +496,14 @@ final class ScopeDrift
     /** A record that still exists, whose group could not be read just now. */
     const CANNOT_TELL = 'the group of a record changed since this scan could not be read just now, '
         . 'so this report is not shown. Try again in a moment.';
+    /**
+     * A record the run held for the group is no longer in the project under
+     * its name: renamed (perhaps into another group) or deleted (review
+     * rvx2-1). Said for the reader's own group's record, so it tells them
+     * nothing about any other group.
+     */
+    const LEFT = 'a record this scan held for your Data Access Group has since been renamed or deleted, '
+        . 'so its results no longer describe your group. Run a new scan.';
 
     /**
      * @param SourceFence|null $log    the project change log; null is none
@@ -500,6 +516,7 @@ final class ScopeDrift
      *                                 knows no record, every record reads as not held, and a
      *                                 record moved out of the group is never seen to go.
      * @return array{ok:bool, movedIn:int, movedOut:int, why:?string, final:bool}
+     *         movedOut counts gone records too
      * @throws ScanStoreUnavailable when the log could not be read
      */
     public static function check($log, ScanStore $store, array $run, callable $scope, callable $exists,
@@ -544,10 +561,12 @@ final class ScopeDrift
                 $out = 0;
                 $joined = [];
                 $unplaced = [];
+                $heldIds = [];
                 foreach ($ids as $id) {
                     $now = (is_array($where) && array_key_exists($id, $where)) ? $where[$id] : null;
                     $held = isset($known[$id]) && !in_array((int) $known[$id]['state'],
                         [ScanStore::REC_DEPARTED, ScanStore::REC_TOMBSTONE], true);
+                    if ($held) $heldIds[$id] = true;
                     if ($now === null) {
                         $unplaced[] = $id;
                     } elseif ($now === false) {
@@ -576,15 +595,92 @@ final class ScopeDrift
                     } catch (\Throwable $e) {
                         $there = [];
                     }
+                    $gone = 0;
                     foreach ($unplaced as $id) {
                         if (!(is_array($there) && array_key_exists($id, $there) && $there[$id] === false)) {
                             return $no(self::CANNOT_TELL, false);
                         }
+                        // A record nobody holds any more is not drift, unless
+                        // the run held it: then it may live on under another
+                        // name in another group (review rvx2-1).
+                        if (isset($heldIds[$id])) $gone++;
                     }
+                    if ($gone > 0) return $no(self::LEFT, true, 0, $gone);
                 }
             }
             if (count($entries) < $page || SourceFence::decCmp($after, $top) >= 0) return $valid;
         }
         return $no(self::UNCONFIRMED, true);
+    }
+
+    /**
+     * Is every record about to be shown to a group reader, or written into
+     * their file, still in the group under its name? (review rvx2-1)
+     *
+     * THE WALK SEES WHAT THE LOG NAMES. A record renamed and moved to another
+     * group may be logged under its new name only, and then check() never
+     * meets the old one: the old group's reader was shown the record's row
+     * and kept value. This asks the record index of the rows themselves, with
+     * no log, just before they go out: a row's record in another group or in
+     * none is a move out, one no longer in the project is gone (renamed or
+     * deleted), and either refuses, final. A record that exists and whose
+     * group cannot be read refuses for this request only.
+     *
+     * One scope read per call (RecordManifestSource::scopeOf), and one
+     * existence read only for records the index no longer lists. $seen keeps
+     * the ids already found in the group, so a file that meets one record on
+     * several pages asks about it once.
+     *
+     * @param array[]  $rows   stored findings (record_id_bin)
+     * @param callable $scope  string[] => array<string,?bool>, as check()'s
+     * @param callable $exists string[] => array<string,bool>, as check()'s
+     * @param array    $seen   ids already found in the group, by reference
+     * @return array{ok:bool, movedIn:int, movedOut:int, why:?string, final:bool}
+     */
+    public static function rowsStillHeld(array $rows, callable $scope, callable $exists, array &$seen = [])
+    {
+        $ids = [];
+        foreach ($rows as $r) {
+            $id = (string) $r['record_id_bin'];
+            if (!isset($seen[$id])) $ids[$id] = true;
+        }
+        $ids = array_map('strval', array_keys($ids));
+        $valid = ['ok' => true, 'movedIn' => 0, 'movedOut' => 0, 'why' => null, 'final' => false];
+        if (!$ids) return $valid;
+        $no = function ($why, $final, $out = 0) {
+            return ['ok' => false, 'movedIn' => 0, 'movedOut' => $out, 'why' => $why, 'final' => $final];
+        };
+        try {
+            $where = $scope($ids);
+        } catch (\Throwable $e) {
+            return $no(self::CANNOT_TELL, false);
+        }
+        $out = 0;
+        $unplaced = [];
+        foreach ($ids as $id) {
+            $now = (is_array($where) && array_key_exists($id, $where)) ? $where[$id] : null;
+            if ($now === true) {
+                $seen[$id] = true;
+            } elseif ($now === false) {
+                $out++;
+            } else {
+                $unplaced[] = $id;
+            }
+        }
+        if ($out > 0) return $no(ScanAuthorization::projectionStillValid(0, $out)['why'], true, $out);
+        if (!$unplaced) return $valid;
+        try {
+            $there = $exists($unplaced);
+        } catch (\Throwable $e) {
+            $there = [];
+        }
+        $gone = 0;
+        foreach ($unplaced as $id) {
+            if (!(is_array($there) && array_key_exists($id, $there) && $there[$id] === false)) {
+                return $no(self::CANNOT_TELL, false);
+            }
+            $gone++;
+        }
+        return $no(self::LEFT, true, $gone);
     }
 }

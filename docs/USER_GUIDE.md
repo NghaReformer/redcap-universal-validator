@@ -888,7 +888,10 @@ opens the completed one, says a newer scan did not complete, and offers a
 button that shows what the newer scan found. A scan of the whole project
 replaces every earlier report, group reports included; if that has happened
 to your group's last report, the page says so, and a new scan of your group
-brings its findings back. The findings appear when you have no scan running,
+brings its findings back. The same holds when a record of your group's report
+has since moved to another group, or been renamed or deleted: the page and the
+file are refused until a new scan of your group. The findings appear when you
+have no scan running,
 and open by themselves when a scan you are watching finishes. Earlier scans
 are not listed.
 

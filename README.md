@@ -1641,6 +1641,15 @@ scan covered Data Access Group north only, not the whole project.", whoever
 reads it, as its file does. It also gives the day the run's dates were
 judged as of, as the panel does for a run it watched.
 
+A group user's report is shown only while the group still holds what the run
+held. The page and the file are refused, until a new scan of the group, when
+the change log shows a record moved into or out of the group since the run,
+and when a record of the run, on the page or in the file, is now in another
+group or no longer in the project under its name: "a record this scan held
+for your Data Access Group has since been renamed or deleted, so its results
+no longer describe your group. Run a new scan." A rename and a deletion look
+the same to the module, so a deleted record refuses the report too.
+
 Findings come 50 to a page, in the order they were stored, with "Next page"
 and "Previous page". The table's caption gives the page, and a line above it
 gives how many findings the whole report holds. Four filters narrow the table:

@@ -230,9 +230,52 @@ $NEIGHBOUR = uv_neighbour($PID);
         $out['ok'] === false && $out['movedIn'] === 1);
     $dbA->exec('UPDATE ' . Schema::table('scan_record') . ' SET state = ? WHERE run_id = ? AND record_id_bin = ?',
         array(\INSPIRE\UniversalValidator\Scan\ScanStore::REC_PENDING, $drid, 'G2'));
+    // A RECORD GONE FROM THE PROJECT UNDER ITS NAME (review rvx2-1). G4 is
+    // renamed K4 and assigned to group 31, the rename logged under the old
+    // name. The walk cannot tell that from a deletion, so it refuses both.
     $dput('G4', false);
+    $dput('K4', 31);
     $dlog(109500, 'G4');
-    check('drift: a record deleted since the fence is not a move', $drift()['ok'] === true);
+    $left = array('ok' => false, 'movedIn' => 0, 'movedOut' => 1,
+                  'why' => \INSPIRE\UniversalValidator\Scan\ScopeDrift::LEFT, 'final' => true);
+    check('drift: a record renamed into another group since the fence refuses the report, final',
+        $drift() === $left);
+    $dput('K4', false);
+    check('drift: and so does a record deleted since the fence, which the walk cannot tell from it',
+        $drift() === $left);
+    $dput('G4', 7);
+    check('drift: G4 back under its name, the group again holds what the run held', $drift()['ok'] === true);
+
+    // THE ROWS THEMSELVES (review rvx2-1). A rename logged under the new name
+    // only never reaches the walk, so the page and the file ask the record
+    // index of their own rows: one statement for records it lists, and
+    // nothing again for a record already found in the group.
+    $rsrc = RecordManifestSource::open($drec, $DP, array('pk' => 'record_id'));
+    $rscope = function (array $ids) use ($rsrc) { return $rsrc['source']->scopeOf($ids, '7'); };
+    $rexist = function (array $ids) use ($rsrc) { return $rsrc['source']->exist($ids); };
+    $rows = array(array('record_id_bin' => 'G1'), array('record_id_bin' => 'G2'), array('record_id_bin' => 'G1'));
+    $seen = array();
+    $drec->log = array();
+    $held = \INSPIRE\UniversalValidator\Scan\ScopeDrift::rowsStillHeld($rows, $rscope, $rexist, $seen);
+    check('rows: records still in the group pass, in one statement',
+        $held['ok'] === true && count($drec->log) === 1 && array_keys($seen) === array('G1', 'G2'));
+    $drec->log = array();
+    \INSPIRE\UniversalValidator\Scan\ScopeDrift::rowsStillHeld($rows, $rscope, $rexist, $seen);
+    check('rows: and are not asked about again', count($drec->log) === 0);
+    $dput('G3', 31);
+    $out = \INSPIRE\UniversalValidator\Scan\ScopeDrift::rowsStillHeld(array(array('record_id_bin' => 'G3')),
+        $rscope, $rexist);
+    check('rows: a row whose record is in another group now refuses, final, with no log entry for the move',
+        $out['ok'] === false && $out['movedOut'] === 1 && $out['final'] === true
+        && $out['why'] === \INSPIRE\UniversalValidator\Scan\ScanAuthorization::projectionStillValid(0, 1)['why']);
+    $dput('G3', 7);
+    $dput('G4', false);
+    $out = \INSPIRE\UniversalValidator\Scan\ScopeDrift::rowsStillHeld(array(array('record_id_bin' => 'G4')),
+        $rscope, $rexist);
+    check('rows: a row whose record is no longer in the project refuses, final',
+        $out['ok'] === false && $out['why'] === \INSPIRE\UniversalValidator\Scan\ScopeDrift::LEFT
+        && $out['final'] === true);
+    $dput('G4', 7);
 
     // Nine entries since the fence. Three pages of three reach the top; two do not.
     check('drift: a walk that reaches the top of the log within its pages confirms the group',

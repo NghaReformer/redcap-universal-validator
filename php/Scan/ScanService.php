@@ -1373,6 +1373,16 @@ final class ScanService
             if ($rows || $through === null || $call >= self::FINDINGS_EMPTY_WALK) break;
             $from = $through;
         }
+        // THE ROWS GO OUT ONLY WHILE THEIR RECORDS ARE THE GROUP'S (review
+        // rvx2-1). reportOf()'s drift check sees what the change log names,
+        // and a record renamed into another group may be logged under its new
+        // name only, so a group reader's page asks the record index about its
+        // own rows before it shows them.
+        if ($r['scope']['dag'] !== null && $rows) {
+            $held = $this->rowsHeld($pid, $run);
+            $held = $held($rows);
+            if (empty($held['ok'])) return ['ok' => false, 'why' => $held['why'], 'final' => !empty($held['final'])];
+        }
         $out['rows'] = $r['report']->present($rows);
         $out['next'] = $through;
         $out['facets'] = $this->facetsOf($r['aggregates'], $r['dims'], $r['scope']);
@@ -1535,6 +1545,22 @@ final class ScanService
     {
         return ScopeDrift::check($this->fence($pid), $store, $run,
             $this->scopeProbe($pid, $run['scope_dag']), $this->existsProbe($pid), $this->recordHasher($pid));
+    }
+
+    /**
+     * array[] => ScopeDrift answer: are the records of these stored rows
+     * still in the group run's group (ScopeDrift::rowsStillHeld, review
+     * rvx2-1)? One closure per page or file, so a record already found in
+     * the group is not asked about again.
+     */
+    private function rowsHeld($pid, array $run)
+    {
+        $scope = $this->scopeProbe($pid, $run['scope_dag']);
+        $exists = $this->existsProbe($pid);
+        $seen = [];
+        return function (array $rows) use ($scope, $exists, &$seen) {
+            return ScopeDrift::rowsStillHeld($rows, $scope, $exists, $seen);
+        };
     }
 
     /**
@@ -1802,10 +1828,12 @@ final class ScanService
                     $drift = $r['scope']['dag'] === null ? null : function () use ($store, $pid, $run) {
                         return $this->scopeDrift($pid, $store, $run);
                     };
+                    // And each page's records before it is written (rvx2-1).
+                    $held = $r['scope']['dag'] === null ? null : $this->rowsHeld($pid, $run);
                     $out = self::streamFindings($store, $r['report'], (int) $pid, (int) $run['generation_id'],
                                                 $r['scope'], $head, $marks, $write, $flush,
                                                 ['run' => (int) $run['run_id'], 'expected' => $r['expected'],
-                                                 'drift' => $drift]);
+                                                 'drift' => $drift, 'held' => $held]);
                     if ($out['error'] instanceof ScanStoreUnavailable) {
                         $this->storageFailed($pid, $runId, $out['error']);
                     }
@@ -1887,6 +1915,9 @@ final class ScanService
      *                     not known, so not compared); [] asks nothing.
      *                     'drift' => ?callable: ScopeDrift asked again at the
      *                     end for a group reader's file (review rv11a1-2)
+     *                     'held' => ?callable: array[] => ScopeDrift answer,
+     *                     asked of each page before a line of it is written
+     *                     (rowsStillHeld, review rvx2-1)
      * @return array{ok:bool, rows:int, pages:int, error:?\Throwable}
      */
     public static function streamFindings(ScanStore $store, ScanReport $report, $pid, $generationId,
@@ -1907,6 +1938,9 @@ final class ScanService
             do {
                 $through = null;
                 $page = $store->findings($pid, $generationId, $scope, [], $after, self::EXPORT_PAGE, $through);
+                if ($page && isset($whole['held']) && empty(call_user_func($whole['held'], $page)['ok'])) {
+                    throw new \RuntimeException('a record of the group was moved, renamed or deleted');
+                }
                 foreach ($page as $stored) {
                     $write($report->csvLine($stored) . "\r\n");
                     $rows++;
