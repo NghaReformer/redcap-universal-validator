@@ -890,8 +890,10 @@ namespace INSPIRE\UniversalValidator\Scan {
             && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $before = count($m->sql);
         $again = Schema::migrate($m);
+        // The fake keeps its version at 7 and no table list, so version 9's
+        // CREATE TABLE IF NOT EXISTS is sent again; nothing of version 8 is.
         check('v8: run again, it issues no ALTER: the columns and the index are there',
-            $again['ok'] === true && $again['applied'] <= count(Schema::statements(9))
+            $again['ok'] === true && $again['applied'] === count(Schema::statements(9))
             && !array_filter(array_slice($m->sql, $before), function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         $half = new \FakeModule();
         $half->version = '7';

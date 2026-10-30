@@ -4747,6 +4747,10 @@ class UniversalValidator extends AbstractExternalModule
             if (!is_string($key) || strlen($key) < 64) {
                 $key = bin2hex(random_bytes(32));
                 $this->setSystemSetting('log-hmac-key', $key);
+                // Two requests can make a key at once and only the last write
+                // stays; the stored one is the one every later request reads.
+                $stored = $this->getSystemSetting('log-hmac-key');
+                if (is_string($stored) && strlen($stored) >= 64) $key = $stored;
             }
             $this->hmacKey = $key;
         } catch (\Throwable $e) {
@@ -10898,13 +10902,20 @@ class UniversalValidator extends AbstractExternalModule
     public function uvLookupIndexCron($cronInfo = [])
     {
         try {
+            $until = time() + self::LOOKUP_CRON_SECONDS;
             $idx = $this->lookupIndex();
-            if ($idx === null) return 'the lookup index is turned off here; nothing to do';
-            $r = $idx->maintain(time() + self::LOOKUP_CRON_SECONDS);
+            // Keys of an older version or secret go first, with the index off too:
+            // up to 2.4.0 they were plain digests of the values.
+            $old = ($idx !== null ? $idx : new Scan\LookupIndex($this, []))->retireOld($until);
+            $cleared = sprintf('%d old entr%s cleared (%d queued to build again), %d left',
+                $old['retired'] + $old['requeued'], $old['retired'] + $old['requeued'] === 1 ? 'y' : 'ies', $old['requeued'],
+                $old['waiting'] + $old['left']);
+            if ($idx === null) return 'the lookup index is turned off here; ' . $cleared;
+            $r = $idx->maintain($until);
             // The lookups build a large field themselves only while no cron runs.
             $this->setSystemSetting(self::LOOKUP_CRON_AT, (string) time());
-            return sprintf('lookup index: %d field(s) built, %d dropped, %d waiting, %d left for the next run',
-                $r['built'], $r['dropped'], $r['waiting'], $r['left']);
+            return sprintf('lookup index: %s; %d field(s) built, %d dropped, %d waiting, %d left for the next run',
+                $cleared, $r['built'], $r['dropped'], $r['waiting'], $r['left']);
         } catch (\Throwable $e) {
             Faults::swallow($e, 'UniversalValidator::uvLookupIndexCron');
             return 'lookup index: this run could not read its tables (' . get_class($e) . '); the lookups read the data table meanwhile';

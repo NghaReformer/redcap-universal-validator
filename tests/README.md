@@ -383,16 +383,31 @@ deadline and drops a field no lookup asked for in 30 days. Since 2.5.0 it
 also checks that a stored key is a keyed hash, different from the value's MD5
 and from the same value's key in another project; that with no secret the
 index reads nothing; that a field of key version 1, or built with another
-secret, is built again, and that the cron drops an entry of version 1. Its
-composite part keys an arm with a site over 400 records and checks the
-stratum, a page of 3 and the next, the plan of a page (the primary key, the
-LIMIT in the statement), a change to the site alone, scope `dag` with a move
-to another group and out of every group, scope `event`, and a repeating form
-whose instance reads a field that does not repeat from its event's row. A
+secret, is built again, and that the cron drops an entry of version 1; that a
+sync under another secret leaves no field of the first answering from keys a
+change made stale, and that a sync row with no print of the secret (as 2.4.0
+wrote it) starts afresh; and that `retireOld()` queues a version-1 field a lookup
+asked for (its digests gone, built by the next `maintain()`), drops one no
+lookup asked for and a composite of another secret (keys and definition),
+stops an entry answering before its keys go, clears only version 1 when there
+is no secret, and stops at its deadline. Its composite part keys an arm with
+a site over 400 records and checks the stratum, a page of 3 and the next, the
+plan of a page (the primary key, the LIMIT in the statement), definitions it
+refuses (repeat buckets too), a change to the site alone, scope `dag` with a
+move to another group and out of every group, scope `event`, a repeating form
+whose instance reads a field that does not repeat from its event's row, a
+row of such a field on instance 2 that counts for nothing, a value on the
+event's row keyed alone and with each instance of another bucket, values of
+two buckets never keyed together, a record whose letter-case twin is indexed
+again, a sync with only another project's log row reading no definitions, and
+an entry whose definition went that stops answering and is built again. A
 build of 1,200 records paused by the cron's deadline keeps its place, is kept
-current while it waits, and finishes on the next run with one key a record.
-`tests/scan_cron_php.php` checks the cron's declaration, its
-off switch and that a database failure comes back as its summary line.
+current while it waits, and finishes on the next run with one key a record,
+and a build that lists 7 records a read takes six reads for 41, keying none
+for a value of only spaces.
+`tests/scan_cron_php.php` checks the cron's declaration, that it clears old
+keys before anything else and with its off switch on, and that a database
+failure comes back as its summary line.
 
 `exists_table_php.php` covers the @UVEXISTS reads of the data table. A lookup
 asks the table which records hold the value and reads only those through

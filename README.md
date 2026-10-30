@@ -1830,16 +1830,22 @@ whether or not the Validation scan is on.
 - **Size.** One row of `uv_lookup_key` per saved value of a searched field,
   about 100 bytes with its indexes. The cron drops the keys of a field no
   lookup has asked for in 30 days.
-- **Keys of several fields.** A count over a value with other fields of the
-  same entry (an arm code at one site, say) is kept as one key of all the
-  parts, with the event or the Data Access Group where the rule asks for it,
-  so it reads the records of that stratum and no others. Its definition is
-  kept in `uv_lookup_def`. The cron builds a large one in steps: a build it
-  cannot finish in one run keeps its place for the next, and the records
-  already done are kept current meanwhile.
-- **After upgrading from 2.4.0 or earlier**, every field is built again on its
-  next lookup (or by the cron, for a large one), because earlier versions kept
-  a plain MD5 of each value. Until then its lookups read the data table.
+- **Keys of several fields.** Groundwork for the `@UVUNIQUE` count cap of
+  2.5.0, which no tag uses yet. A value can be kept as one key together with
+  other fields of the same entry (an arm code at one site, say), and with the
+  event or the Data Access Group, so a count reads the records of that stratum
+  and no others. The entries keyed are the ones the Validation scan reads: an
+  event's row, and each repeating instance with the event's row merged in.
+  The definition is kept in `uv_lookup_def`. The cron builds a large one in
+  steps: a build it cannot finish in one run keeps its place for the next (the
+  id of the last record it wrote, in `uv_lookup_def.build_cursor`, in clear as
+  record ids are elsewhere in REDCap's tables), and the records already done
+  are kept current meanwhile.
+- **After upgrading from 2.4.0 or earlier**, the cron's first run clears the
+  plain MD5 digests earlier versions kept of each value, with the index turned
+  off too, 500 fields a run. A field a lookup asked for in the last 30 days is
+  queued for the cron to build again; any other goes, and its next lookup
+  builds it. Until a field is built its lookups read the data table.
 - **Off switch.** The system setting *Live lookups — turn OFF the value index*
   makes every lookup read the data table again.
 

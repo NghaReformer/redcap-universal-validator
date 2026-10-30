@@ -922,11 +922,13 @@ final class Schema
     /**
      * uv_lookup_def: one row per composite entry of the value index. `def` is
      * the entry's definition as JSON (its fields, their number marks, its
-     * scope, which fields repeat in which event); the entry's spec in
-     * uv_lookup_field holds its MD5, so a changed definition rebuilds it.
-     * `build_cursor` is the last record a paused build wrote, '' when no build
-     * is paused, and `build_gen` the generation that build writes; a reset
-     * raises the entry's generation, so a cursor of another one is ignored.
+     * scope, and for each field the events where it repeats, with its form or
+     * '' for a repeating event); the entry's spec in uv_lookup_field holds its
+     * MD5, so a changed definition rebuilds it. `build_cursor` is the id of
+     * the last record a paused build wrote, in clear as uv_lookup_key.record
+     * is, '' when no build is paused, and `build_gen` the generation that build
+     * writes; a reset raises the entry's generation, so a cursor of another one
+     * is ignored.
      *
      * @return string[]
      */

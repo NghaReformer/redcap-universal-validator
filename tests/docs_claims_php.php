@@ -243,7 +243,9 @@ namespace INSPIRE\UniversalValidator\Scan {
             if (preg_match('/Upgrading from [^(]*\(schema versions? (\d+)(?: to (\d+))?\)/', $sentence, $hm)) {
                 $heading = (int) (isset($hm[2]) && $hm[2] !== '' ? $hm[2] : $hm[1]);
                 $named = null;
-            } elseif (preg_match('/^#+\s/', $sentence)) {
+            } elseif (preg_match('/(?:^|\s)#{1,6}\s/', $sentence)) {
+                // A heading, wherever the sentence split left it: after a list
+                // or a code block nothing ends the sentence before it.
                 $heading = null;
                 $named = null;
             }
@@ -273,10 +275,12 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('docs: INSTALL states how many tables the scan keeps', $counted > 0
         && preg_match('/\b(?:thirteen|13) tables\b/i', (string) $docs['docs/INSTALL.md']) === 1
         && count($scanTables) === 13 && count($lookupTables) === 5);
+    // Counted in the latest upgrade's own note, from its heading to the next.
     $n7 = count($upgrade);
+    $note = preg_match('/^#{2,4} Upgrading from [^\n]*\(schema versions? (?:\d+ to )?' . Schema::VERSION . '\)\n(.*?)(?=^#{1,4} |\z)/ms',
+        (string) $docs['docs/INSTALL.md'], $nm) ? $nm[1] : '';
     check('docs/INSTALL.md: the upgrade note counts the ' . $n7 . ' statement(s) of the latest upgrade',
-        preg_match('/\b(?:' . $n7 . (isset($words[$n7]) ? '|' . $words[$n7] : '') . ') statements?\b/i',
-                   $flat((string) $docs['docs/INSTALL.md'])) === 1);
+        preg_match('/\b(?:' . $n7 . (isset($words[$n7]) ? '|' . $words[$n7] : '') . ') statements?\b/i', $flat($note)) === 1);
 
     $stated = [];
     foreach ($docs as $doc => $text) {

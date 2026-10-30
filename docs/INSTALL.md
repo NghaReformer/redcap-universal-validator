@@ -211,7 +211,8 @@ php -r 'require "php/Scan/Schema.php"; foreach (INSPIRE\UniversalValidator\Scan\
 ```
 
 The number is the version the installation is at, which
-`SELECT MAX(version) FROM uv_schema_version` returns: `Schema::plan(6)` for
+`SELECT MAX(version) FROM uv_schema_version` returns: `Schema::plan(8)` for
+2.4.x, `Schema::plan(6)` for
 2.3.0-rc.3 and the 2.3 releases after it, `Schema::plan(5)` for an earlier
 2.3.0 release candidate, `Schema::plan(1)` for 1.9.x, `Schema::plan(0)` for an
 installation with no scan tables. Run the statements in order, then save the
@@ -228,10 +229,16 @@ without the scan too.
 
 Earlier versions kept a plain MD5 of each indexed value. This one keeps a keyed
 hash made with the module's secret (the system setting the module log's hashes
-use), so every field of the index is built again: a small one by its next
-lookup, a large one by the `uv_lookup_index` cron. Until a field is built its
-lookups read the data table, as they did before the index existed. Nothing
-needs doing by hand; the old keys are replaced as each field is built.
+use). The `uv_lookup_index` cron, every 5 minutes, first clears the old keys,
+with the index turned off too: up to 500 fields a run, within its one-minute
+budget, each field a few statements of 20,000 rows. A field a lookup asked for
+in the last 30 days is queued, and the cron builds the queue one field at a
+time in the runs that follow, the oldest first; any other field goes, and its
+next lookup builds it. Until a field is built its lookups read the data table,
+as they did before the index existed. Nothing needs doing by hand.
+
+The scan page's health check reports the scan off until the installation is at
+version 9 with `uv_lookup_def` in place.
 
 ### Upgrading from 2.3 (schema versions 6 to 8)
 

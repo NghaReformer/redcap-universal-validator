@@ -368,14 +368,23 @@ check('lookup cron: its work fits in the run time config.json gives it',
 $m = new UniversalValidator();
 $m->systemSettings = ['lookup-index-system-off' => '1'];
 $out = $m->uvLookupIndexCron();
-check('lookup cron: the off switch stops it before any statement', stripos($out, 'turned off') !== false && $m->sql === []);
+// Turned off, it still clears what an older version keyed with plain digests
+// (one read of the entries of another key version), and builds nothing.
+check('lookup cron: the off switch stops it after clearing old keys (got ' . json_encode([$out, $m->sql]) . ')',
+    stripos($out, 'turned off') !== false && count($m->sql) === 1
+    && strpos($m->sql[0], 'FROM uv_lookup_field') !== false && strpos($m->sql[0], 'spec NOT LIKE') !== false);
 $m = new UniversalValidator();
 $m->systemSettings = [];                       // scan off, index on
 $out = $m->uvLookupIndexCron();
 $asked = false;
-foreach ($m->sql as $q) if (strpos($q, 'FROM uv_lookup_field') !== false && strpos($q, 'wanted_at > 0') !== false) $asked = true;
+$retired = false;
+foreach ($m->sql as $i => $q) {
+    if (strpos($q, 'FROM uv_lookup_field') !== false && strpos($q, 'wanted_at > 0') !== false) $asked = true;
+    if (strpos($q, 'FROM uv_lookup_field') !== false && strpos($q, 'spec NOT LIKE') !== false && !$asked) $retired = true;
+}
 check('lookup cron: with the scan off it still asks which fields need work (got ' . json_encode($out) . ')',
     $asked && strpos($out, '0 field(s) built') !== false);
+check('lookup cron: and clears the entries of another key version or secret first', $retired && strpos($out, '0 old entries cleared') !== false);
 check('lookup cron: and records that it ran, so lookups leave large fields to it',
     isset($m->systemSettings[UniversalValidator::LOOKUP_CRON_AT]) && abs((int) $m->systemSettings[UniversalValidator::LOOKUP_CRON_AT] - time()) < 5);
 $m = new UniversalValidator();

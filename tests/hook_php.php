@@ -54,7 +54,11 @@ namespace ExternalModules {
         public function getSystemSetting($key) {
             return isset($this->systemSettings[$key]) ? $this->systemSettings[$key] : null;
         }
-        public function setSystemSetting($key, $value) { $this->systemSettings[$key] = $value; }
+        /** key => value another request writes just after this one, so its own write is lost. */
+        public $systemSettingRace = [];
+        public function setSystemSetting($key, $value) {
+            $this->systemSettings[$key] = array_key_exists($key, $this->systemSettingRace) ? $this->systemSettingRace[$key] : $value;
+        }
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
         public function log($message, $parameters = []) { $this->logCalls[] = [$message, $parameters]; return count($this->logCalls); }
@@ -541,6 +545,14 @@ namespace {
     $before = $m->systemSettings['log-hmac-key'];
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
     check('HMAC key is stable across saves', $m->systemSettings['log-hmac-key'] === $before);
+    // Two first saves make a key at once and only the last write stays: the
+    // request whose write was lost hashes with the stored key, not its own.
+    $m = newModule($dialogRules, $dictionary, $classicData, 149);
+    $m->systemSettingRace['log-hmac-key'] = str_repeat('c7', 32);
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    $one = invalidLogs($m)[0][1];
+    check('a key another request stored first is the one used (hmacKey reads back)',
+        $one['value_hmac'] === hash_hmac('sha256', '1ABC-00002E', str_repeat('c7', 32) . '|149'));
 
     // strict ("none"): record as keyed HMAC, no value at all
     $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => 'none']);
