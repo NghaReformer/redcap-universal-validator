@@ -394,6 +394,39 @@ try { $out = $m->uvLookupIndexCron(); } catch (\Throwable $e) { $threw = true; }
 check('lookup cron: a database failure does not escape, and comes back as a summary',
     !$threw && is_string($out) && stripos($out, 'could not read') !== false);
 
+// A composite build lists its records with recordsAfter(): the first N after a
+// cursor, in byte order, from rows the server sends in any order. Ids that
+// look like numbers ("10" before "9") catch a numeric sort.
+$fake = new class {
+    public $rows = [];
+    public function query($sql, $params = []) { return $this->rows; }
+};
+$li = new \INSPIRE\UniversalValidator\Scan\LookupIndex($fake, ['key' => str_repeat('a1', 32)]);
+$ra = new ReflectionMethod($li, 'recordsAfter');
+$ra->setAccessible(true);
+mt_srand(7);
+$ids = [];
+for ($i = 0; $i < 300; $i++) $ids[] = mt_rand(0, 2000) . ($i % 3 ? '' : '-x');
+$ids = array_values(array_unique($ids));
+$byBytes = $ids;
+sort($byBytes, SORT_STRING);
+shuffle($ids);
+$fake->rows = array_map(function ($id) { return [$id]; }, $ids);
+$bad = [];
+foreach (['', $byBytes[0], $byBytes[40], $byBytes[count($byBytes) - 2], $byBytes[count($byBytes) - 1]] as $after) {
+    $left = array_values(array_filter($byBytes, function ($id) use ($after) { return $after === '' || strcmp($id, $after) > 0; }));
+    foreach ([1, 7, 64, count($left), count($left) + 1] as $limit) {
+        if ($limit < 1) continue;
+        $want = [array_slice($left, 0, $limit), count($left) > $limit];
+        $got = $ra->invoke($li, 1, 'redcap_data', 'arm', $after, $limit);
+        if ($got !== $want) $bad[] = [$after, $limit];
+    }
+}
+check('lookup index: recordsAfter lists the first N records after a cursor in byte order, and says whether more follow (wrong: '
+    . json_encode($bad) . ')', $bad === []);
+$fake->rows = false;
+check('lookup index: recordsAfter says a failed read is one', $ra->invoke($li, 1, 'redcap_data', 'arm', '', 7) === [null, false]);
+
 // ---- 9) the budget, and the cursor between passes ---------------------------
 //
 // ScanMaintenance itself, over a scripted connection and a clock that moves a
