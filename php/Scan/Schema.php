@@ -924,11 +924,14 @@ final class Schema
      * the entry's definition as JSON (its fields, their number marks, its
      * scope, and for each field the events where it repeats, with its form or
      * '' for a repeating event); the entry's spec in uv_lookup_field holds its
-     * MD5, so a changed definition rebuilds it. `build_cursor` is the id of
-     * the last record a paused build wrote, in clear as uv_lookup_key.record
-     * is, '' when no build is paused, and `build_gen` the generation that build
-     * writes; a reset raises the entry's generation, so a cursor of another one
-     * is ignored.
+     * MD5, so a changed definition rebuilds it. `build_cursor` is where a
+     * paused build goes on: one byte for its way through the records ('l' a
+     * listing in byte order, 'w' a walk of REDCap's record index in its
+     * collation's order), then the id of the last record it wrote, in clear
+     * as uv_lookup_key.record is; up to 401 bytes, as a record id takes up to
+     * 400. It is '' when no build is paused, and `build_gen` the generation
+     * that build writes; a reset raises the entry's generation, so a cursor of
+     * another one is ignored.
      *
      * @return string[]
      */
@@ -938,7 +941,7 @@ final class Schema
                 project_id INT UNSIGNED NOT NULL,
                 field_name VARBINARY(100) NOT NULL,
                 def MEDIUMBLOB NOT NULL,
-                build_cursor VARBINARY(400) NOT NULL DEFAULT \'\',
+                build_cursor VARBINARY(401) NOT NULL DEFAULT \'\',
                 build_gen INT UNSIGNED NOT NULL DEFAULT 0,
                 PRIMARY KEY (project_id, field_name)
             ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4'];

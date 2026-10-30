@@ -384,7 +384,7 @@ foreach ($m->sql as $i => $q) {
 }
 check('lookup cron: with the scan off it still asks which fields need work (got ' . json_encode($out) . ')',
     $asked && strpos($out, '0 field(s) built') !== false);
-check('lookup cron: and clears the entries of another key version or secret first', $retired && strpos($out, '0 old entries cleared') !== false);
+check('lookup cron: and clears the entries of another key version or secret first', $retired && strpos($out, '0 old entries dropped, 0 queued to build again') !== false);
 check('lookup cron: and records that it ran, so lookups leave large fields to it',
     isset($m->systemSettings[UniversalValidator::LOOKUP_CRON_AT]) && abs((int) $m->systemSettings[UniversalValidator::LOOKUP_CRON_AT] - time()) < 5);
 $m = new UniversalValidator();

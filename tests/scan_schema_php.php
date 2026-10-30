@@ -1013,7 +1013,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             && Schema::statements(9)[0]['skipIf'] === null && in_array('uv_lookup_def', Schema::tables(), true));
         check('v9: keyed by project and entry, with a definition and where a paused build stands',
             strpos($v9[0], 'PRIMARY KEY (project_id, field_name)') !== false && strpos($v9[0], 'def MEDIUMBLOB NOT NULL') !== false
-            && strpos($v9[0], "build_cursor VARBINARY(400) NOT NULL DEFAULT ''") !== false
+            && strpos($v9[0], "build_cursor VARBINARY(401) NOT NULL DEFAULT ''") !== false
             && strpos($v9[0], 'build_gen INT UNSIGNED NOT NULL DEFAULT 0') !== false);
         $m = new \FakeModule();
         $m->version = '8';

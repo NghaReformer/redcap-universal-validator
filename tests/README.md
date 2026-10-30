@@ -393,7 +393,11 @@ a small one to its next lookup, drops one no lookup asked for and a composite
 of another secret (keys and definition), stops an entry answering before its
 keys go, clears only version 1 when there is no secret, leaves an entry a
 lookup built again after the list was read, stops at its deadline, and stops
-between DELETE pages inside a field of 20,001 keys and finishes it next run. Its composite part keys an arm with
+between DELETE pages inside a field of 20,001 keys and finishes it next run;
+that `maintain()` stops between pages of an unused field the same way; and
+that a build of a field to wipe whose old keys the cron cannot clear in time
+writes no key, keeps wipe set, and is finished by the next run with one key a
+record. Its composite part keys an arm with
 a site over 400 records and checks the stratum, a page of 3 and the next, the
 plan of a page (the primary key, the LIMIT in the statement), definitions it
 refuses (repeat buckets too), a change to the site alone, scope `dag` with a
@@ -404,25 +408,37 @@ event's row keyed alone and with each instance of another bucket, values of
 two buckets never keyed together, a record whose letter-case twin is indexed
 again, a sync with only another project's log row reading no definitions, and
 an entry whose definition went that stops answering and is built again. A
-lookup counts the rows of every field of a composite before it builds one. A
-build of 1,200 records paused by the cron's deadline keeps its place, is kept
-current while it waits, and finishes on the next run with one key a record;
-one paused under one secret does not go on after a sync under another. A
-listing build reads 5 records a time in byte order ("10" before "9", "B"
-before "a"), keying none for a value of only spaces. A walk build over a
-complete record index never lists the field, keys every holder including a
-record the collation ties to another, goes on from its cursor when paused,
-and lists the field from the start when REDCap no longer calls the index
-complete. A plain build past `BUILD_STALE` is kept current, and a rebuild
-under another spec marks the field before it deletes keys.
-`tests/lookup_index_mutations.py` applies 34 mutations of the value index
-and the cron and key code around it to a copy (the 30 of the SQL against the
+lookup counts the rows of every field of a composite before it builds one,
+and leaves a larger one to the cron marked as wanted. A build of 1,200
+records paused by the cron's deadline keeps its place, is kept current while
+it waits, and finishes on the next run with one key a record, clearing a key
+an older generation left; one paused under one secret does not go on after a
+sync under another. A listing build reads 5 records a time in byte order
+("10" before "9", "B" before "a"), keying none for a value of only spaces,
+and one whose listing cannot be read is not marked built. A walk build over
+a complete record index never lists the field, keys every holder including a
+record the collation ties to another, goes on from its cursor when paused
+(also from a cursor on such a pair, keying both), and lists the field from
+the start, in the same run, when a page cannot be read or REDCap no longer
+calls the index complete. A cursor that names neither way starts the build
+again. A field of 8 rows that 2 records hold is listed, not walked, over a
+complete index of 31 records. A walk of 1,002 records over an index REDCap
+keeps no status for pauses after its first page, which ends on a tied pair,
+and goes on to key each record once. A listing paused after a record id of
+400 bytes saves a 401-byte cursor under strict mode and goes on after it. A
+plain build past `BUILD_STALE` is kept current; a rebuild under another spec
+marks the field, then deletes keys while the field does not answer, clearing
+a key an older generation left; and a lookup that finds a new spec for a
+field too large for it raises the generation and ends the old build.
+`tests/lookup_index_mutations.py` applies 46 mutations of the value index
+and the cron and key code around it to a copy (the 40 of the SQL against the
 server UV_DB_HOST names, `--shard I/N` to split them over two), and every one
 must fail its suite.
 `tests/scan_cron_php.php` checks the cron's declaration, that it clears old
-keys before anything else and with its off switch on, that a database
-failure comes back as its summary line, the statement `recordsAfter()` sends,
-and that a spec of another key version or secret is not read.
+keys before anything else and with its off switch on, its summary line, that
+a database failure comes back as its summary line, the statement
+`recordsAfter()` sends, and that a spec of another key version or secret is
+not read.
 
 `exists_table_php.php` covers the @UVEXISTS reads of the data table. A lookup
 asks the table which records hold the value and reads only those through
@@ -1188,7 +1204,8 @@ resolvable project id reaches them, which models import/API contexts where
 explicitly or the suite fails. Covered: both configuration channels, all four
 log-privacy modes on the success AND exception paths, keyed-HMAC hashing and
 key persistence (the key made under a lock and read again inside it, or read
-back after writing where no lock is granted), event scoping (a value under another event is never audited),
+back after writing where no lock is granted, and made when the module is
+enabled or upgraded), event scoping (a value under another event is never audited),
 instrument scoping, repeat instances, duplicate-field skips, per-rule
 isolation, `uvalidate-unconfigurable` logging, non-ASCII values (checked, or
 reported when the regex engines may disagree), the non-text field rejection,

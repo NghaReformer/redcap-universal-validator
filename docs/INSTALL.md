@@ -231,14 +231,21 @@ Earlier versions kept a plain MD5 of each indexed value. This one keeps a keyed
 hash made with the module's secret (the system setting the module log's hashes
 use). The `uv_lookup_index` cron, every 5 minutes, first clears the old keys:
 up to 500 fields in the first half of its one-minute run, one DELETE for each
-20,000 keys (20 for a field of 400,000 values), and a field it runs out of
-time inside is finished on the next run. A field a lookup asked for in the
-last 30 days is built again: by its next lookup when it has at most 20,000
-values, else queued for the cron, which builds the queue one field at a time
-in the second half of each run, the oldest first. Any other field goes, and
+20,000 keys (20 for a field of 400,000 values). No lock wait or DELETE starts
+after that half, so the builds get the rest of the run. A field a lookup asked
+for in the last 30 days is built again: by its next lookup when it has at
+most 20,000 values, else queued for the cron, which builds the queue one field
+at a time in the rest of each run, the oldest first. Its build clears any old
+keys the first half had no time for before it writes a key. Any other field
+goes; one the cron runs out of time inside is finished on the next run, and
 its next lookup builds it. With the index turned off the cron clears the old
 digests and builds nothing. Until a field is built its lookups read the data
-table, as they did before the index existed. Nothing needs doing by hand.
+table, as they did before the index existed. The cron's summary line says how
+many old entries it dropped, how many it queued to build again and how many it
+left for the next run. Nothing needs doing by hand.
+
+The module now makes its secret, if it has none yet, when it is enabled or
+upgraded, rather than on the first save that needs it.
 
 The scan page's health check reports the scan off until the installation is at
 version 9 with `uv_lookup_def` in place.

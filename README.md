@@ -1837,17 +1837,20 @@ whether or not the Validation scan is on.
   and no others. The entries keyed are the ones the Validation scan reads: an
   event's row, and each repeating instance with the event's row merged in.
   The definition is kept in `uv_lookup_def`. The cron builds a large one in
-  steps: a build it cannot finish in one run keeps its place for the next (the
-  id of the last record it wrote, in `uv_lookup_def.build_cursor`, in clear as
-  record ids are elsewhere in REDCap's tables), and the records already done
-  are kept current meanwhile.
+  steps: a build it cannot finish in one run keeps its place for the next (in
+  `uv_lookup_def.build_cursor`: a byte for how the build goes through the
+  records, then the id of the last record it wrote, in clear as record ids are
+  elsewhere in REDCap's tables), and the records already done are kept current
+  meanwhile. A build lists the records that hold the first field, or walks
+  REDCap's record index where that reads less.
 - **After upgrading from 2.4.0 or earlier**, the cron clears the plain MD5
-  digests earlier versions kept of each value, up to 500 fields a run in half
-  of its run time. A field a lookup asked for in the last 30 days is built
-  again: by its next lookup when it has at most 20,000 values, else by the
-  cron. Any other field goes, and its next lookup builds it. With the index
-  turned off the cron still clears those digests, and builds nothing. Until a
-  field is built its lookups read the data table.
+  digests earlier versions kept of each value, up to 500 fields a run in the
+  first half of its run time. A field a lookup asked for in the last 30 days
+  is built again: by its next lookup when it has at most 20,000 values, else
+  by the cron, and its build clears any digest the cron had no time for before
+  it writes a key. Any other field goes, and its next lookup builds it. With
+  the index turned off the cron still clears those digests, and builds
+  nothing. Until a field is built its lookups read the data table.
 - **Off switch.** The system setting *Live lookups — turn OFF the value index*
   makes every lookup read the data table again.
 

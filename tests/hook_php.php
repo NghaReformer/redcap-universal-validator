@@ -3155,6 +3155,22 @@ namespace {
         })) === 0);
     check('F6: and it is IF NOT EXISTS, so every save and enable is a no-op after the first',
         stripos($made[0], 'IF NOT EXISTS') !== false);
+    // The keyed-hash secret is made at enable and upgrade, outside any
+    // request's transaction (hmacKey()).
+    $madeKey = function ($m) {
+        $k = isset($m->systemSettings['log-hmac-key']) ? $m->systemSettings['log-hmac-key'] : null;
+        return is_string($k) && strlen($k) === 64 && ctype_xdigit($k);
+    };
+    check('hmacKey: enabling the module makes the keyed-hash secret', $madeKey($inst));
+    $up = newModule([], $f5Dict, $f5Data, 149);
+    $up->rateStatements = [];
+    $up->systemSettings['scan-system-enable-durable'] = '0';
+    $hadKey = isset($up->systemSettings['log-hmac-key']);
+    $up->redcap_module_system_change_version('2.5.0', '2.4.0');
+    check('hmacKey: upgrading the module makes it too', !$hadKey && $madeKey($up));
+    $kept = $up->systemSettings['log-hmac-key'];
+    $up->redcap_module_system_change_version('2.5.1', '2.5.0');
+    check('hmacKey: and a later upgrade keeps the one made', $up->systemSettings['log-hmac-key'] === $kept);
 
     // F7: A ROTATED SESSION IS NOT A FRESH BUDGET.
     //

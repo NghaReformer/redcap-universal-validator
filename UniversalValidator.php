@@ -4737,6 +4737,15 @@ class UniversalValidator extends AbstractExternalModule
      * enumerable offline and links the same value across projects; an
      * HMAC with a server-held key keeps within-project repeat correlation (the
      * stated purpose) without either property (SEC-004).
+     *
+     * Made when the module is enabled or upgraded (redcap_module_system_enable,
+     * redcap_module_system_change_version), outside any transaction, so a
+     * request makes it only where those hooks failed. The module opens
+     * transactions only in the scan's stores, which never hash with this key.
+     * A request inside a transaction REDCap opened could read past a key
+     * committed after that transaction began, and its own key would be
+     * committed after the lock went; making the key at enable and upgrade
+     * keeps requests out of that case.
      */
     private function hmacKey()
     {
@@ -10544,6 +10553,8 @@ class UniversalValidator extends AbstractExternalModule
         Scan\Schema::ensureRateBucket($this);
         Scan\Schema::ensureLookupIndex($this);
         $this->installScanSchema();
+        // The keyed-hash secret, made here outside any request's work (hmacKey()).
+        $this->hmacKey();
         $missing = $this->missingPhpExtensions();
         if ($missing) $this->logMissingExtensions($missing, 'enable');
     }
@@ -10595,6 +10606,7 @@ class UniversalValidator extends AbstractExternalModule
         Scan\Schema::ensureRateBucket($this);
         Scan\Schema::ensureLookupIndex($this);
         $this->installScanSchema();
+        $this->hmacKey();
         $missing = $this->missingPhpExtensions();
         if ($missing) $this->logMissingExtensions($missing, 'upgrade');
     }
@@ -10928,14 +10940,14 @@ class UniversalValidator extends AbstractExternalModule
         try {
             $until = time() + self::LOOKUP_CRON_SECONDS;
             $idx = $this->lookupIndex();
-            // Keys of an older version or secret go first, in half the run, so
-            // builds always get the other half. With the index off there is no
-            // secret here, and only key version 1 (the plain digests of 2.4.0
-            // and earlier) goes.
+            // Keys of an older version or secret go first, until half the run:
+            // no lock wait or DELETE page starts past that, so builds get the
+            // rest, less the one DELETE page running then. With the index off
+            // there is no secret here, and only key version 1 (the plain
+            // digests of 2.4.0 and earlier) goes.
             $old = ($idx !== null ? $idx : new Scan\LookupIndex($this, []))->retireOld(time() + intdiv(self::LOOKUP_CRON_SECONDS, 2));
-            $cleared = sprintf('%d old entr%s cleared (%d to build again), %d left',
-                $old['retired'] + $old['requeued'], $old['retired'] + $old['requeued'] === 1 ? 'y' : 'ies', $old['requeued'],
-                $old['waiting'] + $old['left']);
+            $cleared = sprintf('%d old entr%s dropped, %d queued to build again, %d left',
+                $old['retired'], $old['retired'] === 1 ? 'y' : 'ies', $old['requeued'], $old['waiting'] + $old['left']);
             if ($idx === null) return 'the lookup index is turned off here; ' . $cleared;
             $r = $idx->maintain($until);
             // The lookups build a large field themselves only while no cron runs.
