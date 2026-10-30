@@ -35,7 +35,7 @@ final class Schema
      * case untouched. An installation reports the version it is AT; migrate()
      * applies each missing version in order.
      */
-    const VERSION = 8;
+    const VERSION = 9;
 
     // VERSION 1 IS FROZEN, BYTE FOR BYTE, FOREVER.
     //
@@ -98,6 +98,8 @@ final class Schema
         'lookup_field',
         'lookup_sync',
         'lookup_record',
+        // Version 9: the definitions of the value index's composite entries.
+        'lookup_def',
     ];
 
     /**
@@ -144,6 +146,7 @@ final class Schema
      */
     public static function statements($version)
     {
+        if ((int) $version === 9) return self::statementsV9();
         if ((int) $version === 8) return self::statementsV8();
         if ((int) $version === 7) return self::statementsV7();
         if ((int) $version === 6) return self::statementsV6();
@@ -898,6 +901,47 @@ final class Schema
                  'skipIf' => ['index', $uc, 'ix_record']]];
     }
 
+    /**
+     * Version 9: uv_lookup_def, the definitions of the value index's composite
+     * entries (LookupIndex::compositeCandidates()). One CREATE TABLE IF NOT
+     * EXISTS, which ensureLookupIndex() runs too, on an installation that
+     * never turns the scan on.
+     *
+     * VERSION 9 STAYS OPEN until the release that ships it (2.5.0), then
+     * freezes as the earlier versions did.
+     *
+     * @return array[] each ['sql' => string, 'skipIf' => ?array]
+     */
+    private static function statementsV9()
+    {
+        $out = [];
+        foreach (self::lookupDefDdl() as $sql) $out[] = ['sql' => $sql, 'skipIf' => null];
+        return $out;
+    }
+
+    /**
+     * uv_lookup_def: one row per composite entry of the value index. `def` is
+     * the entry's definition as JSON (its fields, their number marks, its
+     * scope, which fields repeat in which event); the entry's spec in
+     * uv_lookup_field holds its MD5, so a changed definition rebuilds it.
+     * `build_cursor` is the last record a paused build wrote, '' when no build
+     * is paused, and `build_gen` the generation that build writes; a reset
+     * raises the entry's generation, so a cursor of another one is ignored.
+     *
+     * @return string[]
+     */
+    private static function lookupDefDdl()
+    {
+        return ['CREATE TABLE IF NOT EXISTS ' . self::table('lookup_def') . ' (
+                project_id INT UNSIGNED NOT NULL,
+                field_name VARBINARY(100) NOT NULL,
+                def MEDIUMBLOB NOT NULL,
+                build_cursor VARBINARY(400) NOT NULL DEFAULT \'\',
+                build_gen INT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (project_id, field_name)
+            ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4'];
+    }
+
     /** The scan_run rows one page of upgradeDataV8() covers, by run_id. */
     const DATA_V8_PAGE = 5000;
 
@@ -1117,7 +1161,7 @@ final class Schema
     {
         if (!is_callable([$module, 'query'])) return false;
         try {
-            foreach (self::lookupIndexDdl() as $sql) $module->query($sql, []);
+            foreach (array_merge(self::lookupIndexDdl(), self::lookupDefDdl()) as $sql) $module->query($sql, []);
             return true;
         } catch (\Throwable $e) {
             return false;

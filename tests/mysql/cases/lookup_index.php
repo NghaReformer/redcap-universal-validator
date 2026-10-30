@@ -21,6 +21,10 @@ use INSPIRE\UniversalValidator\Scan\Schema;
 
 $PID = 900;
 $NEIGHBOUR = uv_neighbour($PID);
+// The module's secret, as UniversalValidator::hmacKey() hands it over, and
+// the fingerprint of it that every spec carries.
+$KEY = str_repeat('a1', 32);
+$PRINT = substr(hash_hmac('sha256', 'uv lookup index key print', $KEY), 0, 8);
 
 {
     uv_redcap_schema($A);
@@ -98,8 +102,8 @@ $NEIGHBOUR = uv_neighbour($PID);
         }
     };
     $sorted = function ($a) { if (is_array($a)) sort($a); return $a; };
-    $ask = function (array $fields, $value) use ($mod, $PID, $sorted) {
-        return $sorted((new LookupIndex($mod))->candidates($PID, $fields, $value));
+    $ask = function (array $fields, $value) use ($mod, $PID, $sorted, $KEY) {
+        return $sorted((new LookupIndex($mod, array('key' => $KEY)))->candidates($PID, $fields, $value));
     };
     $field = function ($f) use ($A, $PID) {
         $r = $A->query("SELECT spec, ready, built_at FROM " . Schema::table('lookup_field')
@@ -115,7 +119,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('lookup index: the first lookup builds [tok] and answers (got ' . json_encode($got) . ')', $got === array('S1', 'S3'));
     $st = $field('tok');
     check('lookup index: [tok] is built, keyed as text (got ' . json_encode($st) . ')',
-        $st !== null && $st['ready'] === 1 && $st['spec'] === LookupIndex::KEY_VERSION . '|text' && $st['built'] > 0);
+        $st !== null && $st['ready'] === 1 && $st['spec'] === LookupIndex::KEY_VERSION . '|' . $PRINT . '|text' && $st['built'] > 0);
     $keys = (int) $A->query('SELECT COUNT(*) FROM ' . Schema::table('lookup_key') . " WHERE project_id = $PID AND field_name = 'tok'")->fetch_row()[0];
     check('lookup index: one key per record holding [tok], none of the neighbour\'s (got ' . $keys . ')', $keys === 302);
     check('lookup index: a value saved nowhere has no candidate', $ask(array('tok' => null), 'NOPE') === array());
@@ -139,7 +143,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     $n = count($mod->log);
     check('lookup index: a lookup with nothing new in the log sends 8 statements and writes nothing (got ' . $n . ', '
         . count($writes()) . ' writes)', $n === 8 && $writes() === array());
-    $ix = new LookupIndex($mod);
+    $ix = new LookupIndex($mod, array('key' => $KEY));
     $ix->candidates($PID, array('tok' => null), 'DUP-1');
     $mod->log = array();
     $got = $sorted($ix->candidates($PID, array('tok' => null), 'dup-1'));
@@ -151,7 +155,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         $ask(array('scan' => null, 'num' => 'point'), 'DUP-1') === null);
     $got = $ask(array('scan' => null, 'num' => 'point'), 'DUP-1');
     check('lookup index: the next request builds the other and answers (got ' . json_encode($got) . ')', $got === array('S2'));
-    check('lookup index: [num] is keyed by number', $field('num')['spec'] === LookupIndex::KEY_VERSION . '|point');
+    check('lookup index: [num] is keyed by number', $field('num')['spec'] === LookupIndex::KEY_VERSION . '|' . $PRINT . '|point');
     $got = $ask(array('num' => 'point'), '7.00');
     check('lookup index: 7, 7.0 and 007 are one number (got ' . json_encode($got) . ')', $got === array('S4', 'S5', 'S6'));
     $got = $ask(array('tok' => null, 'scan' => null), 'dup-1');
@@ -308,7 +312,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event, ts, object_type)
         VALUES (400000, $P3, 'B1', 'INSERT', $old, 'redcap_data')");
     $logId = 400000;
-    $small = function () use ($mod) { return new LookupIndex($mod, array('liveBuildRows' => 50)); };
+    $small = function () use ($mod, $KEY) { return new LookupIndex($mod, array('liveBuildRows' => 50, 'key' => $KEY)); };
     $askB = function ($f, $v) use ($small, $P3, $sorted) { return $sorted($small()->candidates($P3, array($f => null), $v)); };
     $fieldB = function ($f) use ($A, $P3) {
         $r = $A->query('SELECT ready, wanted_at, gen, building_at, asked_at, built_at FROM ' . Schema::table('lookup_field')
@@ -344,12 +348,12 @@ $NEIGHBOUR = uv_neighbour($PID);
     // being built, although that field does not answer yet.
     $askB('big2', 'x');
     $during = 'not asked';
-    $mod->after = function ($sql, $params) use (&$during, $B, $P3, $A, $set, $log, &$mod) {
+    $mod->after = function ($sql, $params) use (&$during, $B, $P3, $A, $set, $log, &$mod, $KEY) {
         if (strpos($sql, 'SELECT record, event_id, `value` FROM redcap_data') !== 0 || !in_array('big2', $params, true)) return;
         $mod->after = null;
         $set($P3, 'B9', 'big2', 'CHANGED-9');
         $log($P3, 'B9');
-        $during = (new LookupIndex(new UvFlakyModule($B), array('liveBuildRows' => 50)))->candidates($P3, array('big' => null), 'big-8');
+        $during = (new LookupIndex(new UvFlakyModule($B), array('liveBuildRows' => 50, 'key' => $KEY)))->candidates($P3, array('big' => null), 'big-8');
     };
     $r = $small()->maintain(time() + 60);
     $mod->after = null;
@@ -362,11 +366,11 @@ $NEIGHBOUR = uv_neighbour($PID);
     // A reset while the cron reads: the build ends but does not count, and the
     // next cron run builds the field again.
     $askB('big3', 'x');
-    $mod->after = function ($sql, $params) use ($B, $P3, $log, &$mod) {
+    $mod->after = function ($sql, $params) use ($B, $P3, $log, &$mod, $KEY) {
         if (strpos($sql, 'SELECT record, event_id, `value` FROM redcap_data') !== 0 || !in_array('big3', $params, true)) return;
         $mod->after = null;
         $log($P3, 'big3', 'redcap_metadata');
-        (new LookupIndex(new UvFlakyModule($B), array('liveBuildRows' => 50)))->candidates($P3, array('big' => null), 'big-8');
+        (new LookupIndex(new UvFlakyModule($B), array('liveBuildRows' => 50, 'key' => $KEY)))->candidates($P3, array('big' => null), 'big-8');
     };
     $r = $small()->maintain(time() + 60);
     $mod->after = null;
@@ -387,10 +391,10 @@ $NEIGHBOUR = uv_neighbour($PID);
         . (LookupIndex::REBUILD_AFTER - LookupIndex::REFRESH_BEFORE + 10) . " WHERE project_id = $P3 AND field_name = 'big'");
     check('lookup index: a field the cron will refresh still answers', $askB('big', 'big-7') === array('B7'));
     $during = 'not asked';
-    $mod->after = function ($sql, $params) use (&$during, $B, $P3, &$mod) {
+    $mod->after = function ($sql, $params) use (&$during, $B, $P3, &$mod, $KEY) {
         if (strpos($sql, 'SELECT record, event_id, `value` FROM redcap_data') !== 0 || !in_array('big', $params, true)) return;
         $mod->after = null;
-        $during = (new LookupIndex(new UvFlakyModule($B), array('liveBuildRows' => 50)))->candidates($P3, array('big' => null), 'big-7');
+        $during = (new LookupIndex(new UvFlakyModule($B), array('liveBuildRows' => 50, 'key' => $KEY)))->candidates($P3, array('big' => null), 'big-7');
     };
     $r = $small()->maintain(time() + 60);
     $mod->after = null;
@@ -405,7 +409,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('lookup index: a fourth large field is wanted', $askB('big4', 'x') === null && $fieldB('big4')['wanted'] > 0);
     $A->query('UPDATE ' . Schema::table('lookup_field') . ' SET wanted_at = wanted_at - ' . (LookupIndex::CRON_GRACE + 1)
         . " WHERE project_id = $P3 AND field_name = 'big4'");
-    $busy = new LookupIndex($mod, array('liveBuildRows' => 50, 'cronAt' => time() - 60));
+    $busy = new LookupIndex($mod, array('liveBuildRows' => 50, 'cronAt' => time() - 60, 'key' => $KEY));
     check('lookup index: wanted for CRON_GRACE while a cron runs, a lookup still leaves it to the cron',
         $busy->candidates($P3, array('big4' => null), 'x') === null && $fieldB('big4')['ready'] === 0);
     check('lookup index: wanted for CRON_GRACE with no cron, a lookup builds it itself', $askB('big4', 'x') === array('B1')
@@ -421,4 +425,203 @@ $NEIGHBOUR = uv_neighbour($PID);
     $r = $small()->maintain(time() + 60);
     check('lookup index: a field no lookup asked for in UNUSED_AFTER is dropped (got ' . json_encode($r) . ')',
         $r['dropped'] === 1 && $keysB('big2') === 0 && $fieldB('big2') === null);
+}
+
+/* ---- keyed keys (2.5.0) ----------------------------------------------------------------
+ * Up to 2.4.0 a key was the MD5 of the lookup key, the same in every project and
+ * reversible by a dictionary. Now it is a keyed hash with the project and the
+ * field in its message; with no secret the index does not answer at all.
+ */
+{
+    $keyOf = function ($pid, $field, $rec) use ($A) {
+        $r = $A->query('SELECT HEX(key_hash) FROM ' . Schema::table('lookup_key') . " WHERE project_id = $pid AND field_name = '$field'
+            AND record = '" . $A->real_escape_string($rec) . "'")->fetch_row();
+        return $r ? strtolower($r[0]) : null;
+    };
+    // The first case ended on a project moved back to its log table, which
+    // reset its fields: this lookup builds [tok] again.
+    $ask(array('tok' => null), 'DUP-1');
+    (new LookupIndex($mod, array('key' => $KEY)))->candidates($NEIGHBOUR, array('tok' => null), 'DUP-1');
+    $here = $keyOf($PID, 'tok', 'S3');
+    $there = $keyOf($NEIGHBOUR, 'tok', 'N1');
+    check('keyed: a stored key is not the MD5 of the value (got ' . json_encode($here) . ')',
+        $here !== null && $here !== md5(\INSPIRE\UniversalValidator\Logic::lookupKey('DUP-1', true)));
+    check('keyed: the same value has another key in another project', $there !== null && $there !== $here);
+    $mod->log = array();
+    check('keyed: with no secret the index does not answer, and reads nothing',
+        (new LookupIndex($mod, array()))->candidates($PID, array('tok' => null), 'DUP-1') === null && $mod->log === array()
+        && (new LookupIndex($mod, array('key' => '')))->maintain(time() + 60) === array('built' => 0, 'dropped' => 0, 'waiting' => 0, 'left' => 0)
+        && $mod->log === array());
+    // A field built by 2.4.0 (key version 1) is built again on its next lookup.
+    $A->query('UPDATE ' . Schema::table('lookup_field') . " SET spec = '1|text' WHERE project_id = $PID AND field_name = 'tok'");
+    $got = $ask(array('tok' => null), 'dup-1');
+    check('keyed: a field of key version 1 is built again and answers (got ' . json_encode($got) . ')',
+        $got === array('S1', 'S3') && $field('tok')['spec'] === LookupIndex::KEY_VERSION . '|' . $PRINT . '|text');
+    // Another secret: every key would miss, so the field is built again with it.
+    $other = str_repeat('b2', 32);
+    $got = $sorted((new LookupIndex($mod, array('key' => $other)))->candidates($PID, array('tok' => null), 'DUP-1'));
+    check('keyed: a field built with another secret is built again, and answers (got ' . json_encode($got) . ')',
+        $got === array('S1', 'S3') && $keyOf($PID, 'tok', 'S3') !== $here);
+    check('keyed: and back with the first secret', $ask(array('tok' => null), 'DUP-1') === array('S1', 'S3')
+        && $keyOf($PID, 'tok', 'S3') === $here);
+    // The cron drops what it cannot build: an entry of another version.
+    $A->query('INSERT INTO ' . Schema::table('lookup_field') . " (project_id, field_name, spec, ready, built_at, gen, building_at, wanted_at, asked_at, wipe)
+        VALUES ($PID, 'oldfield', '1|text', 1, " . time() . ', 1, 0, ' . time() . ', ' . time() . ', 0)');
+    (new LookupIndex($mod, array('key' => $KEY)))->maintain(time() + 60);
+    check('keyed: the cron drops an entry of key version 1',
+        !$A->query('SELECT 1 FROM ' . Schema::table('lookup_field') . " WHERE project_id = $PID AND field_name = 'oldfield'")->fetch_row());
+}
+
+/* ---- composite entries (2.5.0) ---------------------------------------------------------
+ * An arm code narrows nothing on its own: half the project holds it. Keyed with
+ * the site (and the event or the group, as asked) it narrows to the records of
+ * one stratum, and a count of them reads that many keys.
+ */
+{
+    $P4 = 960;
+    uv_redcap_project($A, $P4);
+    $row = function ($rec, $field, $value, $event = 1, $instance = null) use ($P4) {
+        return sprintf("(%d, %d, '%s', '%s', '%s', %s)", $P4, $event, $rec, $field, $value, $instance === null ? 'NULL' : (int) $instance);
+    };
+    // 400 records: arm 1 or 2, site A to D. C1..C400; C(i) is arm 1 + (i % 2), site chr(65 + i % 4).
+    $rows = array();
+    for ($i = 1; $i <= 400; $i++) {
+        $rows[] = $row("C$i", 'arm', (string) (1 + $i % 2));
+        $rows[] = $row("C$i", 'site', chr(65 + $i % 4));
+        $rows[] = $row("C$i", '__GROUPID__', (string) (10 + $i % 3));
+    }
+    $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`, instance) VALUES ' . implode(', ', $rows));
+    $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event, ts, object_type) VALUES (500000, $P4, 'C1', 'INSERT', $old, 'redcap_data')");
+    $A->query('ANALYZE TABLE redcap_data');
+    $logId = 500000;
+    $def = array('slot' => 'arm', 'with' => array('site'), 'scope' => 'project');
+    $comp = function ($def, $value, array $with, $after = '', $limit = 0, array $extra = array()) use ($mod, $P4, $KEY) {
+        return (new LookupIndex($mod, array('key' => $KEY)))->compositeCandidates($P4, $def, array('value' => $value, 'with' => $with) + $extra, $after, $limit);
+    };
+    $expect = function ($arm, $site, $dag = null) {
+        $out = array();
+        for ($i = 1; $i <= 400; $i++) {
+            if ((string) (1 + $i % 2) === $arm && chr(65 + $i % 4) === $site && ($dag === null || (string) (10 + $i % 3) === $dag)) $out[] = "C$i";
+        }
+        sort($out, SORT_STRING);
+        return $out;
+    };
+    $got = $comp($def, '2', array('site' => 'b'));
+    check('composite: arm 2 at site B is the 100 records of that stratum, in byte order (got ' . count((array) $got) . ')',
+        $got === $expect('2', 'B'));
+    check('composite: a value no record holds has no candidate', $comp($def, '3', array('site' => 'B')) === array()
+        && $comp($def, '2', array('site' => 'Z')) === array());
+    $page1 = $comp($def, '2', array('site' => 'B'), '', 3);
+    $page2 = $comp($def, '2', array('site' => 'B'), end($page1), 3);
+    check('composite: a page of 3, then the 3 after it', $page1 === array_slice($expect('2', 'B'), 0, 3)
+        && $page2 === array_slice($expect('2', 'B'), 3, 3));
+    $mod->log = array();
+    $comp($def, '2', array('site' => 'B'), 'C1', 40);
+    $read = array_values(array_filter($mod->log, function ($q) { return strpos($q[0], 'SELECT HEX(record) FROM') === 0; }));
+    $key = $read ? uv_explain_key($A, $read[0][0], $read[0][1]) : '';
+    check('composite: a page is one range of the primary key, with the LIMIT in the statement (plan '
+        . json_encode($read ? uv_explain_rows($A, $read[0][0], $read[0][1]) : null) . ')',
+        count($read) === 1 && $key === 'PRIMARY' && strpos($read[0][0], 'LIMIT 40') !== false
+        && strpos($read[0][0], 'ORDER BY record') !== false && !array_filter($mod->log, function ($q) { return strpos($q[0], 'FROM redcap_data') !== false; }));
+    check('composite: an entry is named "#" and its definition is stored',
+        (bool) $A->query('SELECT 1 FROM ' . Schema::table('lookup_def') . " WHERE project_id = $P4 AND field_name LIKE '#%'")->fetch_row());
+    check('composite: a definition this class does not accept is no answer',
+        $comp(array('slot' => 'arm', 'with' => array('arm')), '2', array()) === null
+        && $comp(array('slot' => 'Arm'), '2', array()) === null && $comp(array('slot' => 'arm', 'scope' => 'record'), '2', array()) === null);
+
+    // A change to the "with" field only moves the record to its new stratum.
+    $A->query("UPDATE redcap_data SET `value` = 'D' WHERE project_id = $P4 AND record = 'C2' AND field_name = 'site'");
+    $log($P4, 'C2');
+    $b = $comp($def, '1', array('site' => 'C'));
+    $d = $comp($def, '1', array('site' => 'D'));
+    check('composite: a record whose site changed is found at the new site, not the old',
+        in_array('C2', $d, true) && !in_array('C2', $b, true));
+
+    // Scope dag: the group is part of the key, and a move to another group is a log row for the record.
+    $dagDef = array('slot' => 'arm', 'with' => array('site'), 'scope' => 'dag');
+    $got = $comp($dagDef, '2', array('site' => 'B'), '', 0, array('dag' => '11'));
+    check('composite: scope dag keys the group too (got ' . count((array) $got) . ')', $got === $expect('2', 'B', '11'));
+    $moved = $expect('2', 'B', '11')[0];
+    $A->query("UPDATE redcap_data SET `value` = '12' WHERE project_id = $P4 AND record = '$moved' AND field_name = '__GROUPID__'");
+    $log($P4, $moved);
+    check('composite: a record moved to another group is found in that group only',
+        in_array($moved, $comp($dagDef, '2', array('site' => 'B'), '', 0, array('dag' => '12')), true)
+        && !in_array($moved, $comp($dagDef, '2', array('site' => 'B'), '', 0, array('dag' => '11')), true));
+    $A->query("UPDATE redcap_data SET `value` = '' WHERE project_id = $P4 AND record = '$moved' AND field_name = '__GROUPID__'");
+    $log($P4, $moved);
+    check('composite: a record taken out of its group is in no group (\'\')',
+        in_array($moved, $comp($dagDef, '2', array('site' => 'B'), '', 0, array('dag' => '')), true));
+
+    // Events and repeating instances. R1: arm 1 in event 1 at site A, and in
+    // event 2 on a repeating form, instances 1 and 2, with site on the event's
+    // row (B) and, for one field that repeats, on the instance.
+    $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`, instance) VALUES '
+        . implode(', ', array($row('R1', 'arm', '7'), $row('R1', 'site', 'A'),
+            $row('R1', 'arm', '7', 2), $row('R1', 'site', 'B', 2),
+            $row('R1', 'arm', '8', 2, 2), $row('R1', 'visit_site', 'Q', 2, 2))));
+    $log($P4, 'R1');
+    $evDef = array('slot' => 'arm', 'with' => array('site'), 'scope' => 'event');
+    check('composite: scope event keys the event: arm 7 at site A in event 1, at site B in event 2',
+        $comp($evDef, '7', array('site' => 'A'), '', 0, array('event' => '1')) === array('R1')
+        && $comp($evDef, '7', array('site' => 'A'), '', 0, array('event' => '2')) === array()
+        && $comp($evDef, '7', array('site' => 'B'), '', 0, array('event' => '2')) === array('R1'));
+    check('composite: an instance reads a field that does not repeat from its event\'s row',
+        $comp($def, '8', array('site' => 'B')) === array('R1'));
+    $repDef = array('slot' => 'arm', 'with' => array('visit_site'), 'scope' => 'project', 'rep' => array('visit_site' => array(2)));
+    check('composite: and a field that repeats there from the instance itself; blank where the instance has none',
+        $comp($repDef, '8', array('visit_site' => 'Q')) === array('R1')
+        && $comp($repDef, '7', array('visit_site' => '')) === array('R1'));
+
+    // A build the cron cannot finish by its deadline pauses, keeps its place,
+    // and is kept current meanwhile; the next run finishes it.
+    $P5 = 970;
+    uv_redcap_project($A, $P5);
+    $rows = array();
+    for ($i = 1; $i <= 1200; $i++) {
+        $rows[] = sprintf("(%d, 1, 'P%04d', 'arm', '%d', NULL)", $P5, $i, 1 + $i % 2);
+        $rows[] = sprintf("(%d, 1, 'P%04d', 'site', 'S', NULL)", $P5, $i);
+    }
+    foreach (array_chunk($rows, 1000) as $part) {
+        $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`, instance) VALUES ' . implode(', ', $part));
+    }
+    $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event, ts, object_type) VALUES (600000, $P5, 'P0001', 'INSERT', $old, 'redcap_data')");
+    $logId = 600000;
+    $cron = function () use ($mod, $KEY) { return new LookupIndex($mod, array('liveBuildRows' => 50, 'key' => $KEY)); };
+    $askP5 = function ($value) use ($cron, $P5, $def) { return $cron()->compositeCandidates($P5, $def, array('value' => $value, 'with' => array('site' => 'S'))); };
+    check('composite: an entry too large for a lookup is left to the cron', $askP5('1') === null);
+    $name = '#' . md5(json_encode(array('arm', array('site'), 'project')));
+    $state = function () use ($A, $P5, $name) {
+        $f = $A->query('SELECT ready, wanted_at, gen, building_at FROM ' . Schema::table('lookup_field') . " WHERE project_id = $P5 AND field_name = '$name'")->fetch_row();
+        $d = $A->query('SELECT build_cursor, build_gen FROM ' . Schema::table('lookup_def') . " WHERE project_id = $P5 AND field_name = '$name'")->fetch_row();
+        return array('ready' => (int) $f[0], 'wanted' => (int) $f[1], 'gen' => (int) $f[2], 'building' => (int) $f[3],
+            'cursor' => $d ? (string) $d[0] : null, 'cgen' => $d ? (int) $d[1] : null);
+    };
+    $slept = false;
+    $mod->after = function ($sql) use (&$slept) {
+        if (!$slept && strpos($sql, 'SELECT record, field_name, `value`, event_id, instance FROM') === 0) { $slept = true; sleep(2); }
+    };
+    $r = $cron()->maintain(time() + 1);
+    $mod->after = null;
+    $s = $state();
+    check('composite: past its deadline the cron build pauses after one batch, keeping its place (got ' . json_encode(array($r, $s)) . ')',
+        $r['built'] === 0 && $s['ready'] === 0 && $s['building'] === 0 && $s['wanted'] > 0
+        && $s['cursor'] === sprintf('P%04d', LookupIndex::BATCH) && $s['cgen'] === $s['gen']);
+    // P0003 (already written) and P1100 (not yet) change while it waits.
+    $A->query("UPDATE redcap_data SET `value` = '9' WHERE project_id = $P5 AND record IN ('P0003', 'P1100') AND field_name = 'arm'");
+    $log($P5, 'P0003');
+    $log($P5, 'P1100');
+    $r = $cron()->maintain(time() + 60);
+    $s = $state();
+    check('composite: the next run goes on from there and finishes (got ' . json_encode(array($r, $s)) . ')',
+        $r['built'] === 1 && $s['ready'] === 1 && $s['cursor'] === '' && $s['wanted'] === 0);
+    check('composite: a record written before the pause and changed during it is found under its new value only',
+        $askP5('9') === array('P0003', 'P1100') && !in_array('P0003', (array) $askP5('2'), true));
+    $all = (int) $A->query('SELECT COUNT(*) FROM ' . Schema::table('lookup_key') . " WHERE project_id = $P5 AND field_name = '$name'")->fetch_row()[0];
+    check('composite: one key per record, none left from the paused part (got ' . $all . ')', $all === 1200);
+    // The cron drops a composite entry whose definition is gone.
+    $A->query('DELETE FROM ' . Schema::table('lookup_def') . " WHERE project_id = $P5 AND field_name = '$name'");
+    $A->query('UPDATE ' . Schema::table('lookup_field') . " SET wanted_at = 1 WHERE project_id = $P5 AND field_name = '$name'");
+    $r = $cron()->maintain(time() + 60);
+    check('composite: an entry whose definition is gone is dropped with its keys (got ' . json_encode($r) . ')',
+        $r['dropped'] === 1 && (int) $A->query('SELECT COUNT(*) FROM ' . Schema::table('lookup_key') . " WHERE project_id = $P5 AND field_name = '$name'")->fetch_row()[0] === 0);
 }

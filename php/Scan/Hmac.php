@@ -16,7 +16,8 @@ namespace INSPIRE\UniversalValidator\Scan;
  * both real: a value fingerprint equal to a record hash tells an observer that
  * a field contains a record id, and a group hash reused as a finding identity
  * makes two unrelated rows collide by construction. Purpose separation costs a
- * string concatenation and removes the whole class.
+ * string concatenation and removes the whole class. The live lookups' value
+ * index (LookupIndex) keys its rows in a space of its own, P_LOOKUP.
  *
  * PROJECT SEPARATION does the same across projects: without it, the same value
  * in two projects produces the same fingerprint, so a reader of one project's
@@ -44,12 +45,13 @@ final class Hmac
     // different from a version-2 one describing the same problem.
     const FINDING_TUPLE = 'f2';
 
-    // The four spaces. Adding a fifth means adding a constant here, so the set
-    // is enumerable and a reviewer can see that none of them collide.
+    // The spaces. Adding one means adding a constant here, so the set is
+    // enumerable and a reviewer can see that none of them collide.
     const P_RECORD   = 'record';        // record id -> presentation/identity hash
     const P_FINDING  = 'finding';       // finding identity, for interval versioning
     const P_VALUE    = 'value';         // value fingerprint, without the value
     const P_UNIQUE   = 'unique';        // uniqueness group key
+    const P_LOOKUP   = 'lookup';        // a key of the live lookups' value index (LookupIndex)
 
     /**
      * @param string      $purpose one of the P_* constants
@@ -61,7 +63,7 @@ final class Hmac
      */
     public static function raw($purpose, $pid, $data, $key)
     {
-        if (!in_array($purpose, [self::P_RECORD, self::P_FINDING, self::P_VALUE, self::P_UNIQUE], true)) {
+        if (!in_array($purpose, [self::P_RECORD, self::P_FINDING, self::P_VALUE, self::P_UNIQUE, self::P_LOOKUP], true)) {
             throw new \InvalidArgumentException('unknown hmac purpose: ' . (string) $purpose);
         }
         if (!is_string($key) || $key === '') {

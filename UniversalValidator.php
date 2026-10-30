@@ -11547,7 +11547,9 @@ class UniversalValidator extends AbstractExternalModule
             } catch (\Throwable $e) {
                 Faults::swallow($e, 'UniversalValidator::lookupIndex');
             }
-            $this->lookupIndexer = $off ? false : new Scan\LookupIndex($this, ['cronAt' => $cronAt]);
+            // Keyed with the module's secret (Hmac::P_LOOKUP). Without one the
+            // index answers nothing and the lookups read the data table.
+            $this->lookupIndexer = $off ? false : new Scan\LookupIndex($this, ['cronAt' => $cronAt, 'key' => $this->hmacKey()]);
         }
         return $this->lookupIndexer === false ? null : $this->lookupIndexer;
     }
