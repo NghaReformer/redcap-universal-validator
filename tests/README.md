@@ -415,6 +415,10 @@ record the collation ties to another, goes on from its cursor when paused,
 and lists the field from the start when REDCap no longer calls the index
 complete. A plain build past `BUILD_STALE` is kept current, and a rebuild
 under another spec marks the field before it deletes keys.
+`tests/lookup_index_mutations.py` applies 34 mutations of the value index
+and the cron and key code around it to a copy (the 30 of the SQL against the
+server UV_DB_HOST names, `--shard I/N` to split them over two), and every one
+must fail its suite.
 `tests/scan_cron_php.php` checks the cron's declaration, that it clears old
 keys before anything else and with its off switch on, that a database
 failure comes back as its summary line, the statement `recordsAfter()` sends,
@@ -1282,8 +1286,8 @@ builds a release-shaped `universal_validator_vX.Y.Z.zip` to verify the package
 layout (required files present, development-only trees excluded, namespace
 matching). On each PHP version it also runs the mutation runners,
 `tests/temporal_mutations.py`, `tests/exists_where_mutations.py`,
-`tests/delta_mutations.py`, `tests/writeonce_mutations.py` and
-`tests/justify_mutations.py`. `tests/ci_workflow_js.cjs` fails when a suite in
+`tests/delta_mutations.py`, `tests/writeonce_mutations.py`,
+`tests/justify_mutations.py` and `tests/lookup_index_mutations.py`. `tests/ci_workflow_js.cjs` fails when a suite in
 `tests/` is named by no workflow, or when a plain `run:` has lines under it,
 which YAML folds into one command. `tests/scan_wiring_php.php` fails when a
 suite or a mutation runner in `tests/` is not named by the command of some

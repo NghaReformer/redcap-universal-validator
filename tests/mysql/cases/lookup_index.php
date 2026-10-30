@@ -567,8 +567,9 @@ $STAMP = LookupIndex::KEY_VERSION . '|' . $PRINT;
     };
     (new LookupIndex($mod, array('key' => $KEY)))->retireOld(time() + 60);
     $mod->after = null;
-    check('retire: an entry built again since the list was read is read again under the lock, and kept',
-        $rowOf($PID, 'race_f') !== null && $rowOf($PID, 'race_f')['spec'] === $current);
+    $race = $rowOf($PID, 'race_f');
+    check('retire: an entry built again since the list was read is read again under the lock, and left as it was (got ' . json_encode($race) . ')',
+        $race !== null && $race['spec'] === $current && $race['ready'] === 1 && $race['wipe'] === 0);
     $A->query("DELETE FROM $ft WHERE project_id = $PID AND field_name = 'race_f'");
     // Out of time inside a field's keys: no DELETE page starts after the
     // deadline, and the entry stays, with its spec, for the next run.
