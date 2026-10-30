@@ -379,7 +379,19 @@ data dictionary change while the cron reads keeps that build from counting;
 the refresh before the 7 days are up answers throughout and replaces a key no
 log row reported; a field wanted for 15 minutes is left to a cron that ran a
 minute ago and built by a lookup when none has run; and the cron stops at its
-deadline and drops a field no lookup asked for in 30 days. `tests/scan_cron_php.php` checks the cron's declaration, its
+deadline and drops a field no lookup asked for in 30 days. Since 2.5.0 it
+also checks that a stored key is a keyed hash, different from the value's MD5
+and from the same value's key in another project; that with no secret the
+index reads nothing; that a field of key version 1, or built with another
+secret, is built again, and that the cron drops an entry of version 1. Its
+composite part keys an arm with a site over 400 records and checks the
+stratum, a page of 3 and the next, the plan of a page (the primary key, the
+LIMIT in the statement), a change to the site alone, scope `dag` with a move
+to another group and out of every group, scope `event`, and a repeating form
+whose instance reads a field that does not repeat from its event's row. A
+build of 1,200 records paused by the cron's deadline keeps its place, is kept
+current while it waits, and finishes on the next run with one key a record.
+`tests/scan_cron_php.php` checks the cron's declaration, its
 off switch and that a database failure comes back as its summary line.
 
 `exists_table_php.php` covers the @UVEXISTS reads of the data table. A lookup

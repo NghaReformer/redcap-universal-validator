@@ -172,10 +172,10 @@ The scan keeps its work in thirteen tables of its own, all prefixed `uv_`:
 saves the module's system configuration with `scan-system-enable-durable` on,
 and when the module is enabled or a new version installed while it is on.
 `uv_rate_bucket` is created in every case, even with the scan off, because the
-survey uniqueness throttle uses it. So are the four tables of the value index
+survey uniqueness throttle uses it. So are the five tables of the value index
 of the live lookups (`uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync`,
-`uv_lookup_record`), which the README's "Lookups on large projects: the value
-index" describes.
+`uv_lookup_record`, `uv_lookup_def`), which the README's "Lookups on large
+projects: the value index" describes.
 
 The module's database user needs a plain `CREATE` grant to make them and
 `ALTER` to upgrade them. `CREATE TEMPORARY TABLES`, `CREATE VIEW` and
@@ -218,6 +218,19 @@ installation with no scan tables. Run the statements in order, then save the
 system configuration once. The module finds the changes already made, skips
 them, runs the steps that are not DDL (the version-2 and version-8 data
 steps below), verifies the result and records the version.
+
+### Upgrading from 2.4 (schema version 9)
+
+Version 9 creates `uv_lookup_def`, the definitions of the value index's
+entries that key a value with other fields, with `CREATE TABLE IF NOT EXISTS`.
+The module creates it on an installation without the scan too.
+
+Earlier versions kept a plain MD5 of each indexed value. This one keeps a keyed
+hash made with the module's secret (the system setting the module log's hashes
+use), so every field of the index is built again: a small one by its next
+lookup, a large one by the `uv_lookup_index` cron. Until a field is built its
+lookups read the data table, as they did before the index existed. Nothing
+needs doing by hand; the old keys are replaced as each field is built.
 
 ### Upgrading from 2.3 (schema versions 6 to 8)
 

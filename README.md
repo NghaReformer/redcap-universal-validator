@@ -1786,14 +1786,18 @@ REDCap keeps no index on saved values, so a lookup that reads the data table
 reads one row per record: 3 to 9 seconds at 100,000 records on a test server
 whose database had 128 MB of memory for its tables, and 33 to 39 seconds at
 400,000. The module therefore keeps its own index of the fields that
-`@UVUNIQUE` and `@UVEXISTS` search, in four tables (`uv_lookup_key`,
-`uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record`). They are created when
+`@UVUNIQUE` and `@UVEXISTS` search, in five tables (`uv_lookup_key`,
+`uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record`, `uv_lookup_def`). They are created when
 the module is enabled or upgraded and when its system settings are saved,
 whether or not the Validation scan is on.
 
 - **Built once per field.** A build reads all the field's rows once and
-  stores one key per value and record: a hash of the value as lookups compare
-  it (trimmed, letter case folded, numbers by value). A field of up to 20,000
+  stores one key per value and record: a keyed hash of the value as lookups
+  compare it (trimmed, letter case folded, numbers by value), made with the
+  module's own secret and the project and field, so a stored key cannot be
+  turned back into the value with a dictionary and the same value has a
+  different key in another project. Without the secret the index answers
+  nothing and the lookups read the data table. A field of up to 20,000
   saved values is built by its first lookup (one field a request). A larger
   one is built by the module's cron *uv_lookup_index*, which runs every 5 minutes:
   the first lookup marks the field, and until the cron has built it
@@ -1826,6 +1830,16 @@ whether or not the Validation scan is on.
 - **Size.** One row of `uv_lookup_key` per saved value of a searched field,
   about 100 bytes with its indexes. The cron drops the keys of a field no
   lookup has asked for in 30 days.
+- **Keys of several fields.** A count over a value with other fields of the
+  same entry (an arm code at one site, say) is kept as one key of all the
+  parts, with the event or the Data Access Group where the rule asks for it,
+  so it reads the records of that stratum and no others. Its definition is
+  kept in `uv_lookup_def`. The cron builds a large one in steps: a build it
+  cannot finish in one run keeps its place for the next, and the records
+  already done are kept current meanwhile.
+- **After upgrading from 2.4.0 or earlier**, every field is built again on its
+  next lookup (or by the cron, for a large one), because earlier versions kept
+  a plain MD5 of each value. Until then its lookups read the data table.
 - **Off switch.** The system setting *Live lookups — turn OFF the value index*
   makes every lookup read the data table again.
 

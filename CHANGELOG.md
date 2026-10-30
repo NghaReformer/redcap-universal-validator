@@ -3,6 +3,18 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Each release is tagged `vX.Y.Z` and installs as the module folder `universal_validator_vX.Y.Z` (see "Version numbers" in `docs/INSTALL.md`). A build for testing on a development project says so in its entry, not in its number.
 
+## Unreleased
+
+Work toward 2.5.0. Upgrading applies schema version 9 (`uv_lookup_def`).
+
+### Security
+
+- **The value index kept an unkeyed MD5 of every value it indexed.** `uv_lookup_key.key_hash` was the MD5 of a value's lookup key with no project in it, so a dictionary turned a stored date of birth, phone number or short ID back into the value, and the same value had the same row in every project, which `Scan\Hmac` forbids. A key is now the first 16 bytes of a keyed hash (`Hmac::P_LOOKUP`) made with the module's secret, whose message holds the project and the field (`LookupIndex::keyHex`). With no secret the index answers nothing and the lookups read the data table; it never falls back to an unkeyed hash. Key version 2 and a fingerprint of the secret in each spec mean every field built by 2.4.0 or earlier, or with another secret, is built again on its next lookup, or by the cron when it is large. Until then its lookups read the data table.
+
+### Added
+
+- **Composite entries in the value index.** `LookupIndex::compositeCandidates()` keys a value together with other fields of the same entry of the record, and with the event or the Data Access Group where asked, so a value half the project holds (an arm code) narrows to the records of one stratum. A "with" field that repeats in the event is read from the slot's own instance and any other from the event's row, as the scan merges an entry. The answer comes in byte order from one range of `uv_lookup_key`'s primary key, a page at a time (`after`, `limit`). Each entry is named `#` and an MD5, which no REDCap field name can be, and its definition is kept in the new table `uv_lookup_def` (schema version 9), so the cron and the log sync derive its keys without the rule that asked for it. A cron build that reaches its deadline pauses after a batch of 500 records and keeps its place in `uv_lookup_def.build_cursor`; the sync keeps the records already written current meanwhile, and a reset of the project starts it again. Tests: `tests/mysql/cases/lookup_index.php` (keyed keys, another secret, key version 1 rebuilt or dropped, strata, paging and its plan, a change to a "with" field, a move to another group, events, repeating instances, a paused build changed while it waits) and the version 9 block of `tests/scan_schema_php.php`.
+
 ## 2.4.0 — 2026-10-29
 
 **Three new tags and the durable scan's stored report.** `@UVDELTA`, `@UVWRITEONCE` and `@UVJUSTIFY` are new, and a finished durable scan's findings can be read on the scan page and downloaded as a CSV (see "Validation scan" below). Install it as the folder `universal_validator_v2.4.0`. Upgrading from 2.3.x applies schema versions 7 and 8: version 7 adds `uv_finding.justified` and `uv_scan_run.detail_justified` for `@UVJUSTIFY`, and version 8 is the scan's. `@UVWRITEONCE` reads REDCap's own log and user-role tables, and writes nothing to them. The scan engine revision is now `engine-9`: `engine-5` to `engine-7` for the three tags, `engine-8` because a duplicate the durable scan's finalizer writes now carries its rule's ordinal, its record's Data Access Group and the reason `duplicate-value`, and `engine-9` because the scan stores a pooled finding's reason and a branched rule's branch in a new form and keeps a group run's summary per group. A scan in progress at the upgrade ends at its next work request; start it again.
