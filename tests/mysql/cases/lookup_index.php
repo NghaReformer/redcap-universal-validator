@@ -915,6 +915,15 @@ $STAMP = LookupIndex::KEY_VERSION . '|' . $PRINT;
         $gen = (int) $A->query('SELECT gen FROM ' . Schema::table('lookup_field') . " WHERE project_id = $P7 AND field_name = '$name7'")->fetch_row()[0];
         $A->query('UPDATE ' . Schema::table('lookup_def') . " SET build_cursor = '$cursor', build_gen = $gen WHERE project_id = $P7 AND field_name = '$name7'");
     };
+    // A page of the record index that cannot be read fails the build: the
+    // entry is not marked built from the records read before it.
+    $pauseAt('');
+    $mod->inner->failOn = 'SELECT record, dag_id FROM redcap_record_list';
+    $r = $walker()->maintain(time() + 60);
+    $mod->inner->failOn = null;
+    $ready7 = (int) $A->query('SELECT ready FROM ' . Schema::table('lookup_field') . " WHERE project_id = $P7 AND field_name = '$name7'")->fetch_row()[0];
+    check('composite: a walk whose page cannot be read is not marked built (got ' . json_encode(array($r, $ready7)) . ')',
+        $r['built'] === 0 && $ready7 === 0);
     $pauseAt('wW10');
     $mod->log = array();
     $r = $walker()->maintain(time() + 60);
