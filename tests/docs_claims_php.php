@@ -214,27 +214,46 @@ namespace INSPIRE\UniversalValidator\Scan {
     /* =====================================================================
      * TABLE COUNT, CRONS, SCHEMA VERSION
      * ===================================================================== */
-    // The tables and statements of the latest upgrade, which INSTALL's
-    // upgrade note counts.
-    $upgrade = Schema::plan(Schema::VERSION - 1);
-    $altered = [];
-    foreach ($upgrade as $sql) {
-        if (preg_match('/^\s*ALTER TABLE\s+`?(uv_[a-z0-9_]+)/i', $sql, $am)) $altered[$am[1]] = true;
-    }
+    // The tables each schema version alters, which an upgrade note counts.
+    $alteredBy = function ($v) {
+        $out = [];
+        foreach (Schema::plan($v - 1) as $i => $sql) {
+            if ($i >= count(Schema::statements($v))) break;
+            if (preg_match('/^\s*ALTER TABLE\s+`?(uv_[a-z0-9_]+)/i', $sql, $am)) $out[$am[1]] = true;
+        }
+        return $out;
+    };
+    $upgrade = array_map(function ($i) { return is_array($i) ? $i['sql'] : $i; }, Schema::statements(Schema::VERSION));
     $words = array_flip($numberWords);
 
     // A count of tables in the scan docs is the scan's table count, or, in
     // a sentence about what an upgrade changes or the statements it runs,
-    // the number of tables that upgrade alters. Table cells are sentences
-    // of their own, and a count may be written "thirteen `uv_` tables".
+    // the number of tables that upgrade alters: the version the sentence
+    // names, else the last one named before it under the same upgrade
+    // heading, else that heading's last version, else the latest. Table
+    // cells are sentences of their own, and a count may be written
+    // "thirteen `uv_` tables".
     $counted = 0;
     $countRe = '/\b(\d+|' . implode('|', array_keys($numberWords)) . ')\s+(?:`uv_\*?`\s+)?tables\b/i';
     foreach ($scanDocs as $doc) {
         if (!isset($docs[$doc]) || $docs[$doc] === null) continue;
+        $heading = null;
+        $named = null;
         foreach (preg_split('/(?<=[.!?])\s+|\s\|\s/', $flat($prose($docs[$doc]))) as $sentence) {
+            if (preg_match('/Upgrading from [^(]*\(schema versions? (\d+)(?: to (\d+))?\)/', $sentence, $hm)) {
+                $heading = (int) (isset($hm[2]) && $hm[2] !== '' ? $hm[2] : $hm[1]);
+                $named = null;
+            } elseif (preg_match('/^#+\s/', $sentence)) {
+                $heading = null;
+                $named = null;
+            }
+            $own = preg_match_all('/\bVersion (\d+)\b/', $sentence, $vm) ? (int) end($vm[1]) : null;
+            if ($own !== null) $named = $own;
             if (!preg_match_all($countRe, $sentence, $tm)) continue;
             $upgrading = preg_match('/\b(?:changes|alters|statements)\b/i', $sentence) === 1;
             $lookups = preg_match('/value index|uv_lookup_/i', $sentence) === 1;
+            $v = $named !== null ? $named : ($heading !== null ? $heading : Schema::VERSION);
+            $altered = $alteredBy($v);
             foreach ($tm[1] as $w) {
                 $num = ctype_digit($w) ? (int) $w : $numberWords[strtolower($w)];
                 $counted++;
@@ -243,7 +262,7 @@ namespace INSPIRE\UniversalValidator\Scan {
                         $num === count($lookupTables));
                 } elseif ($upgrading) {
                     check($doc . ': "' . $w . ' tables" is how many tables the upgrade to schema version '
-                        . Schema::VERSION . ' alters (' . count($altered) . ')', $num === count($altered));
+                        . $v . ' alters (' . count($altered) . ')', $num === count($altered));
                 } else {
                     check($doc . ': "' . $w . ' tables" is the scan\'s table count (' . count($scanTables) . ')',
                         $num === count($scanTables));
@@ -253,10 +272,10 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
     check('docs: INSTALL states how many tables the scan keeps', $counted > 0
         && preg_match('/\b(?:thirteen|13) tables\b/i', (string) $docs['docs/INSTALL.md']) === 1
-        && count($scanTables) === 13 && count($lookupTables) === 4);
+        && count($scanTables) === 13 && count($lookupTables) === 5);
     $n7 = count($upgrade);
-    check('docs/INSTALL.md: the upgrade note counts the ' . $n7 . ' statements of the latest upgrade',
-        preg_match('/\b(?:' . $n7 . (isset($words[$n7]) ? '|' . $words[$n7] : '') . ') statements\b/i',
+    check('docs/INSTALL.md: the upgrade note counts the ' . $n7 . ' statement(s) of the latest upgrade',
+        preg_match('/\b(?:' . $n7 . (isset($words[$n7]) ? '|' . $words[$n7] : '') . ') statements?\b/i',
                    $flat((string) $docs['docs/INSTALL.md'])) === 1);
 
     $stated = [];
@@ -295,7 +314,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     // A note may cover the versions a release brings together ("schema
     // versions 6 to 8").
     check('docs/INSTALL.md: an upgrade note for schema version ' . Schema::VERSION,
-        preg_match('/schema versions? \d+ to ' . Schema::VERSION . '\b/', $install) === 1);
+        preg_match('/schema versions? (?:\d+ to )?' . Schema::VERSION . '\b/', $install) === 1);
     foreach ($scanDocs as $doc) {
         if (!isset($docs[$doc]) || $docs[$doc] === null) continue;
         preg_match_all('/schema version (\d+)/i', $docs[$doc], $vm);

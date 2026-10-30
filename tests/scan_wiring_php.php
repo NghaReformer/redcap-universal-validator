@@ -120,7 +120,9 @@ namespace {
         'SqlScanStore::writeManifest'   => 'no scheduled caller, with the contract',
         'ScanPhase::consistent'         => 'no scheduled caller: the phase/state agreement it checks is never checked',
         'UniqueFinalizer::sweep'        => 'no scheduled caller: the duplicate-group sweep runs only when a test runs it',
-        'Hmac::hex'                     => 'no scheduled caller: a hex rendering nothing renders',
+
+        // -- SCHEDULED for 2.5.0 phase 1 (reports/count-near-arith-plan-2026-10-30.md).
+        'LookupIndex::compositeCandidates' => 'phase 1: the @UVUNIQUE "max" count reads a stratum through it',
     ];
 
     /* =====================================================================

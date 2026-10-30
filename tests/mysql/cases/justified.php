@@ -587,14 +587,15 @@ $ROLL = 984;
         && $definition() === $WANT && $count() === 5);
 
     // HALF APPLIED: the ALTERs took and the version rows did not. Every
-    // statement from version 7 on is an ALTER with a skip test, and each finds
-    // its column or index there, so none is sent again.
+    // statement of versions 7 and 8 is an ALTER with a skip test, and each
+    // finds its column or index there, so none is sent again. Version 9's
+    // CREATE TABLE IF NOT EXISTS is sent and changes nothing.
     $A->query('DELETE FROM ' . Schema::table('schema_version') . ' WHERE version >= 7');
     check('half applied: the column is there and the version row says 6',
         Schema::currentVersion($ca) === 6 && $definition() === $WANT);
     $r3 = Schema::migrate($ca);
     check('half applied: the migration skips the ALTERs it would repeat and records the versions',
-        $r3['ok'] === true && $r3['from'] === 6 && $r3['applied'] === 0
+        $r3['ok'] === true && $r3['from'] === 6 && $r3['applied'] === count(Schema::statements(9))
         && Schema::currentVersion($ca) === Schema::VERSION);
     if ($r3['ok'] !== true) fwrite(STDERR, '  migrate said: ' . (string) $r3['why'] . "\n");
     $sum = $dbA->select('SELECT COUNT(*), SUM(justified) FROM ' . $F);

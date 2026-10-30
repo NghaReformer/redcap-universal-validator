@@ -222,8 +222,9 @@ steps below), verifies the result and records the version.
 ### Upgrading from 2.4 (schema version 9)
 
 Version 9 creates `uv_lookup_def`, the definitions of the value index's
-entries that key a value with other fields, with `CREATE TABLE IF NOT EXISTS`.
-The module creates it on an installation without the scan too.
+entries that key a value with other fields. That is one statement, a
+`CREATE TABLE IF NOT EXISTS`, and the module runs it on an installation
+without the scan too.
 
 Earlier versions kept a plain MD5 of each indexed value. This one keeps a keyed
 hash made with the module's secret (the system setting the module log's hashes
@@ -234,8 +235,9 @@ needs doing by hand; the old keys are replaced as each field is built.
 
 ### Upgrading from 2.3 (schema versions 6 to 8)
 
-An installation at version 5 first gets version 6, which creates the four
-tables of the value index, each with `CREATE TABLE IF NOT EXISTS`.
+An installation at version 5 first gets version 6, which creates
+`uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync` and `uv_lookup_record`
+for the value index, each with `CREATE TABLE IF NOT EXISTS`.
 
 Version 7 is `@UVJUSTIFY`'s. `uv_finding` gains `justified`, 1 when a reason
 stands for the finding, and `uv_scan_run` gains `detail_justified`, how many
