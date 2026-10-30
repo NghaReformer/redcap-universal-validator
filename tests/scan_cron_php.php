@@ -415,7 +415,8 @@ $fake->rows = array_map(function ($id) { return [$id]; }, $ids);
 $bad = [];
 foreach (['', $byBytes[0], $byBytes[40], $byBytes[count($byBytes) - 2], $byBytes[count($byBytes) - 1]] as $after) {
     $left = array_values(array_filter($byBytes, function ($id) use ($after) { return $after === '' || strcmp($id, $after) > 0; }));
-    foreach ([1, 7, 64, count($left), count($left) + 1] as $limit) {
+    // count - 1: one record too many, cut at the end with no compaction before.
+    foreach ([1, 7, 64, count($left) - 1, count($left), count($left) + 1] as $limit) {
         if ($limit < 1) continue;
         $want = [array_slice($left, 0, $limit), count($left) > $limit];
         $got = $ra->invoke($li, 1, 'redcap_data', 'arm', $after, $limit);
@@ -426,6 +427,16 @@ check('lookup index: recordsAfter lists the first N records after a cursor in by
     . json_encode($bad) . ')', $bad === []);
 $fake->rows = false;
 check('lookup index: recordsAfter says a failed read is one', $ra->invoke($li, 1, 'redcap_data', 'arm', '', 7) === [null, false]);
+// A spec of another secret, or of another key version, is none this object can
+// keep current or build; the sync row's print is a second guard, not the only one.
+$ps = new ReflectionMethod($li, 'parseSpec');
+$ps->setAccessible(true);
+$print = substr(hash_hmac('sha256', 'uv lookup index key print', str_repeat('a1', 32)), 0, 8);
+check('lookup index: a spec is read only for this key version and secret',
+    $ps->invoke($li, '2|' . $print . '|point') === ['kind' => 'plain', 'mark' => 'point']
+    && $ps->invoke($li, '2|ffffffff|point') === false && $ps->invoke($li, '1|point') === false
+    && $ps->invoke($li, '2|' . $print . '|c|' . md5('d')) === ['kind' => 'c', 'hash' => md5('d')]
+    && $ps->invoke($li, '2|ffffffff|c|' . md5('d')) === false);
 
 // ---- 9) the budget, and the cursor between passes ---------------------------
 //

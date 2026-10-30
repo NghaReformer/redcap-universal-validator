@@ -298,9 +298,11 @@ $STAMP = LookupIndex::KEY_VERSION . '|' . $PRINT;
     $t = microtime(true);
     $got = $ask(array('tok' => null), 'DUP-1');
     $waited = microtime(true) - $t;
+    // Waited, not refused at once. With two suites running on one host, a 2 s
+    // GET_LOCK has returned in under 1.5 s, so the bound is half the wait.
     check('lookup index: while another request holds the project, no answer after LOCK_WAIT (waited '
-        . round($waited, 1) . ' s, got ' . json_encode($got) . ', lock held by the other: ' . json_encode($held) . ')',
-        $got === null && $waited >= LookupIndex::LOCK_WAIT - 0.5);
+        . round($waited, 2) . ' s, got ' . json_encode($got) . ', lock held by the other: ' . json_encode($held) . ')',
+        $got === null && $waited >= LookupIndex::LOCK_WAIT / 2);
     $B->query("SELECT RELEASE_LOCK(CONCAT('uvlk', MD5(CONCAT(COALESCE(DATABASE(), ''), '/', '$PID'))))");
     check('lookup index: ...and an answer once it lets go', $ask(array('tok' => null), 'DUP-1') === array('S1', 'S3'));
     $mod->inner->failOn = 'FROM redcap_log_event4';
