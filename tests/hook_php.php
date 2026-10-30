@@ -51,7 +51,10 @@ namespace ExternalModules {
             if (!$effective) return null;
             return isset($this->projectSettings[$key]) ? $this->projectSettings[$key] : null;
         }
+        /** key => values the next reads return, one each, before the stored one (another request writing meanwhile). */
+        public $systemSettingReads = [];
         public function getSystemSetting($key) {
+            if (!empty($this->systemSettingReads[$key])) return array_shift($this->systemSettingReads[$key]);
             return isset($this->systemSettings[$key]) ? $this->systemSettings[$key] : null;
         }
         /** key => value another request writes just after this one, so its own write is lost. */
@@ -105,8 +108,11 @@ namespace ExternalModules {
          */
         public $queryThrows = false;
         public $lastInsertIdUnreadable = false;
+        /** Whether GET_LOCK grants the lock; off, it answers nothing, as the stub always did. */
+        public $grantLocks = false;
         public function query($sql, $params = []) {
             $this->rateStatements[] = $sql;
+            if (strpos($sql, 'SELECT GET_LOCK(') === 0) return $this->grantLocks ? [['1']] : [];
             if ($this->queryThrows && strpos($sql, 'uv_rate_bucket') !== false) {
                 throw new \RuntimeException("Table 'redcap.uv_rate_bucket' doesn't exist");
             }
@@ -553,6 +559,18 @@ namespace {
     $one = invalidLogs($m)[0][1];
     check('a key another request stored first is the one used (hmacKey reads back)',
         $one['value_hmac'] === hash_hmac('sha256', '1ABC-00002E', str_repeat('c7', 32) . '|149'));
+    // With the lock: the key is read again under it, and one another request
+    // made while this one waited is used as it is, not replaced.
+    $m = newModule($dialogRules, $dictionary, $classicData, 149);
+    $m->grantLocks = true;
+    $m->systemSettingReads['log-hmac-key'] = [null, str_repeat('d4', 32)];
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    $one = invalidLogs($m)[0][1];
+    $sent = implode("\n", $m->rateStatements);
+    check('the key is made under a lock and read again inside it, so a key made meanwhile is kept',
+        $one['value_hmac'] === hash_hmac('sha256', '1ABC-00002E', str_repeat('d4', 32) . '|149')
+        && !isset($m->systemSettings['log-hmac-key'])
+        && strpos($sent, "GET_LOCK(CONCAT('uvhk'") !== false && strpos($sent, "RELEASE_LOCK(CONCAT('uvhk'") !== false);
 
     // strict ("none"): record as keyed HMAC, no value at all
     $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => 'none']);

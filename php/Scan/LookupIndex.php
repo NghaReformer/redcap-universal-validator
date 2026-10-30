@@ -34,8 +34,9 @@ use INSPIRE\UniversalValidator\Logic;
  * it never falls back to an unkeyed hash. A field's spec carries a
  * fingerprint of the secret, so a replaced secret rebuilds every field
  * instead of leaving keys no lookup can match. Each cron run first clears the
- * keys of entries of another key version or secret (retireOld()), with the
- * index turned off too, so an upgrade from 2.4 does not leave the digests.
+ * keys of entries of another key version or secret (retireOld()). With the
+ * index turned off it runs without the secret and clears key version 1 only,
+ * so an upgrade from 2.4 does not leave the digests either way.
  *
  * COMPOSITE ENTRIES. Besides one entry per field, an entry can key a value
  * together with other fields of the same entry of the record and, as asked,
@@ -47,9 +48,9 @@ use INSPIRE\UniversalValidator\Logic;
  * arm code with a site) then narrows to one stratum: the records that share
  * every part, and no others.
  *
- * A COMPOSITE BUILD CAN PAUSE. It walks the records that hold the first field
- * in byte order, BATCH at a time, listing at most LIST_RECORDS of them from
- * one read (recordsAfter()). A cron that reaches its deadline keeps its
+ * A COMPOSITE BUILD CAN PAUSE. It goes through the records BATCH at a time,
+ * listing the first field's records or walking REDCap's record index
+ * (writeCompositeKeys()). A cron that reaches its deadline keeps its
  * place in uv_lookup_def.build_cursor and the next run goes on from there.
  * Meanwhile the sync keeps the records already indexed current, as it does for
  * a build that runs (keptOf()), and a reset of the project starts it again.
@@ -237,7 +238,9 @@ final class LookupIndex
      * The records of $pid whose entry of $def holds the key of $parts, in byte
      * order, those after $after only, at most $limit of them (0: all). A
      * superset the caller confirms, as candidates() returns. Null when the
-     * index cannot answer, or $def is not one compositeDef() accepts.
+     * index cannot answer, or $def is not one compositeDef() accepts. The
+     * caller vouches for 'rep': a field and event left out of it are read as
+     * the event's row, so instances above 1 there get no key.
      *
      * $def:   'slot' => the field the value is in; 'with' => the other fields
      *         read from the same entry, in order; 'marks' => field => number
@@ -302,11 +305,12 @@ final class LookupIndex
         // every entry as it was; a new one rebuilds them (the spec's key print).
         if (!$this->usable()) return $out;
         $now = time();
+        // Entries of another key version or secret are retireOld()'s.
         $todo = $this->db->select('SELECT project_id, field_name, spec, asked_at FROM ' . Schema::table('lookup_field') . '
-            WHERE wanted_at > 0 OR asked_at < ? OR (ready = 1 AND building_at = 0 AND built_at < ?)
-               OR (building_at > 0 AND building_at < ?)
+            WHERE spec LIKE ? AND (wanted_at > 0 OR asked_at < ? OR (ready = 1 AND building_at = 0 AND built_at < ?)
+               OR (building_at > 0 AND building_at < ?))
             ORDER BY wanted_at = 0, wanted_at, built_at LIMIT 500',
-            [$now - self::UNUSED_AFTER, $now - (self::REBUILD_AFTER - self::REFRESH_BEFORE), $now - self::BUILD_STALE]);
+            [$this->stamp() . '|%', $now - self::UNUSED_AFTER, $now - (self::REBUILD_AFTER - self::REFRESH_BEFORE), $now - self::BUILD_STALE]);
         foreach ($todo as $i => $t) {
             if (time() >= $until) {
                 $out['left'] = count($todo) - $i;
@@ -321,9 +325,9 @@ final class LookupIndex
                     continue;
                 }
                 try {
-                    // An entry of another key version or secret, or a composite
-                    // whose definition is gone, cannot be built here: it goes,
-                    // and the next lookup that wants it starts it again.
+                    // A spec this version cannot read, or a composite whose
+                    // definition is gone, cannot be built here: it goes, and
+                    // the next lookup that wants it starts it again.
                     $entry = $src === null ? null : $this->storedEntry($pid, $field, (string) $t[2]);
                     if ($entry === null || (int) $t[3] < $now - self::UNUSED_AFTER) {
                         $this->dropField($pid, $field);
@@ -357,10 +361,13 @@ final class LookupIndex
      *
      * Without a secret, only the entries of another key version are cleared:
      * whether a current one was keyed with the secret that may come back
-     * cannot be told. A plain field a lookup asked for in UNUSED_AFTER is
-     * queued for the cron to build again under the current secret, so the
-     * lookups do not all read the data table until each is asked once more;
-     * any other entry goes, with its definition.
+     * cannot be told. A plain field a lookup asked for in UNUSED_AFTER takes
+     * the current spec and is built again: by its next lookup when it has at
+     * most liveBuildRows rows, else queued for the cron, so the lookups of a
+     * large field do not read the data table until each is asked once more.
+     * Any other entry goes, with its definition. Each entry is read again
+     * under its project's lock, and no DELETE page starts after $until (the
+     * rest goes with the entry's build, or on the next run).
      *
      * @return array ['retired' => int, 'requeued' => int, 'waiting' => int, 'left' => int]
      */
@@ -390,19 +397,27 @@ final class LookupIndex
                     continue;
                 }
                 try {
-                    $mark = ($this->key !== null && !self::isComposite($field) && (int) $t[3] >= $now - self::UNUSED_AFTER)
-                        ? self::oldPlainMark((string) $t[2]) : false;
+                    // Read again under the lock: a lookup may have built it since.
+                    $cur = $this->db->select('SELECT spec, asked_at FROM ' . Schema::table('lookup_field')
+                        . ' WHERE project_id = ? AND field_name = ?', [$pid, $field]);
+                    if (!isset($cur[0]) || strpos((string) $cur[0][0], $current) === 0) continue;
+                    $mark = ($this->key !== null && !self::isComposite($field) && (int) $cur[0][1] >= $now - self::UNUSED_AFTER)
+                        ? self::oldPlainMark((string) $cur[0][0]) : false;
                     if ($mark === false) {
-                        $this->dropField($pid, $field);
-                        $out['retired']++;
+                        if ($this->dropField($pid, $field, $until)) $out['retired']++;
+                        else $out['left']++;
                         continue;
                     }
+                    // A field its own lookup may build is left to it; a larger one
+                    // is queued for the cron.
+                    $src = $this->sources($pid);
+                    $small = $src !== null && $this->rowsUpTo($src['data'], $pid, [$field], $this->liveBuildRows) <= $this->liveBuildRows;
                     // It stops answering and takes the current spec before its keys
-                    // go; wipe makes the build clear any a failed delete left.
+                    // go; wipe makes its build clear any this run leaves.
                     $this->db->execNoCount('UPDATE ' . Schema::table('lookup_field') . ' SET ready = 0, building_at = 0, gen = gen + 1,
-                        spec = ?, wipe = 1, wanted_at = IF(wanted_at = 0, ?, wanted_at) WHERE project_id = ? AND field_name = ?',
-                        [$this->plainEntry($mark)['spec'], $now, $pid, $field]);
-                    $this->deleteKeys($pid, $field, null);
+                        spec = ?, wipe = 1, wanted_at = IF(?, 0, IF(wanted_at = 0, ?, wanted_at)) WHERE project_id = ? AND field_name = ?',
+                        [$this->plainEntry($mark)['spec'], $small ? 1 : 0, $now, $pid, $field]);
+                    $this->deleteKeys($pid, $field, null, $until);
                     $out['requeued']++;
                 } finally {
                     $this->unlock($pid);
@@ -495,7 +510,7 @@ final class LookupIndex
      * no cron has run for as long (a cron with a queue still builds it).
      * Otherwise the field is marked as wanted for the cron, with its new
      * spec; keys of another spec are cleared before the build. A composite
-     * entry is counted by its first field's rows, and its definition is
+     * entry is counted by the rows of all its fields, and its definition is
      * stored first, so the cron can build it.
      */
     private function mayBuildNow($pid, array $src, $field, array $entry, $st, $now)
@@ -503,11 +518,10 @@ final class LookupIndex
         $spec = $entry['spec'];
         $wanted = $st !== null ? $st['wanted'] : 0;
         if ($wanted > 0) return $now - $wanted >= self::CRON_GRACE && $now - $this->cronAt >= self::CRON_GRACE;
-        $rowsOf = $entry['kind'] === 'plain' ? $field : $entry['def']['slot'];
-        // Counted only as far as the limit: a field of 400,000 rows costs 20,001 index entries.
-        $r = $this->db->select('SELECT COUNT(*) FROM (SELECT 1 FROM ' . $src['data'] . ' WHERE project_id = ? AND field_name = ? LIMIT '
-            . ($this->liveBuildRows + 1) . ') AS n', [$pid, $rowsOf]);
-        if (isset($r[0][0]) && (int) $r[0][0] <= $this->liveBuildRows) return true;
+        // A composite reads the rows of all its fields. Counted only as far as
+        // the limit: a field of 400,000 rows costs 20,001 index entries.
+        $fields = $entry['kind'] === 'plain' ? [$field] : self::compositeFields($entry['def']);
+        if ($this->rowsUpTo($src['data'], $pid, $fields, $this->liveBuildRows) <= $this->liveBuildRows) return true;
         if ($entry['kind'] !== 'plain') $this->saveDef($pid, $field, self::defJson($entry['def']), null, null);
         // MySQL applies these assignments in order, so ready and wipe read the old spec.
         $this->db->execNoCount('INSERT INTO ' . Schema::table('lookup_field') . '
@@ -667,7 +681,8 @@ final class LookupIndex
      * Index every row the data table holds for $field, as generation gen + 1.
      *
      * Keys of another spec (or of a field marked to wipe) are cleared first,
-     * under the lock. Otherwise the old keys stay, a field that answered goes
+     * under the lock, once the field's row says it does not answer. Otherwise
+     * the old keys stay, a field that answered goes
      * on answering from old and new, and the keys of older generations go at
      * the end. $release (the cron) lets the project's lock go while the rows
      * are read and written; the build then counts only if no reset or other
@@ -680,7 +695,6 @@ final class LookupIndex
         $now = time();
         $keep = $st !== null && $st['spec'] === $spec && !$st['wipe'];
         $gen = ($st !== null ? $st['gen'] : 0) + 1;
-        if (!$keep) $this->deleteKeys($pid, $field, null);
         $this->db->execNoCount('INSERT INTO ' . $ft . '
             (project_id, field_name, spec, ready, built_at, gen, building_at, wanted_at, asked_at, wipe)
             VALUES (?, ?, ?, ?, 0, ?, ?, 0, ?, 0)
@@ -688,6 +702,9 @@ final class LookupIndex
                 building_at = VALUES(building_at), wipe = 0, asked_at = GREATEST(asked_at, VALUES(asked_at))',
             // The cron is not a lookup: it leaves the field's last-asked time as it was.
             [$pid, $field, $spec, ($keep && $st['ready']) ? 1 : 0, $gen, $now, ($release && $st !== null) ? $st['asked'] : $now]);
+        // After the row says it does not answer: a delete that fails part way
+        // leaves keys of an older generation, which the build's end clears.
+        if (!$keep) $this->deleteKeys($pid, $field, null);
         if ($release) $this->unlock($pid);
         $ok = $this->writeKeys($pid, $field, $mark, $gen);
         if ($release && !$this->lock($pid, self::CRON_LOCK_WAIT)) return false;
@@ -747,7 +764,6 @@ final class LookupIndex
         } else {
             $gen = ($st !== null ? $st['gen'] : 0) + 1;
             $cursor = '';
-            if (!$same) $this->deleteKeys($pid, $name, null);
         }
         $this->saveDef($pid, $name, $json, $cursor, $gen);
         $this->db->execNoCount('INSERT INTO ' . $ft . '
@@ -756,6 +772,7 @@ final class LookupIndex
             ON DUPLICATE KEY UPDATE spec = VALUES(spec), ready = VALUES(ready), gen = VALUES(gen),
                 building_at = VALUES(building_at), wipe = 0, asked_at = GREATEST(asked_at, VALUES(asked_at))',
             [$pid, $name, $entry['spec'], ($same && $st['ready']) ? 1 : 0, $gen, $now, ($release && $st !== null) ? $st['asked'] : $now]);
+        if (!$same) $this->deleteKeys($pid, $name, null);
         if ($release) $this->unlock($pid);
         list($ok, $cursor) = $this->writeCompositeKeys($pid, $src['data'], $name, $entry['def'], $gen, $cursor, $until);
         if ($release && !$this->lock($pid, self::CRON_LOCK_WAIT)) return false;
@@ -778,10 +795,25 @@ final class LookupIndex
 
     /**
      * Write the keys of every record after $cursor that holds the entry's
-     * first field, as generation $gen: [ok, cursor], where the cursor is the
-     * last record written when the build paused at $until, '' when it ended.
-     * The records come from recordsAfter(), listRecords at a time, so memory
-     * stays bounded however many records hold the field.
+     * first field, as generation $gen: [ok, cursor], where the cursor is where
+     * the build paused at $until, '' when it ended.
+     *
+     * TWO WAYS THROUGH THE RECORDS, chosen when the build starts and kept in
+     * the cursor's first byte, so a paused build goes on the way it began.
+     * - 'l', listing: the records that hold the first field, LIST_RECORDS at a
+     *   time in byte order (recordsAfter()). Used when the field has at most
+     *   LIST_RECORDS rows: one read lists them all.
+     * - 'w', walking: every record of the project from REDCap's record index
+     *   (RecordManifestSource), BATCH at a time in its collation's order, each
+     *   read once; a record without the field gets no key. Used for a larger
+     *   field when REDCap reports that index complete. A walk that finds it
+     *   incomplete on resuming lists the field from the start instead.
+     * With no complete record index, a field of more than LIST_RECORDS rows is
+     * listed: each listing reads the field's rows after the cursor again, so
+     * that build reads about rows^2 / (2 x LIST_RECORDS) rows in all.
+     *
+     * A walk resumed after a pause reads the records the collation ties to
+     * its cursor again; keying a record twice writes the same keys.
      *
      * @return array{0: bool, 1: string}
      */
@@ -789,19 +821,45 @@ final class LookupIndex
     {
         try {
             $fields = self::compositeFields($def);
+            $write = function (array $chunk) use ($pid, $dataTable, $name, $def, $gen, $fields) {
+                $buf = [];
+                foreach ($this->compositeKeysOf($pid, $dataTable, [$name => $def], $chunk, $fields) as $rh => $byName) {
+                    foreach ($byName[$name] as $k => $_) $buf[$rh . ':' . $k] = true;
+                }
+                foreach (array_chunk($buf, self::INSERT_ROWS, true) as $part) $this->insertKeys($pid, $name, $part, $gen);
+            };
+            $walk = null;
+            if ($cursor === '' || $cursor[0] === 'w') {
+                if ($cursor !== '' || $this->rowsUpTo($dataTable, $pid, [$def['slot']], $this->listRecords) > $this->listRecords) {
+                    $o = RecordManifestSource::open($this->db, $pid, []);
+                    if (!empty($o['ok']) && $o['source']->via() === RecordManifestSource::VIA_INDEX) $walk = $o['source'];
+                }
+                if ($walk === null) $cursor = '';
+            }
+            if ($walk !== null) {
+                $after = $cursor === '' ? null : (string) substr($cursor, 1);
+                $emitted = [];
+                while (true) {
+                    $page = $walk->page($after, $emitted, self::BATCH);
+                    if (empty($page['ok'])) return [false, ''];
+                    $ids = [];
+                    foreach ($page['rows'] as $r) $ids[] = (string) $r['id'];
+                    if ($ids) $write($ids);
+                    if ($page['done']) return [true, ''];
+                    $after = (string) $page['cursor'];
+                    $emitted = $page['emitted'];
+                    if ($until > 0 && time() >= $until) return [true, 'w' . $after];
+                }
+            }
+            $at = $cursor === '' ? '' : (string) substr($cursor, 1);
             while (true) {
-                list($recs, $more) = $this->recordsAfter($pid, $dataTable, $def['slot'], $cursor, $this->listRecords);
-                if ($recs === null) return [false, ''];
+                list($recs, $more) = $this->recordsAfter($pid, $dataTable, $def['slot'], $at, $this->listRecords);
                 $chunks = array_chunk($recs, self::BATCH);
                 foreach ($chunks as $i => $chunk) {
-                    $buf = [];
-                    foreach ($this->compositeKeysOf($pid, $dataTable, [$name => $def], $chunk, $fields) as $rh => $byName) {
-                        foreach ($byName[$name] as $k => $_) $buf[$rh . ':' . $k] = true;
-                    }
-                    foreach (array_chunk($buf, self::INSERT_ROWS, true) as $part) $this->insertKeys($pid, $name, $part, $gen);
-                    $cursor = (string) end($chunk);
+                    $write($chunk);
+                    $at = (string) end($chunk);
                     $done = !$more && $i === count($chunks) - 1;
-                    if ($until > 0 && !$done && time() >= $until) return [true, $cursor];
+                    if ($until > 0 && !$done && time() >= $until) return [true, 'l' . $at];
                 }
                 if (!$more) return [true, ''];
             }
@@ -813,57 +871,34 @@ final class LookupIndex
 
     /**
      * The first $limit records after $after, in byte order, that hold $field,
-     * and whether more follow: [records, more]; records null when the read
-     * failed.
+     * and whether more follow: [records, more]. The server sorts and cuts the
+     * list (SQL compares a binary string byte by byte, as strcmp() does), so
+     * at most $limit + 1 record ids reach PHP.
      *
-     * Byte order is the order the cursor compares in; SQL would sort by the
-     * data table's collation. The rows stream from one read, and at most
-     * 2 x $limit record ids are held: when the list reaches that, it is sorted
-     * and cut to $limit, and the largest kept bounds every later row. At the
-     * default listRecords (LIST_RECORDS) that is about 10 MB.
-     *
-     * @return array{0: ?string[], 1: bool}
+     * @return array{0: string[], 1: bool}
      */
     private function recordsAfter($pid, $dataTable, $field, $after, $limit)
     {
-        $sql = 'SELECT DISTINCT CAST(record AS BINARY) FROM ' . $dataTable . ' WHERE project_id = ? AND field_name = ?';
+        $sql = 'SELECT DISTINCT CAST(record AS BINARY) AS r FROM ' . $dataTable . ' WHERE project_id = ? AND field_name = ?';
         $params = [$pid, $field];
         if ($after !== '') {
-            // A comparison with a binary string compares bytes, as strcmp() does.
             $sql .= ' AND CAST(record AS BINARY) > ?';
             $params[] = $after;
         }
-        $keep = [];
-        $cap = null;
-        $more = false;
-        $take = function ($rec) use (&$keep, &$cap, &$more, $after, $limit) {
-            if ($after !== '' && strcmp($rec, $after) <= 0) return;
-            if ($cap !== null && strcmp($rec, $cap) >= 0) {
-                $more = true;
-                return;
-            }
-            $keep[] = $rec;
-            if (count($keep) >= 2 * $limit) {
-                sort($keep, SORT_STRING);
-                $keep = array_slice($keep, 0, $limit);
-                $cap = $keep[$limit - 1];
-                $more = true;
-            }
-        };
-        $q = $this->module->query($sql, $params);
-        if (is_array($q)) {
-            foreach ($q as $r) $take((string) array_values((array) $r)[0]);
-        } elseif (is_object($q) && is_callable([$q, 'fetch_row'])) {
-            while ($r = $q->fetch_row()) $take((string) $r[0]);
-        } else {
-            return [null, false];
-        }
-        sort($keep, SORT_STRING);
-        if (count($keep) > $limit) {
-            $keep = array_slice($keep, 0, $limit);
-            $more = true;
-        }
-        return [$keep, $more];
+        $out = [];
+        foreach ($this->db->select($sql . ' ORDER BY r LIMIT ' . ((int) $limit + 1), $params) as $r) $out[] = (string) $r[0];
+        $more = count($out) > $limit;
+        if ($more) array_pop($out);
+        return [$out, $more];
+    }
+
+    /** The data rows of $fields in $pid, counted only as far as $limit + 1. */
+    private function rowsUpTo($dataTable, $pid, array $fields, $limit)
+    {
+        $r = $this->db->select('SELECT COUNT(*) FROM (SELECT 1 FROM ' . $dataTable . ' WHERE project_id = ? AND field_name IN ('
+            . implode(', ', array_fill(0, count($fields), '?')) . ') LIMIT ' . ((int) $limit + 1) . ') AS n',
+            array_merge([$pid], array_values($fields)));
+        return isset($r[0][0]) ? (int) $r[0][0] : PHP_INT_MAX;
     }
 
     /**
@@ -896,15 +931,21 @@ final class LookupIndex
         return $out;
     }
 
-    /** $field's keys, all of them ($below null) or those of generations below $below, a page at a time. */
-    private function deleteKeys($pid, $field, $below)
+    /**
+     * Delete $field's keys, all of them ($below null) or those of generations
+     * below $below, DELETE_ROWS at a time; with $until > 0, no page is started
+     * at or after that Unix time. True when none is left.
+     */
+    private function deleteKeys($pid, $field, $below, $until = 0)
     {
         $sql = 'DELETE FROM ' . Schema::table('lookup_key') . ' WHERE project_id = ? AND field_name = ?'
             . ($below === null ? '' : ' AND gen < ?') . ' LIMIT ' . self::DELETE_ROWS;
         $params = $below === null ? [$pid, $field] : [$pid, $field, (int) $below];
-        do {
+        while (true) {
             $this->db->exec($sql, $params);
-        } while ($this->db->affected() >= self::DELETE_ROWS);
+            if ($this->db->affected() < self::DELETE_ROWS) return true;
+            if ($until > 0 && time() >= $until) return false;
+        }
     }
 
     /** One batch of "recordHex:keyHex" pairs of $field, as generation $gen (a key already there takes the higher). */
@@ -1132,8 +1173,9 @@ final class LookupIndex
     }
 
     /**
-     * The entries a sync keeps current: those that answer, are being built,
-     * or are composites whose build paused, keyed by this version and secret.
+     * The entries a sync keeps current: those that answer, have a build not
+     * ended (a dead one too, until the cron starts it again), or are
+     * composites whose build paused, keyed by this version and secret.
      * The definitions are read only when the project has a composite entry.
      *
      * An entry that answers or is being built and cannot be kept current
@@ -1150,7 +1192,9 @@ final class LookupIndex
         $stale = [];
         $defs = null;
         foreach ($states as $f => $st) {
-            $live = $st['ready'] || self::building($st, $now);
+            // Any build not ended, even one past BUILD_STALE: it may still end
+            // and mark the entry built, so the changes it missed must be in it.
+            $live = $st['ready'] || $st['building'] > 0;
             $p = $this->parseSpec($st['spec']);
             if ($p !== false && $p['kind'] === 'plain' && !self::isComposite($f)) {
                 if ($live) $out[$f] = ['kind' => 'plain', 'mark' => $p['mark'], 'gen' => $st['gen']];
@@ -1204,17 +1248,20 @@ final class LookupIndex
      * A field no lookup asks for any more, or of a project that is gone: its
      * keys and its row. It stops answering first, so a drop that fails part
      * way leaves an entry that is built again, not one that answers from half
-     * its keys.
+     * its keys. With $until > 0 its keys go only until then: false when some
+     * are left, and the row is kept for the next run.
      */
-    private function dropField($pid, $field)
+    private function dropField($pid, $field, $until = 0)
     {
         $this->db->execNoCount('UPDATE ' . Schema::table('lookup_field') . ' SET ready = 0, building_at = 0, gen = gen + 1
             WHERE project_id = ? AND field_name = ?', [$pid, $field]);
-        $this->deleteKeys($pid, $field, null);
+        // Out of time: the row stays, with its spec, for the next run to finish.
+        if (!$this->deleteKeys($pid, $field, null, $until)) return false;
         if (self::isComposite($field)) {
             $this->db->execNoCount('DELETE FROM ' . Schema::table('lookup_def') . ' WHERE project_id = ? AND field_name = ?', [$pid, $field]);
         }
         $this->db->execNoCount('DELETE FROM ' . Schema::table('lookup_field') . ' WHERE project_id = ? AND field_name = ?', [$pid, $field]);
+        return true;
     }
 
     private function touch($pid, $field, $now)

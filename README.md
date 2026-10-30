@@ -1841,11 +1841,13 @@ whether or not the Validation scan is on.
   id of the last record it wrote, in `uv_lookup_def.build_cursor`, in clear as
   record ids are elsewhere in REDCap's tables), and the records already done
   are kept current meanwhile.
-- **After upgrading from 2.4.0 or earlier**, the cron's first run clears the
-  plain MD5 digests earlier versions kept of each value, with the index turned
-  off too, 500 fields a run. A field a lookup asked for in the last 30 days is
-  queued for the cron to build again; any other goes, and its next lookup
-  builds it. Until a field is built its lookups read the data table.
+- **After upgrading from 2.4.0 or earlier**, the cron clears the plain MD5
+  digests earlier versions kept of each value, up to 500 fields a run in half
+  of its run time. A field a lookup asked for in the last 30 days is built
+  again: by its next lookup when it has at most 20,000 values, else by the
+  cron. Any other field goes, and its next lookup builds it. With the index
+  turned off the cron still clears those digests, and builds nothing. Until a
+  field is built its lookups read the data table.
 - **Off switch.** The system setting *Live lookups — turn OFF the value index*
   makes every lookup read the data table again.
 

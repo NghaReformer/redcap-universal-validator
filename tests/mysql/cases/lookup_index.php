@@ -480,12 +480,15 @@ $STAMP = LookupIndex::KEY_VERSION . '|' . $PRINT;
         $got === array('S1', 'S3') && $keyOf($PID, 'tok', 'S3') !== $here);
     check('keyed: and back with the first secret', $ask(array('tok' => null), 'DUP-1') === array('S1', 'S3')
         && $keyOf($PID, 'tok', 'S3') === $here);
-    // The cron drops what it cannot build: an entry of another version.
+    // An entry of another version is retireOld()'s, not maintain()'s: maintain
+    // would drop one retireOld was about to queue again.
     $A->query('INSERT INTO ' . Schema::table('lookup_field') . " (project_id, field_name, spec, ready, built_at, gen, building_at, wanted_at, asked_at, wipe)
-        VALUES ($PID, 'oldfield', '1|text', 1, " . time() . ', 1, 0, ' . time() . ', ' . time() . ', 0)');
+        VALUES ($PID, 'oldfield', '1|text', 1, " . time() . ', 1, 0, ' . time() . ', ' . (time() - LookupIndex::UNUSED_AFTER - 60) . ', 0)');
     (new LookupIndex($mod, array('key' => $KEY)))->maintain(time() + 60);
-    check('keyed: the cron drops an entry of key version 1',
-        !$A->query('SELECT 1 FROM ' . Schema::table('lookup_field') . " WHERE project_id = $PID AND field_name = 'oldfield'")->fetch_row());
+    $oldThere = (bool) $A->query('SELECT 1 FROM ' . Schema::table('lookup_field') . " WHERE project_id = $PID AND field_name = 'oldfield'")->fetch_row();
+    (new LookupIndex($mod, array('key' => $KEY)))->retireOld(time() + 60);
+    check('keyed: maintain leaves an entry of key version 1, and retireOld drops it when no lookup asked for it',
+        $oldThere && !$A->query('SELECT 1 FROM ' . Schema::table('lookup_field') . " WHERE project_id = $PID AND field_name = 'oldfield'")->fetch_row());
 
     // A request under another secret syncs the project past a change to tok,
     // which it does not keep current. The first secret's tok must not answer
@@ -523,9 +526,10 @@ $STAMP = LookupIndex::KEY_VERSION . '|' . $PRINT;
         ($PID, '$oldComp', UNHEX(MD5('b')), 'R1', 1)");
     $A->query("INSERT INTO $dt (project_id, field_name, def) VALUES ($PID, '$oldComp', '{}')");
     $mod->log = array();
-    $r = (new LookupIndex($mod, array('key' => $KEY)))->retireOld(time() + 60);
+    // liveBuildRows 50: tok's 300-odd rows make it the cron's to build.
+    $r = (new LookupIndex($mod, array('key' => $KEY, 'liveBuildRows' => 50)))->retireOld(time() + 60);
     $tok = $rowOf($PID, 'tok');
-    check('retire: a field of key version 1 a lookup asked for is queued to build again, its digests gone (got ' . json_encode(array($r, $tok)) . ')',
+    check('retire: a large field of key version 1 a lookup asked for is queued for the cron, its digests gone (got ' . json_encode(array($r, $tok)) . ')',
         $r['requeued'] >= 1 && $tok !== null && $tok['spec'] === LookupIndex::KEY_VERSION . '|' . $PRINT . '|text'
         && $tok['ready'] === 0 && $tok['wanted'] > 0 && $tok['wipe'] === 1 && $keysOf($PID, 'tok') === 0);
     check('retire: one no lookup asked for in UNUSED_AFTER goes, with its keys',
@@ -544,6 +548,48 @@ $STAMP = LookupIndex::KEY_VERSION . '|' . $PRINT;
     $got = $ask(array('tok' => null), 'DUP-1');
     check('retire: the cron builds the queued field, and a lookup answers from it without building (got ' . json_encode(array($r, $got)) . ')',
         $r['built'] >= 1 && $got === array('S1', 'S3') && $statements('INSERT INTO ' . $kt) === array());
+    // A field its own lookup may build is not queued: the cron's last run is
+    // recent, so a queued field would wait for it while its lookups read the table.
+    $A->query("UPDATE $ft SET spec = '1|point', ready = 1, wanted_at = 0, asked_at = $now WHERE project_id = $PID AND field_name = 'num'");
+    (new LookupIndex($mod, array('key' => $KEY)))->retireOld(time() + 60);
+    $num = $rowOf($PID, 'num');
+    check('retire: a small field takes the current spec and is left to its next lookup (got ' . json_encode($num) . ')',
+        $num['spec'] === LookupIndex::KEY_VERSION . '|' . $PRINT . '|point' && $num['wanted'] === 0 && $num['ready'] === 0
+        && $ask(array('num' => 'point'), '7') === array('S4', 'S5', 'S6') && $rowOf($PID, 'num')['ready'] === 1);
+    // An entry a lookup built again after retireOld listed it is left alone.
+    $A->query("INSERT INTO $ft (project_id, field_name, spec, ready, built_at, gen, building_at, wanted_at, asked_at, wipe) VALUES
+        ($PID, 'race_f', '1|text', 1, $now, 1, 0, 0, " . ($now - LookupIndex::UNUSED_AFTER - 60) . ", 0)");
+    $current = LookupIndex::KEY_VERSION . '|' . $PRINT . '|text';
+    $mod->after = function ($sql) use ($A, $ft, $PID, $current) {
+        if (strpos($sql, 'spec NOT LIKE') !== false) {
+            $A->query("UPDATE $ft SET spec = '$current', asked_at = " . time() . " WHERE project_id = $PID AND field_name = 'race_f'");
+        }
+    };
+    (new LookupIndex($mod, array('key' => $KEY)))->retireOld(time() + 60);
+    $mod->after = null;
+    check('retire: an entry built again since the list was read is read again under the lock, and kept',
+        $rowOf($PID, 'race_f') !== null && $rowOf($PID, 'race_f')['spec'] === $current);
+    $A->query("DELETE FROM $ft WHERE project_id = $PID AND field_name = 'race_f'");
+    // Out of time inside a field's keys: no DELETE page starts after the
+    // deadline, and the entry stays, with its spec, for the next run.
+    $A->query("INSERT INTO $ft (project_id, field_name, spec, ready, built_at, gen, building_at, wanted_at, asked_at, wipe) VALUES
+        ($PID, 'many_f', '1|text', 1, $now, 1, 0, 0, " . ($now - LookupIndex::UNUSED_AFTER - 60) . ", 0)");
+    $vals = array();
+    for ($i = 0; $i <= LookupIndex::DELETE_ROWS; $i++) {
+        $vals[] = "($PID, 'many_f', UNHEX('" . md5('k' . $i) . "'), 'R1', 1)";
+        if (count($vals) === 2000) { $A->query("INSERT INTO $kt (project_id, field_name, key_hash, record, gen) VALUES " . implode(', ', $vals)); $vals = array(); }
+    }
+    if ($vals) $A->query("INSERT INTO $kt (project_id, field_name, key_hash, record, gen) VALUES " . implode(', ', $vals));
+    $slept = false;
+    $mod->after = function ($sql) use (&$slept) {
+        if (!$slept && strpos($sql, 'DELETE FROM') === 0 && strpos($sql, 'lookup_key') !== false) { $slept = true; sleep(3); }
+    };
+    $r = (new LookupIndex($mod, array('key' => $KEY)))->retireOld(time() + 2);
+    $mod->after = null;
+    check('retire: out of time inside a field\'s keys, it stops between pages and keeps the entry (got ' . json_encode(array($r, $keysOf($PID, 'many_f'))) . ')',
+        $r['left'] >= 1 && $rowOf($PID, 'many_f') !== null && $rowOf($PID, 'many_f')['ready'] === 0 && $keysOf($PID, 'many_f') === 1);
+    (new LookupIndex($mod, array('key' => $KEY)))->retireOld(time() + 60);
+    check('retire: and the next run finishes it', $rowOf($PID, 'many_f') === null && $keysOf($PID, 'many_f') === 0);
     // Without a secret, only key version 1 goes: whether a current entry was
     // keyed with the secret that may come back cannot be told.
     $A->query("INSERT INTO $ft (project_id, field_name, spec, ready, built_at, gen, building_at, wanted_at, asked_at, wipe) VALUES
@@ -693,16 +739,18 @@ $STAMP = LookupIndex::KEY_VERSION . '|' . $PRINT;
 
     // IN() compares by the data table's collation, so a record of another
     // letter case comes back with a batch it is not in. It keeps its keys.
+    // Only a collation that ties the two tests this: the fixture's must.
     $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`, instance) VALUES '
         . implode(', ', array($row('CV', 'arm', '5'), $row('CV', 'site', 'A'), $row('cv', 'arm', '5'), $row('cv', 'site', 'A'))));
+    $tied = (int) $A->query("SELECT COUNT(*) FROM redcap_data WHERE project_id = $P4 AND record = 'cv'")->fetch_row()[0];
     $log($P4, 'CV');
     $log($P4, 'cv');
     $comp($def, '5', array('site' => 'A'));
     (new LookupIndex($mod, array('key' => $KEY)))->candidates($P4, array('arm' => null), '5');
     $log($P4, 'CV');
     $got = $comp($def, '5', array('site' => 'A'));
-    check('composite: a record whose letter-case twin was indexed again keeps its keys (got ' . json_encode($got) . ')',
-        $got === array('CV', 'cv'));
+    check('composite: a record whose letter-case twin was indexed again keeps its keys (got ' . json_encode(array($got, $tied)) . ')',
+        $tied === 4 && $got === array('CV', 'cv'));
 
     // A sync with nothing new for this project reads no definitions and no
     // changed records, even when the shared log moved for another project.
@@ -747,6 +795,10 @@ $STAMP = LookupIndex::KEY_VERSION . '|' . $PRINT;
     $logId = 600000;
     $cron = function () use ($mod, $KEY) { return new LookupIndex($mod, array('liveBuildRows' => 50, 'key' => $KEY)); };
     $askP5 = function ($value) use ($cron, $P5, $def) { return $cron()->compositeCandidates($P5, $def, array('value' => $value, 'with' => array('site' => 'S'))); };
+    // 1,200 arm rows fit in 1,500, but the build reads site's 1,200 as well.
+    check('composite: a lookup counts the rows of every field of the entry before it builds one itself',
+        (new LookupIndex($mod, array('liveBuildRows' => 1500, 'key' => $KEY)))->compositeCandidates($P5, $def,
+            array('value' => '1', 'with' => array('site' => 'S'))) === null);
     check('composite: an entry too large for a lookup is left to the cron', $askP5('1') === null);
     $name = '#' . md5(json_encode(array('arm', array('site'), 'project')));
     $state = function () use ($A, $P5, $name) {
@@ -757,14 +809,14 @@ $STAMP = LookupIndex::KEY_VERSION . '|' . $PRINT;
     };
     $slept = false;
     $mod->after = function ($sql) use (&$slept) {
-        if (!$slept && strpos($sql, 'SELECT record, field_name, `value`, event_id, instance FROM') === 0) { $slept = true; sleep(2); }
+        if (!$slept && strpos($sql, 'SELECT record, field_name, `value`, event_id, instance FROM') === 0) { $slept = true; sleep(3); }
     };
-    $r = $cron()->maintain(time() + 1);
+    $r = $cron()->maintain(time() + 2);
     $mod->after = null;
     $s = $state();
     check('composite: past its deadline the cron build pauses after one batch, keeping its place (got ' . json_encode(array($r, $s)) . ')',
         $r['built'] === 0 && $s['ready'] === 0 && $s['building'] === 0 && $s['wanted'] > 0
-        && $s['cursor'] === sprintf('P%04d', LookupIndex::BATCH) && $s['cgen'] === $s['gen']);
+        && $s['cursor'] === sprintf('lP%04d', LookupIndex::BATCH) && $s['cgen'] === $s['gen']);
     // P0003 (already written) and P1100 (not yet) change while it waits.
     $A->query("UPDATE redcap_data SET `value` = '9' WHERE project_id = $P5 AND record IN ('P0003', 'P1100') AND field_name = 'arm'");
     $log($P5, 'P0003');
@@ -784,25 +836,160 @@ $STAMP = LookupIndex::KEY_VERSION . '|' . $PRINT;
     check('composite: an entry whose definition is gone is dropped with its keys (got ' . json_encode($r) . ')',
         $r['dropped'] === 1 && (int) $A->query('SELECT COUNT(*) FROM ' . Schema::table('lookup_key') . " WHERE project_id = $P5 AND field_name = '$name'")->fetch_row()[0] === 0);
 
-    // The record list comes listRecords at a time: 40 records, 7 a read, take
-    // six reads, the last with fewer, and every record is keyed once.
+    // The listing: records that hold the first field, listRecords at a time
+    // in byte order, which is not the collation's ("10" before "9", "B"
+    // before "a"). 12 records, 5 a read, take 3 reads (5, 5 and the rest),
+    // with no record index to walk. 'blank' holds only spaces: no key.
     $P6 = 980;
     uv_redcap_project($A, $P6);
+    $ids = array('9', '10', '100', 'A1', 'a1', 'Ab', 'aB', 'b', 'B', 'z', 'Z0');
     $rows = array();
-    $want = array();
-    for ($i = 1; $i <= 40; $i++) {
-        $rows[] = sprintf("(%d, 1, 'L%02d', 'arm', '1', NULL), (%d, 1, 'L%02d', 'site', 'S', NULL)", $P6, $i, $P6, $i);
-        $want[] = sprintf('L%02d', $i);
+    foreach ($ids as $id) {
+        $e = $A->real_escape_string($id);
+        $rows[] = "($P6, 1, '$e', 'arm', '1', NULL), ($P6, 1, '$e', 'site', 'S', NULL)";
     }
-    // L41's arm holds only spaces: listed, and given no key.
-    $rows[] = sprintf("(%d, 1, 'L41', 'arm', '  ', NULL)", $P6);
+    $rows[] = "($P6, 1, 'blank', 'arm', '  ', NULL)";
     $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`, instance) VALUES ' . implode(', ', $rows));
-    $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event, ts, object_type) VALUES (700000, $P6, 'L01', 'INSERT', $old, 'redcap_data')");
+    $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event, ts, object_type) VALUES (700000, $P6, '9', 'INSERT', $old, 'redcap_data')");
     $logId = 700000;
+    $want = $ids;
+    sort($want, SORT_STRING);
     $mod->log = array();
-    $got = (new LookupIndex($mod, array('key' => $KEY, 'listRecords' => 7)))->compositeCandidates($P6, $def, array('value' => '1', 'with' => array('site' => 'S')));
-    $lists = $statements('SELECT DISTINCT CAST(record AS BINARY)');
+    $got = (new LookupIndex($mod, array('key' => $KEY, 'listRecords' => 5)))->compositeCandidates($P6, $def, array('value' => '1', 'with' => array('site' => 'S')));
+    $lists = $statements('SELECT DISTINCT CAST(record AS BINARY) AS r');
     $all = (int) $A->query('SELECT COUNT(*) FROM ' . Schema::table('lookup_key') . " WHERE project_id = $P6")->fetch_row()[0];
-    check('composite: a build lists 7 records a read, six reads for 41, and keys each of the 40 with a value once (got ' . json_encode(array(count($lists), count((array) $got), $all)) . ')',
-        $got === $want && count($lists) === 6 && $all === 40);
+    check('composite: a listing build reads 5 records a time in byte order, 3 reads for 12, and keys the 11 with a value once (got '
+        . json_encode(array(count($lists), $got, $all)) . ')',
+        $got === $want && count($lists) === 3 && $all === 11 && strpos($lists[0][0], 'LIMIT 6') !== false);
+
+    // The walk: a field of more than listRecords rows, with REDCap's record
+    // index complete, goes through every record of the project from that
+    // index, each read once, and never lists the field. W01..W30, with 'w05'
+    // tied to 'W05' by the collation; the arm on the odd ones and on w05.
+    uv_redcap_counts_schema($A);
+    $P7 = 985;
+    uv_redcap_project($A, $P7);
+    uv_redcap_counts($A, $P7, 'COMPLETE');
+    $rows = array();
+    $list = array();
+    $holders = array();
+    $walkIds = array('w05');
+    for ($i = 1; $i <= 30; $i++) $walkIds[] = sprintf('W%02d', $i);
+    foreach ($walkIds as $id) {
+        $list[] = "($P7, 1, '$id', NULL)";
+        $rows[] = "($P7, 1, '$id', 'record_id', '$id', NULL)";
+        if ($id === 'w05' || (int) substr($id, 1) % 2 === 1) {
+            $rows[] = "($P7, 1, '$id', 'arm', '1', NULL), ($P7, 1, '$id', 'site', 'S', NULL)";
+            $holders[] = $id;
+        }
+    }
+    sort($holders, SORT_STRING);
+    $A->query('INSERT INTO redcap_record_list (project_id, arm, record, dag_id) VALUES ' . implode(', ', $list));
+    $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`, instance) VALUES ' . implode(', ', $rows));
+    $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event, ts, object_type) VALUES (710000, $P7, 'W01', 'INSERT', $old, 'redcap_data')");
+    $logId = 710000;
+    $walker = function () use ($mod, $KEY) { return new LookupIndex($mod, array('key' => $KEY, 'listRecords' => 5, 'liveBuildRows' => 5)); };
+    $askP7 = function ($value) use ($walker, $P7, $def) { return $walker()->compositeCandidates($P7, $def, array('value' => $value, 'with' => array('site' => 'S'))); };
+    $askP7('1');    // too large for a lookup: wanted
+    $name7 = '#' . md5(json_encode(array('arm', array('site'), 'project')));
+    $cur7 = function () use ($A, $P7, $name7) {
+        $d = $A->query('SELECT build_cursor FROM ' . Schema::table('lookup_def') . " WHERE project_id = $P7 AND field_name = '$name7'")->fetch_row();
+        return $d ? (string) $d[0] : null;
+    };
+    // BATCH is 500 records; with 31 the walk is one page, so a deadline that
+    // passes during the first page's keys leaves nothing to pause after.
+    $mod->log = array();
+    $r = $walker()->maintain(time() + 60);
+    $walked = $statements('FROM redcap_record_list');
+    check('composite: a walk build reads the record index and never lists the field (got ' . json_encode(array($r, count($walked))) . ')',
+        $r['built'] >= 1 && count($walked) >= 1 && $statements('SELECT DISTINCT CAST(record AS BINARY) AS r') === array()
+        && $cur7() === '');
+    check('composite: and keys every record that holds the field, the collation\'s twins too (got ' . json_encode($askP7('1')) . ')',
+        $askP7('1') === $holders);
+    // A walk paused at W10 (its keys cleared here, to see which it writes)
+    // goes on from there: the records the collation puts before W10 are not
+    // read again.
+    $pauseAt = function ($cursor) use ($A, $P7, $name7) {
+        $A->query('DELETE FROM ' . Schema::table('lookup_key') . " WHERE project_id = $P7");
+        $A->query('UPDATE ' . Schema::table('lookup_field') . " SET ready = 0, wanted_at = 1 WHERE project_id = $P7 AND field_name = '$name7'");
+        $gen = (int) $A->query('SELECT gen FROM ' . Schema::table('lookup_field') . " WHERE project_id = $P7 AND field_name = '$name7'")->fetch_row()[0];
+        $A->query('UPDATE ' . Schema::table('lookup_def') . " SET build_cursor = '$cursor', build_gen = $gen WHERE project_id = $P7 AND field_name = '$name7'");
+    };
+    $pauseAt('wW10');
+    $mod->log = array();
+    $r = $walker()->maintain(time() + 60);
+    $from10 = array_values(array_filter($holders, function ($id) { return strcasecmp($id, 'W10') >= 0; }));
+    check('composite: a paused walk goes on from its cursor, in the collation\'s order (got ' . json_encode(array($r, $askP7('1'))) . ')',
+        $r['built'] >= 1 && $askP7('1') === $from10 && $statements('SELECT DISTINCT CAST(record AS BINARY) AS r') === array());
+    // Paused, then resumed after REDCap marked its record index incomplete:
+    // the field is listed from the start instead.
+    $pauseAt('wW10');
+    uv_redcap_counts($A, $P7, 'PROCESSING');
+    $mod->log = array();
+    $r = $walker()->maintain(time() + 60);
+    check('composite: a walk resumed over an index REDCap no longer calls complete lists the field from the start (got ' . json_encode($r) . ')',
+        $r['built'] >= 1 && count($statements('SELECT DISTINCT CAST(record AS BINARY) AS r')) >= 1 && $askP7('1') === $holders);
+    $A->query('DROP TABLE redcap_record_counts');
+
+    // A build paused under one secret, a request under another syncs past a
+    // change to a record the build already wrote, and the first secret's cron
+    // goes on: only the sync row's print stops that resume.
+    $P8 = 990;
+    uv_redcap_project($A, $P8);
+    $rows = array();
+    for ($i = 1; $i <= 1200; $i++) {
+        $rows[] = sprintf("(%d, 1, 'Q%04d', 'arm', '%d', NULL), (%d, 1, 'Q%04d', 'site', 'S', NULL)", $P8, $i, 1 + $i % 2, $P8, $i);
+    }
+    foreach (array_chunk($rows, 500) as $part) {
+        $A->query('INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`, instance) VALUES ' . implode(', ', $part));
+    }
+    $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event, ts, object_type) VALUES (720000, $P8, 'Q0001', 'INSERT', $old, 'redcap_data')");
+    $logId = 720000;
+    $cronA = function () use ($mod, $KEY) { return new LookupIndex($mod, array('liveBuildRows' => 50, 'key' => $KEY)); };
+    $cronA()->compositeCandidates($P8, $def, array('value' => '1', 'with' => array('site' => 'S')));
+    $slept = false;
+    $mod->after = function ($sql) use (&$slept) {
+        if (!$slept && strpos($sql, 'SELECT record, field_name, `value`, event_id, instance FROM') === 0) { $slept = true; sleep(3); }
+    };
+    $cronA()->maintain(time() + 2);
+    $mod->after = null;
+    $A->query("UPDATE redcap_data SET `value` = '7' WHERE project_id = $P8 AND record = 'Q0003' AND field_name = 'arm'");
+    $log($P8, 'Q0003');
+    (new LookupIndex($mod, array('key' => $other)))->candidates($P8, array('site' => null), 'S');
+    $cronA()->maintain(time() + 60);
+    $got = $cronA()->compositeCandidates($P8, $def, array('value' => '7', 'with' => array('site' => 'S')));
+    check('composite: a build paused under one secret does not go on past a sync under another (got ' . json_encode($got) . ')',
+        $got === array('Q0003'));
+
+    // A plain build that runs past BUILD_STALE is still kept current: it may
+    // yet end and mark the field built.
+    $P9 = 995;
+    uv_redcap_project($A, $P9);
+    $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`, instance) VALUES
+        ($P9, 1, 'V1', 'f', 'one', NULL), ($P9, 1, 'V2', 'f', 'two', NULL), ($P9, 1, 'V1', 'g', 'x', NULL)");
+    $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event, ts, object_type) VALUES (730000, $P9, 'V1', 'INSERT', $old, 'redcap_data')");
+    $logId = 730000;
+    $askP9 = function ($f, $v) use ($mod, $KEY, $P9) { return (new LookupIndex($mod, array('key' => $KEY)))->candidates($P9, array($f => null), $v); };
+    $askP9('f', 'one');
+    $ft9 = Schema::table('lookup_field');
+    $A->query("UPDATE $ft9 SET ready = 0, building_at = " . (time() - LookupIndex::BUILD_STALE - 10) . " WHERE project_id = $P9 AND field_name = 'f'");
+    $A->query("UPDATE redcap_data SET `value` = 'three' WHERE project_id = $P9 AND record = 'V2' AND field_name = 'f'");
+    $log($P9, 'V2');
+    $askP9('g', 'x');
+    $A->query("UPDATE $ft9 SET ready = 1, building_at = 0 WHERE project_id = $P9 AND field_name = 'f'");
+    check('lookup index: a build past BUILD_STALE is kept current, so when it ends the field holds the change',
+        $askP9('f', 'three') === array('V2') && $askP9('f', 'two') === array());
+
+    // A build of another spec deletes the old keys only once the field's row
+    // says it does not answer.
+    $A->query("UPDATE $ft9 SET spec = '" . LookupIndex::KEY_VERSION . '|' . $PRINT . "|point' WHERE project_id = $P9 AND field_name = 'f'");
+    $mod->log = array();
+    $askP9('f', 'one');
+    $first = array();
+    foreach ($mod->log as $i => $q) {
+        if (!isset($first['row']) && strpos($q[0], 'INSERT INTO ' . $ft9) !== false) $first['row'] = $i;
+        if (!isset($first['del']) && strpos($q[0], 'DELETE FROM ' . Schema::table('lookup_key')) !== false) $first['del'] = $i;
+    }
+    check('lookup index: a rebuild under another spec marks the field before it deletes keys (got ' . json_encode($first) . ')',
+        isset($first['row'], $first['del']) && $first['row'] < $first['del']);
 }

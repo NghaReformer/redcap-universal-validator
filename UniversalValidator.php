@@ -4745,12 +4745,22 @@ class UniversalValidator extends AbstractExternalModule
         try {
             $key = $this->getSystemSetting('log-hmac-key');
             if (!is_string($key) || strlen($key) < 64) {
-                $key = bin2hex(random_bytes(32));
-                $this->setSystemSetting('log-hmac-key', $key);
-                // Two requests can make a key at once and only the last write
-                // stays; the stored one is the one every later request reads.
-                $stored = $this->getSystemSetting('log-hmac-key');
-                if (is_string($stored) && strlen($stored) >= 64) $key = $stored;
+                // Made by one request at a time: two that each made a key would
+                // each hash with their own for the rest of the request. Without
+                // the lock (another server's database user may lack it) the
+                // stored key is read back, which narrows that to a moment.
+                $locked = $this->hmacKeyLock(true);
+                try {
+                    $key = $this->getSystemSetting('log-hmac-key');
+                    if (!is_string($key) || strlen($key) < 64) {
+                        $key = bin2hex(random_bytes(32));
+                        $this->setSystemSetting('log-hmac-key', $key);
+                        $stored = $this->getSystemSetting('log-hmac-key');
+                        if (is_string($stored) && strlen($stored) >= 64) $key = $stored;
+                    }
+                } finally {
+                    if ($locked) $this->hmacKeyLock(false);
+                }
             }
             $this->hmacKey = $key;
         } catch (\Throwable $e) {
@@ -4759,6 +4769,20 @@ class UniversalValidator extends AbstractExternalModule
             // than falling back to an unkeyed hash an attacker could enumerate.
         }
         return $this->hmacKey;
+    }
+
+    /** Take ($take) or let go of the lock under which hmacKey() makes the key; true when taken. */
+    private function hmacKeyLock($take)
+    {
+        try {
+            $sql = $take ? "SELECT GET_LOCK(CONCAT('uvhk', MD5(COALESCE(DATABASE(), ''))), 5)"
+                         : "SELECT RELEASE_LOCK(CONCAT('uvhk', MD5(COALESCE(DATABASE(), ''))))";
+            $r = (new Scan\ModuleDb($this))->select($sql, []);
+            return isset($r[0][0]) && (string) $r[0][0] === '1';
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::hmacKeyLock');
+            return false;
+        }
     }
 
     /** Project-scoped keyed hash of an identifier, or null when no key exists. */
@@ -10904,10 +10928,12 @@ class UniversalValidator extends AbstractExternalModule
         try {
             $until = time() + self::LOOKUP_CRON_SECONDS;
             $idx = $this->lookupIndex();
-            // Keys of an older version or secret go first, with the index off too:
-            // up to 2.4.0 they were plain digests of the values.
-            $old = ($idx !== null ? $idx : new Scan\LookupIndex($this, []))->retireOld($until);
-            $cleared = sprintf('%d old entr%s cleared (%d queued to build again), %d left',
+            // Keys of an older version or secret go first, in half the run, so
+            // builds always get the other half. With the index off there is no
+            // secret here, and only key version 1 (the plain digests of 2.4.0
+            // and earlier) goes.
+            $old = ($idx !== null ? $idx : new Scan\LookupIndex($this, []))->retireOld(time() + intdiv(self::LOOKUP_CRON_SECONDS, 2));
+            $cleared = sprintf('%d old entr%s cleared (%d to build again), %d left',
                 $old['retired'] + $old['requeued'], $old['retired'] + $old['requeued'] === 1 ? 'y' : 'ies', $old['requeued'],
                 $old['waiting'] + $old['left']);
             if ($idx === null) return 'the lookup index is turned off here; ' . $cleared;

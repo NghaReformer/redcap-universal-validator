@@ -383,14 +383,17 @@ deadline and drops a field no lookup asked for in 30 days. Since 2.5.0 it
 also checks that a stored key is a keyed hash, different from the value's MD5
 and from the same value's key in another project; that with no secret the
 index reads nothing; that a field of key version 1, or built with another
-secret, is built again, and that the cron drops an entry of version 1; that a
+secret, is built again, and that `maintain()` leaves an entry of version 1 to
+`retireOld()`, which drops it when no lookup asked for it; that a
 sync under another secret leaves no field of the first answering from keys a
 change made stale, and that a sync row with no print of the secret (as 2.4.0
-wrote it) starts afresh; and that `retireOld()` queues a version-1 field a lookup
-asked for (its digests gone, built by the next `maintain()`), drops one no
-lookup asked for and a composite of another secret (keys and definition),
-stops an entry answering before its keys go, clears only version 1 when there
-is no secret, and stops at its deadline. Its composite part keys an arm with
+wrote it) starts afresh; and that `retireOld()` queues a large version-1 field
+a lookup asked for (its digests gone, built by the next `maintain()`), leaves
+a small one to its next lookup, drops one no lookup asked for and a composite
+of another secret (keys and definition), stops an entry answering before its
+keys go, clears only version 1 when there is no secret, leaves an entry a
+lookup built again after the list was read, stops at its deadline, and stops
+between DELETE pages inside a field of 20,001 keys and finishes it next run. Its composite part keys an arm with
 a site over 400 records and checks the stratum, a page of 3 and the next, the
 plan of a page (the primary key, the LIMIT in the statement), definitions it
 refuses (repeat buckets too), a change to the site alone, scope `dag` with a
@@ -401,13 +404,21 @@ event's row keyed alone and with each instance of another bucket, values of
 two buckets never keyed together, a record whose letter-case twin is indexed
 again, a sync with only another project's log row reading no definitions, and
 an entry whose definition went that stops answering and is built again. A
+lookup counts the rows of every field of a composite before it builds one. A
 build of 1,200 records paused by the cron's deadline keeps its place, is kept
-current while it waits, and finishes on the next run with one key a record,
-and a build that lists 7 records a read takes six reads for 41, keying none
-for a value of only spaces.
+current while it waits, and finishes on the next run with one key a record;
+one paused under one secret does not go on after a sync under another. A
+listing build reads 5 records a time in byte order ("10" before "9", "B"
+before "a"), keying none for a value of only spaces. A walk build over a
+complete record index never lists the field, keys every holder including a
+record the collation ties to another, goes on from its cursor when paused,
+and lists the field from the start when REDCap no longer calls the index
+complete. A plain build past `BUILD_STALE` is kept current, and a rebuild
+under another spec marks the field before it deletes keys.
 `tests/scan_cron_php.php` checks the cron's declaration, that it clears old
-keys before anything else and with its off switch on, and that a database
-failure comes back as its summary line.
+keys before anything else and with its off switch on, that a database
+failure comes back as its summary line, the statement `recordsAfter()` sends,
+and that a spec of another key version or secret is not read.
 
 `exists_table_php.php` covers the @UVEXISTS reads of the data table. A lookup
 asks the table which records hold the value and reads only those through
@@ -1172,7 +1183,8 @@ resolvable project id reaches them, which models import/API contexts where
 `getProjectId()` is null — the module must thread the hook's `$project_id`
 explicitly or the suite fails. Covered: both configuration channels, all four
 log-privacy modes on the success AND exception paths, keyed-HMAC hashing and
-key persistence, event scoping (a value under another event is never audited),
+key persistence (the key made under a lock and read again inside it, or read
+back after writing where no lock is granted), event scoping (a value under another event is never audited),
 instrument scoping, repeat instances, duplicate-field skips, per-rule
 isolation, `uvalidate-unconfigurable` logging, non-ASCII values (checked, or
 reported when the regex engines may disagree), the non-text field rejection,
