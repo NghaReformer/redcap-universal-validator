@@ -301,7 +301,7 @@ jobs:
           php tests/delta_module_php.php
           php tests/delta_live_twin_php.php
           python3 tests/delta_mutations.py
-      - name: PHP @UVWRITEONCE verdict vs fixture, the log reader, grammar, roles, hooks, page, audit, scan, the live run sheet's answers, and 255 mutations the suites must kill (the 12 of the SQL run where UV_DB_HOST names a server; the 2 of the composed form of role names run here, with intl)
+      - name: PHP @UVWRITEONCE verdict vs fixture, the log reader, grammar, roles, hooks, page, audit, scan, the live run sheet's answers, and 257 mutations the suites must kill (the 12 of the SQL run where UV_DB_HOST names a server; the 2 of the composed form of role names run here, with intl)
         run: |
           php tests/writeonce_php.php
           php tests/writeonce_module_php.php

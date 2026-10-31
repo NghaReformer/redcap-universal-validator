@@ -828,7 +828,7 @@ inner spaces.
   error under the field. B7, and a second run of B6, load the engine above
   the form while the page is still loading, as REDCap prints it, with
   jQuery's ready callbacks run in a timer.
-- `writeonce_mutations.py` applies 255 mutations to a copy of the code, one at a
+- `writeonce_mutations.py` applies 257 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Twelve mutate
   the SQL (three the role book's, six the erase search, three the search for
   the record's start) and are killed only by

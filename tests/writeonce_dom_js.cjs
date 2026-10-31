@@ -149,7 +149,11 @@ function boot(els, config, opts) {
         return w;
       };
       w.hasClass = (c) => !!el && (' ' + el.className + ' ').indexOf(' ' + c + ' ') >= 0;
-      w.slider = (a) => { calls.push(['slider', el && el.id, a]); return w; };
+      w.slider = (a) => {
+        calls.push(['slider', el && el.id, a]);
+        if (el && a === 'disable') el.className = (el.className ? el.className + ' ' : '') + 'ui-slider-disabled';
+        return w;
+      };
       // as jQuery UI 1.13: "disable" disables the input itself, which the form then leaves out
     w.datepicker = (a, k, v) => {
       calls.push(['datepicker', el && el.name, a]);
@@ -331,6 +335,20 @@ for (const order of ['lock first', 'lock last']) {
   // a jQuery change (the date picker's own) reaches the lock through the jQuery listener
   dt.value = '02-03-2026'; dt.fire('change');
   check('a date picker change is undone', dt.value === '01-03-2026', dt.value);
+}
+
+{
+  // REDCap draws a slider's number box read-only (sldrnum); the lock disables the widget and marks it,
+  // so a rule on the slider that reads another field keeps its guard item (LIVE-D1)
+  const sl = text('pain', '40'); sl.readOnly = true; sl.className = 'sldrnum';
+  const sliderDiv = makeEl('div'); sliderDiv.id = 'slider-pain';
+  const lvl = text('pain_max', '50');
+  const env = boot([sl, sliderDiv, lvl], { rules: [WO(['pain']),
+    { type: 'constraint', fields: ['pain'], assert: '[pain]<[pain_max]', blockSave: 'hard', lockReads: { pain: ['pain_max'] } }] }, { jQuery: true });
+  check('a slider the lock disabled is marked as the lock\'s', / ui-slider-disabled /.test(' ' + sliderDiv.className + ' ') && sliderDiv.__qridLockSetDisabled === true);
+  check('... the save goes through while the rule holds', save(env) === 'saved', env.win._alerts);
+  lvl.value = '30'; lvl.fire('change');
+  check('... and is held once the other field breaks it (not taken for @READONLY)', save(env) === 'held', env.win._alerts);
 }
 
 // ---- 8) configuration errors, duplicates ----------------------------------------------
