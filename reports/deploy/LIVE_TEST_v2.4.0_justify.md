@@ -15,8 +15,8 @@ H0 baseline before the JUSTIFY steps: R0 = 127 rules that could not be evaluated
 finding on `uv_justify_test`. The whole project then held 23 findings, from the DELTA run
 and the older fixtures, so F0 = 23 for the counts of Section H.
 
-Fixes: every defect in this report is fixed on branch `fix/live-v240` (not committed or
-deployed yet, 2026-10-30); see "Unreleased" in `CHANGELOG.md`. A live re-test is owed.
+Fixes: every defect in this report is fixed in commit 7934dd6 on branch `fix/live-v240` (not
+pushed or deployed yet, 2026-10-31); see "Unreleased" in `CHANGELOG.md`. A live re-test is owed.
 
 ## Verdict
 

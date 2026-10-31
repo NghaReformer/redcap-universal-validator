@@ -9,8 +9,8 @@ Project settings during the run: "Enable event and instance references" off (pid
 refuses it while the `xn_*` rows are in the dictionary, and the project owner chose to keep
 them), `log-values` = hashed, durable scan on for the server and for pid 149.
 
-Fixes: every defect in this report is fixed on branch `fix/live-v240` (not committed or
-deployed yet, 2026-10-30); see "Unreleased" in `CHANGELOG.md`. A live re-test is owed.
+Fixes: every defect in this report is fixed in commit 7934dd6 on branch `fix/live-v240` (not
+pushed or deployed yet, 2026-10-31); see "Unreleased" in `CHANGELOG.md`. A live re-test is owed.
 
 ## Verdict
 

@@ -19,8 +19,8 @@ Projects:
 - **Project B** is pid 149. Its scans are reported in `LIVE_TEST_v2.4.0_delta.md` and
   `LIVE_TEST_v2.4.0_justify.md`.
 
-Fixes: every defect in this report is fixed on branch `fix/live-v240` (not committed or
-deployed yet, 2026-10-30); see "Unreleased" in `CHANGELOG.md`. A live re-test is owed.
+Fixes: every defect in this report is fixed in commit 7934dd6 on branch `fix/live-v240` (not
+pushed or deployed yet, 2026-10-31); see "Unreleased" in `CHANGELOG.md`. A live re-test is owed.
 
 ## Verdict
 
