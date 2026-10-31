@@ -677,15 +677,37 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   fire(); await ticks(4);
   check('client: the server saying terminal is what ends it', UV.state.running === false);
 
+  // -- LIVE-S3: a new run shows its first phase before the first work answer --
+  reset([]);
+  els['uv-scan-phase'].textContent = 'Finished';          // the last run, as the page drew it
+  els['uv-scan-counts'].textContent = '5000 of 5000 records';
+  let holdWork = null;
+  script = [{ ok: true, run_id: 7 }];
+  const ajaxKeep = UV.ajax;
+  UV.ajax = function (action, payload) {
+    if (action === 'scan-work') { sent.push({ action, payload }); return new Promise((res) => { holdWork = res; }); }
+    return ajaxKeep(action, payload);
+  };
+  UV.start();
+  await ticks(4);
+  check('client: LIVE-S3 while the first work request is out the phase reads "Listing the records to check"',
+    holdWork !== null && els['uv-scan-phase'].textContent === 'Listing the records to check'
+    && els['uv-scan-counts'].textContent === '');
+  holdWork({ ok: true, status: finished('complete-through-fence') });
+  await ticks(4);
+  UV.ajax = ajaxKeep;
+
   // -- cancelling ----------------------------------------------------------
   reset([{ ok: true, run_id: 7 }, { ok: true, status: running(1, 10) }]);
   UV.start();
   await ticks(6);
   sent.length = 0;
-  script = [{ ok: true, why: null }, { ok: true, phase: 'cancelling', active: true }];
+  const chainBefore = UV.state.chain;
+  script = [{ ok: true, why: null }];
   UV.cancel();
-  await ticks(4);
-  check('client: cancelling stops the local loop at once', UV.state.running === false);
+  check('client: cancelling puts the running chain away at once', UV.state.running === false
+    && UV.state.chain > chainBefore);
+  await ticks(1);
   check('client: and asks the server to cancel', sent[0].action === 'scan-cancel');
   check('client: sending only the run id', sent[0].payload.run_id === 7);
   check('client: a stop the server has only asked for says it is stopping',
@@ -710,34 +732,41 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
     els['uv-scan-done'].style.display === '' && els['uv-scan-stalled'].style.display === 'none'
     && els['uv-scan-start'].style.display === '' && sent.length === askedR5);
 
-  // R3U-5. The commonest Stop is pressed while this tab's own work request is
-  // in flight: the server sees the run held, can only ASK, and answers
-  // stopped:false - and that request then ends it. "Stopping the scan." was
-  // written once and stayed under the finished panel for as long as the page
-  // was open. The first terminal status the watch gets replaces it.
-  const stoppingSt = Object.assign(running(1, 10), { phase: 'cancelling', stopping: true, idleSeconds: 2 });
+  // R3U-5 and LIVE-S2. The commonest Stop is pressed while this tab's own work
+  // request is in flight: the server sees the run held, can only ASK, and
+  // answers stopped:false. The client used to watch from there, on the belief
+  // that the request in flight would end the run; on chpr-redcap.org (live run
+  // 2026-10-30) it did not, and the run sat at "Stopping" until Continue was
+  // pressed. Only a work request ends a stopping run, so the tab sends one.
+  // The note it wrote is replaced by what happened once the run is terminal.
   const cancelledSt = Object.assign(finished('partial'), { terminal: 'cancelled' });
   const stopThen = async (ending, meddle) => {
     reset([{ ok: true, run_id: 7 }, { ok: true, status: running(1, 10) }]);
     UV.start();
     await ticks(6);
     sent.length = 0;
-    script = [{ ok: true, why: null, stopped: false }, stoppingSt, ending];
+    // The first work answer finds the run still held by the request that was in flight.
+    script = [{ ok: true, why: null, stopped: false },
+              { ok: true, worked: 0, stop: 'waiting', why: 'some records are still being examined' },
+              { ok: true, worked: 0, stop: 'cancelled', why: 'this scan was stopped', status: ending }];
     UV.cancel();
     await ticks(6);
     const asked = els['uv-scan-note'].textContent;
     if (meddle) els['uv-scan-note'].textContent = meddle;
-    const delays = await drive(4);
-    return { asked, delays, note: els['uv-scan-note'].textContent };
+    await drive(4);
+    const after = sent.length;
+    await drive(3);
+    return { asked, note: els['uv-scan-note'].textContent, quiet: sent.length === after };
   };
   let r5 = await stopThen(cancelledSt);
   check('client: R3U-5 a stop the server could only ask for says it is stopping',
     r5.asked === 'Stopping the scan.');
+  check('client: LIVE-S2 and the tab sends work requests until the server ends the stopping run, then stops',
+    sent.filter((s) => s.action === 'scan-work').length === 2 && UV.state.running === false && r5.quiet);
+  check('client: LIVE-S2 and a work answer that ends nothing does not replace "Stopping the scan."',
+    r5.asked === 'Stopping the scan.');
   check('client: R3U-5 and once the run is over the note says it was stopped',
     r5.note === 'The scan was stopped.' && els['uv-scan-done'].style.display === '');
-  check('client: R3U-5 and the watch asked again on its ladder, never at 0 ms',
-    r5.delays.length > 0 && r5.delays.every((ms) => ms > 0)
-    && !sent.some((s) => s.action === 'scan-work'));
   r5 = await stopThen(finished('complete-through-fence'));
   check('client: R3U-5 a run that ended some other way says so, not that it was stopped',
     r5.note === 'The scan ended before it could be stopped.');

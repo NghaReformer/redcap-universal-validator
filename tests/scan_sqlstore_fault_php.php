@@ -704,6 +704,8 @@ namespace INSPIRE\UniversalValidator\Scan {
                 if (strpos($sql, 'FROM redcap_record_list') !== false) {
                     $ids = $this->index;
                     $want = array_slice($params, 1);
+                } elseif ($this->dataFails && strpos($sql, 'COUNT(DISTINCT') !== false) {
+                    throw new \RuntimeException('Lock wait timeout exceeded', 1205);
                 } else {
                     if ($this->dataFails && strpos($sql, 'DISTINCT record') !== false) {
                         throw new \RuntimeException('Lock wait timeout exceeded', 1205);
@@ -725,6 +727,8 @@ namespace INSPIRE\UniversalValidator\Scan {
                         return $cmp[1] === '=' ? $r === $at : strcmp($r, $at) >= 0;
                     }));
                 }
+                // The two counts the end of an index walk compares (LIVE-S1).
+                if (strpos($sql, 'COUNT(DISTINCT') !== false) return [[(string) count(array_unique($ids))]];
                 if (preg_match('/LIMIT (\d+)/', $sql, $lim)) $ids = array_slice($ids, 0, (int) $lim[1]);
                 // The index walk selects the group beside the record.
                 $dag = strpos($sql, 'dag_id') !== false;
@@ -797,6 +801,50 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('cache: and without a record-id field the refusal says the index is incomplete',
         $o['ok'] === false && strpos($o['why'], 'record index is not complete') !== false
         && strpos($o['why'], 'record-id field could not be determined') !== false);
+
+    // LIVE-S1 (live run 2026-10-30): after a background import REDCap called the cache COMPLETE
+    // while it held 1,347 of 5,000 records, and the walk listed only those. The end of an index
+    // walk now counts the index against the data table's record-id rows.
+    $stale = $cacheDb(['R1'], $data, 'COMPLETE');
+    $so = RecordManifestSource::open($stale, 800, ['pk' => 'record_id']);
+    $sp = $so['source']->page(null, [], 10);
+    check('cache S1: a COMPLETE index short of the data table ends its walk untrusted, not done',
+        $so['source']->via() === 'redcap_record_list' && $sp['ok'] === false && !empty($sp['untrusted'])
+        && $sp['done'] === false && $sp['rows'] === [] && $sp['why'] === RecordManifestSource::STALE);
+    $dw = $so['source']->dataWalk();
+    $dp = $dw ? $dw->page(null, [], 10) : ['rows' => []];
+    $ids = [];
+    foreach ($dp['rows'] as $r) $ids[] = $r['id'];
+    check('cache S1: and the data table it moves to lists every record', $ids === ['R1', 'R2'] && $dp['done'] === true);
+    $sp2 = RecordManifestSource::open($cacheDb(['R1'], $data, 'COMPLETE'), 800, ['pk' => 'record_id'])['source']
+        ->page(null, [], 1);
+    check('cache S1: a walk short by one record is caught on its last page too',
+        $sp2['ok'] === false && !empty($sp2['untrusted']));
+    $extra = $cacheDb(['R1', 'R2', 'R7'], $data, 'COMPLETE');
+    $ep = RecordManifestSource::open($extra, 800, ['pk' => 'record_id'])['source']->page(null, [], 10);
+    // An extra record is read and found empty; only a missing one is lost.
+    check('cache S1: an index that lists a record the data table lacks still ends its walk done',
+        $ep['ok'] === true && $ep['done'] === true && count($ep['rows']) === 3);
+    $whole = $cacheDb(['R1', 'R2'], $data, 'COMPLETE');
+    $wp = RecordManifestSource::open($whole, 800, ['pk' => 'record_id'])['source']->page(null, [], 10);
+    $ids = [];
+    foreach ($wp['rows'] as $r) $ids[] = $r['id'];
+    check('cache S1: an index that lists every record ends its walk done', $wp['ok'] === true
+        && $wp['done'] === true && $ids === ['R1', 'R2']);
+    $counts = 0;
+    foreach ($whole->log as $q) if (strpos($q, 'COUNT(DISTINCT') !== false) $counts++;
+    check('cache S1: two counts per walk, at its end', $counts === 2);
+    $whole->log = [];
+    $mid = RecordManifestSource::open($whole, 800, ['pk' => 'record_id'])['source']->page(null, [], 1);
+    $counts = 0;
+    foreach ($whole->log as $q) if (strpos($q, 'COUNT(DISTINCT') !== false) $counts++;
+    check('cache S1: and none on a page that does not end the walk', $mid['ok'] === true && $mid['done'] === false
+        && $counts === 0);
+    $cf = $cacheDb(['R1', 'R2'], $data, 'COMPLETE');
+    $cs = RecordManifestSource::open($cf, 800, ['pk' => 'record_id'])['source'];
+    $cf->dataFails = true;
+    $cp = $cs->page(null, [], 10);
+    check('cache S1: a count that cannot be read counts as short', $cp['ok'] === false && !empty($cp['untrusted']));
 
     // =====================================================================
     // CATCH-UP - "gone" is an explicit false, and a probe that throws is not one

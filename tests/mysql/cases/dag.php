@@ -45,6 +45,10 @@ $FBPID = 902;          // deliberately not uv_neighbour($PID) - 901 is the plant
     foreach ($rows as $r) {
         $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ("
             . $PID . ", '" . $r[0] . "', " . ($r[1] === null ? 'NULL' : $r[1]) . ")");
+        // Its record-id row too: an index listing a record the data table
+        // lacks is a stale index, which the walk does not trust (LIVE-S1).
+        $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
+            VALUES (" . $PID . ", 1, '" . $r[0] . "', 'record_id', '" . $r[0] . "')");
         // The fallback project gets NO record-index row, only data rows.
         $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
             VALUES (" . $FBPID . ", 1, '" . $r[0] . "', 'record_id', '" . $r[0] . "')");
@@ -233,6 +237,8 @@ $FBPID = 902;          // deliberately not uv_neighbour($PID) - 901 is the plant
     // deleted group leaves behind.
     $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ("
         . $PID . ", 'R4', 42)");
+    $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
+        VALUES (" . $PID . ", 1, 'R4', 'record_id', 'R4')");
     $foreign = $planner->plan($PID, array_merge($req, array('dagFilter' => '42')));
     check('dag: a run may be planned against any scope the planner is handed',
         $foreign['ok'] === true);

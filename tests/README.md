@@ -1194,6 +1194,7 @@ php  tests/scan_identity_php.php      # which rule a finding is filed against
 php  tests/scan_reason_bits_php.php   # what a finding keeps of its reason and of its branch
 php  tests/scan_capabilities_php.php  # what an installation supports, and what a run may claim on it
 php  tests/scan_report_php.php        # a stored finding as the report shows it
+php  tests/scan_dimensions_dags_php.php  # no groups is not a failed group read (LIVE-D2)
 php  tests/scan_export_php.php        # the CSV of a stored run, as the export streams it
 php  tests/scan_page_php.php          # pages/scan.php: switches, prefill, labels, the findings panel
 php  tests/scan_cron_php.php          # the two crons are declared, wired and bounded

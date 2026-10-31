@@ -109,6 +109,26 @@ final class ScanDimensions
         }
         return $out;
     }
+    /**
+     * Does this project have no Data Access Groups, by REDCap's own Project
+     * object for it? False when that cannot be told: no Project object for
+     * this project, or one that does not list its groups as an array.
+     */
+    private static function groupsNone($pid)
+    {
+        try {
+            $proj = isset($GLOBALS['Proj']) ? $GLOBALS['Proj'] : null;
+            if (!is_object($proj) || !isset($proj->project_id) || (int) $proj->project_id !== (int) $pid
+                    || !method_exists($proj, 'getGroups')) {
+                return false;
+            }
+            $groups = $proj->getGroups();
+            return is_array($groups) && !$groups;
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'ScanDimensions::groupsNone');
+            return false;
+        }
+    }
     /** @var bool whether this project uses Data Access Groups at all */
     public $hasDags = false;
     /** @var bool whether a reason (@UVJUSTIFY) can stand for any rule's findings: the "Saved with a reason" column */
@@ -228,6 +248,13 @@ final class ScanDimensions
                 $g = \REDCap::getGroupNames(true);
                 if (is_array($g)) {
                     $d->hasDags = (bool) $g;          // an empty array really is "no groups"
+                } elseif (self::groupsNone($pid)) {
+                    // REDCap answers false for a project with no groups, the
+                    // same answer it gives when it could not read them (live
+                    // run 2026-10-30, LIVE-D2): every report of pid 149, which
+                    // has none, said they "could not be read". The project's
+                    // own group list tells the two apart.
+                    $d->hasDags = false;
                 } else {
                     // A non-array is a FAILED read, and it must not look like a
                     // project that simply has no groups. Only a throw was caught

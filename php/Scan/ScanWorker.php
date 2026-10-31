@@ -417,6 +417,25 @@ final class ScanWorker
         }
     }
 
+    /**
+     * Does a request end where its run enters a new phase? (live run
+     * 2026-10-30, LIVE-S3)
+     *
+     * A browser request carried its run through every phase the budget
+     * allowed, and the page draws the phase only from each request's answer:
+     * on Project A (5,000 records) the reader saw "Checking records" and then
+     * "Finished", never the catch-up, duplicate or summary phases between
+     * them. So a browser request ends on entering a phase, and its answer
+     * names it; the page asks again at once (js/scan.js progressed() counts a
+     * phase change as movement). Three extra requests per run. A cron pass
+     * has no reader and keeps going: ending there would cost a cron interval
+     * per phase.
+     */
+    private function showsPhases(WorkBudget $budget)
+    {
+        return !$budget->isCron();
+    }
+
     /** Claim, evaluate and commit until the budget says stop or the phase is empty. */
     private function loop($pid, $runId, $phase, $epoch, $generationId, $runSeq, array $opts, $keep = null)
     {
@@ -561,6 +580,7 @@ final class ScanWorker
                     $next = ScanPhase::next($phase);
                     if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
                         $phase = $next;
+                        if ($this->showsPhases($budget)) { $stop = 'phase'; $this->walked = true; break; }
                         continue;
                     }
                     $done = true;
@@ -709,6 +729,7 @@ final class ScanWorker
                     $next = ScanPhase::next($phase);
                     if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
                         $phase = $next;
+                        if ($this->showsPhases($budget)) { $stop = 'phase'; $this->walked = true; break; }
                         continue;
                     }
                     $done = true;
@@ -740,6 +761,7 @@ final class ScanWorker
                 $next = ScanPhase::next($phase);
                 if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
                     $phase = $next;
+                    if ($this->showsPhases($budget)) { $stop = 'phase'; $this->walked = true; break; }
                     continue;
                 }
                 // `done` is a claim about the WHOLE RUN, so it is a predicate

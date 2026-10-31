@@ -367,6 +367,8 @@ jobs:
         run: php tests/scan_identity_php.php
       - name: Durable scan report (a stored finding renders as the legacy report does)
         run: php tests/scan_report_php.php
+      - name: Durable scan report groups (a project with no groups is not a read that failed)
+        run: php tests/scan_dimensions_dags_php.php
       - name: Durable scan export (the CSV of a stored run, paged, defused, flat memory)
         run: php tests/scan_export_php.php
       - name: Durable scan reason bits (a pooled reason's mask, the judging branch, the identity unchanged)
