@@ -36,6 +36,8 @@ function makeEl(tag) {
     get firstChild() { return this.children[0] || null; },
   };
 }
+/* The fixture's slider fields (uvdelta_test_fields.csv). */
+const SLIDERS = new Set(['ud_pain0', 'ud_pain']);
 /* One page: an input per field the rules name, all blank; the server's config as the page has it. */
 function boot(cfg, values) {
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
@@ -52,6 +54,8 @@ function boot(cfg, values) {
     const el = makeEl('input'); el.name = f; el.value = (values && values[f]) || '';
     const h = makeEl('div'); h.appendChild(el); body.appendChild(h);
     all.push(el, h); holders[f] = h; els[f] = el;
+    /* REDCap 17 draws a slider's number box readonly, beside the widget the person moves (LIVE-D1) */
+    if (SLIDERS.has(f)) { el.readOnly = true; el.className = 'sldrnum'; const w = makeEl('div'); w.id = 'slider-' + f; all.push(w); }
     /* the label REDCap renders as #label-<field>, which the save dialog names */
     if (PAGES.labels && PAGES.labels[f]) { const lab = makeEl('td'); lab.id = 'label-' + f; lab.textContent = PAGES.labels[f]; all.push(lab); }
   }
@@ -129,6 +133,15 @@ const SNAP = ' (compared with saved event/instance values, read when this page w
   set(env, 'ud_pain0', '2'); set(env, 'ud_pain', '7');
   check('A10 slider', note(env, 'ud_pain') === '✗ This value rose by 5 (250%) from 2 ([ud_pain0]). Allowed: a change of at most 3.', note(env, 'ud_pain'));
   check('A10 asks', save(env) === 'asked');
+  /* @READONLY disables the widget; then the box is read-only and never holds (UX-003) */
+  const widget = env.doc.getElementById('slider-ud_pain');
+  widget.className = 'ui-slider ui-slider-disabled';
+  check('A10 a disabled slider (@READONLY) keeps its note', note(env, 'ud_pain') !== '');
+  check('A10 a disabled slider never asks', save(env) === 'saved');
+  widget.className = 'ui-slider'; widget.setAttribute('aria-disabled', 'true');
+  check('A10 aria-disabled counts as disabled too', save(env) === 'saved');
+  widget.setAttribute('aria-disabled', 'false');
+  check('A10 an enabled slider asks again', save(env) === 'asked');
   set(env, 'ud_pain', '4');
   set(env, 'ud_two', '130');
   check('A11 130: past 5% of 70.5 only, one line', note(env, 'ud_two') === '✗ This value rose by 59.5 (84.4%) from 70.5 ([ud_w1]). Allowed: a change of at most 5%.', note(env, 'ud_two'));

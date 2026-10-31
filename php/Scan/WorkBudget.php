@@ -235,6 +235,12 @@ final class WorkBudget
                 'arena' => memory_get_usage(true)];
     }
 
+    /** Whether this budget is a cron pass's, which no page is waiting on. */
+    public function isCron()
+    {
+        return $this->mode === 'cron';
+    }
+
     /**
      * Note where a batch starts, for observe() to measure from.
      *

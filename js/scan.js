@@ -616,7 +616,12 @@
         call('scan-work', { run_id: UV.state.runId }).then(function (r) {
             UV.state.inflight = false;
             busy(false);
-            if (mine !== UV.state.chain) return;      // superseded; die quietly
+            // Superseded: die quietly, but hand the loop to the chain that
+            // replaced this one. It asked pump() while this request was out,
+            // which returned at the in-flight check and queued nothing, so a
+            // Continue or a Stop pressed during a request left nobody driving
+            // (live run 2026-10-30, LIVE-S2).
+            if (mine !== UV.state.chain) { if (UV.state.running) setTimeout(pump, 0); return; }
             try {
                 advance(r);
             } catch (e) {
@@ -628,7 +633,7 @@
         }, function (e) {
             UV.state.inflight = false;
             busy(false);
-            if (mine !== UV.state.chain) return;
+            if (mine !== UV.state.chain) { if (UV.state.running) setTimeout(pump, 0); return; }
             if (e && e.uvFatal) {
                 // Not a lost connection: there is no transport to lose. Retrying
                 // on a ladder that can never succeed prints "retrying" forever.
@@ -660,13 +665,17 @@
             UV.state.running = false;
             UV.state.idle = 0;
             UV.state.stalledMs = 0;
-            text(el('uv-scan-note'), '');
+            // A run this tab drove to the end of a Stop says it was stopped
+            if (UV.state.stopNote !== null) settleStopNote(st);
+            else text(el('uv-scan-note'), '');
             return;
         }
+        // A stop being finished keeps saying so (finishStop) until the run is over.
+        var stopping = UV.state.stopNote !== null;
         if (moved) {
             UV.state.idle = 0;
             UV.state.stalledMs = 0;
-            text(el('uv-scan-note'), '');
+            if (!stopping) text(el('uv-scan-note'), '');
             setTimeout(pump, 0);
             return;
         }
@@ -690,7 +699,7 @@
                  + Math.round(UV.state.stalledMs / 1000) + ' seconds. The scan is on the server '
                  + 'and resumes when it can, so you can leave this page and come back.';
         }
-        text(el('uv-scan-note'), why);
+        if (!stopping) text(el('uv-scan-note'), why);
         setTimeout(pump, w);
     }
 
@@ -838,6 +847,13 @@
             // The last run's report is put away while the new run goes; the
             // new one's opens when its status says it finished.
             reportReset();
+            // A NEW RUN LISTS ITS RECORDS FIRST (live run 2026-10-30,
+            // LIVE-S3). Nothing is drawn until the first work answer, and on
+            // 5,000 records that took six seconds under the last run's
+            // "Finished" and its counts.
+            text(el('uv-scan-phase'), phaseLabel('planning'));
+            text(el('uv-scan-counts'), '');
+            text(el('uv-scan-found'), '');
             UV.state.wait = NET_MIN;
             UV.state.idle = 0;
             UV.state.stalledMs = 0;
@@ -881,6 +897,18 @@
         pump();
     };
 
+    /** Drive a run Stop was asked on until the server ends it; the note Stop wrote stays. */
+    function finishStop() {
+        if (UV.state.running) return;
+        UV.state.chain++;
+        UV.state.watchChain++;
+        UV.state.running = true;
+        UV.state.wait = NET_MIN;
+        UV.state.idle = 0;
+        UV.state.stalledMs = 0;
+        pump();
+    }
+
     UV.cancel = function () {
         if (!UV.state.runId) return;
         UV.state.running = false;
@@ -895,7 +923,14 @@
             text(el('uv-scan-note'), (r && r.why) ? r.why
                 : ((r && r.stopped) ? 'The scan was stopped.' : 'Stopping the scan.'));
             UV.state.stopNote = asked ? 'Stopping the scan.' : null;
-            refresh();
+            // ONLY A WORK REQUEST ENDS A STOPPING RUN (live run 2026-10-30,
+            // LIVE-S2). Stop could only ask while this tab's own request held
+            // the run, and that request had already been put away above, so
+            // the run sat at "Stopping" until somebody pressed Continue. The
+            // tab drives it once more: the server ends a stopping run on the
+            // next scan-work and examines nothing further.
+            if (asked) finishStop();
+            else refresh();
         }, function () {
             text(el('uv-scan-note'), 'The scan could not be stopped; try again.');
         });

@@ -53,11 +53,26 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('walk: a second project has records in the same tables',
         (int) $nbRows[0][0] === 2);
 
+    // EVERY INDEXED RECORD HAS ITS RECORD-ID ROW (LIVE-S1). A walk over the
+    // index that reaches its end compares the index's count of records with
+    // the data table's count of record-id rows, and lists the project again
+    // from the data table when they differ. REDCap writes the record-id row
+    // of every record it saves, so an index listing records the data table
+    // lacks is a stale index, and these fixtures would be one without this.
+    $pkRows = function (array $ids) use ($A, $PID) {
+        $A->query("DELETE FROM redcap_data WHERE project_id = " . $PID);
+        foreach ($ids as $id) {
+            $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
+                VALUES (" . $PID . ", 1, '" . $id . "', 'record_id', '" . $id . "')");
+        }
+    };
+
     // 25 records, so paging is exercised rather than described.
     for ($i = 1; $i <= 25; $i++) {
         $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (" . $PID . ", '"
             . sprintf('R%03d', $i) . "', " . ($i % 3 === 0 ? '7' : 'NULL') . ')');
     }
+    $pkRows(array_map(function ($i) { return sprintf('R%03d', $i); }, range(1, 25)));
     $open = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($dbA, $PID, array('pk' => 'record_id'));
     check('walk: the record index is preferred when it answers for this project',
         $open['ok'] === true && $open['source']->via() === 'redcap_record_list');
@@ -103,6 +118,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (" . $PID . ", '"
             . $r . "', NULL)");
     }
+    $pkRows(array('T1', 'T1 ', 'T1  ', 'T2'));
     // THE COLUMN'S COLLATION, NOT THE CONNECTION'S - and the two really do
     // disagree. This schema's columns are utf8mb4_unicode_ci, which pads; MySQL
     // 8.0's default connection collation is utf8mb4_0900_ai_ci, which does not.
@@ -138,6 +154,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         $A->query("INSERT INTO redcap_record_list (project_id, arm, record, dag_id) VALUES (" . $PID . ", "
             . $ar[0] . ", '" . $ar[1] . "', NULL)");
     }
+    $pkRows(array('M1', 'M2', 'M3'));
     foreach (array(1, 2, 10) as $size) {
         $seen = array(); $cursor = null; $carry = array(); $pages = 0;
         while ($pages++ < 20) {
@@ -153,6 +170,7 @@ $NEIGHBOUR = uv_neighbour($PID);
 
     // The fallback source: no record index for this project at all.
     $A->query('DELETE FROM redcap_record_list');
+    $pkRows(array());
     for ($i = 1; $i <= 4; $i++) {
         // Two events per record: the walk must list each record once, not once
         // per event.
@@ -247,6 +265,19 @@ $CACHE = 910;
         $o['ok'] === true && $o['source']->via() === 'redcap_record_list');
     check('cache: and still confirms an absence against the data before calling it a deletion',
         $o['source']->exist(array('C2'))['C2'] === true);
+    // LIVE-S1: REDCap called a cache of 1,347 of 5,000 records complete. The
+    // walk of a complete index that lacks C2 does not end; its last page is
+    // untrusted, so the planner lists the project from the data table.
+    $end = $o['source']->page(null, array(), 10);
+    check('cache S1: a complete index short of the data table does not end the walk (got '
+        . json_encode(array($end['ok'], $end['untrusted'] ?? null, $end['done'])) . ')',
+        $end['ok'] === false && ($end['untrusted'] ?? false) === true && $end['done'] === false
+        && strpos($end['why'], 'lists fewer records') !== false);
+    $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (" . $CACHE . ", 'C2', NULL)");
+    $end = $o['source']->page(null, array(), 10);
+    check('cache S1: and once it lists every record, the walk ends on it',
+        $end['ok'] === true && $end['done'] === true && count($end['rows']) === 2);
+    $A->query("DELETE FROM redcap_record_list WHERE project_id = " . $CACHE . " AND record = 'C2'");
     uv_redcap_counts($A, $CACHE, 'FIX_SORT');
     $o = $MS::open($dbA, $CACHE, array('pk' => 'record_id'));
     check('cache: FIX_SORT is complete, with only its order to repair',

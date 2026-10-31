@@ -668,6 +668,8 @@ final class RecordManifestSource
             if (!$this->stillTrusted()) return $this->untrusted($after, $emitted);
             $held = $this->tableHeld($after, $emitted);
             if ($held !== null) return $held;
+            $covers = $this->indexCovers($after, $emitted);
+            if ($covers !== null) return $covers;
             return ['ok' => true, 'rows' => [], 'cursor' => $after, 'emitted' => $emitted,
                     'done' => true, 'why' => null];
         }
@@ -723,6 +725,8 @@ final class RecordManifestSource
         if ($done) {
             $held = $this->tableHeld($after, $emitted);
             if ($held !== null) return $held;
+            $covers = $this->indexCovers($after, $emitted);
+            if ($covers !== null) return $covers;
         }
 
         // A PAGE WHOSE GROUPS COULD NOT BE READ IS NOT USED (review rv5a-2).
@@ -754,6 +758,65 @@ final class RecordManifestSource
     {
         return ['ok' => false, 'untrusted' => true, 'rows' => [], 'cursor' => $after,
                 'emitted' => $emitted, 'done' => false, 'why' => $why];
+    }
+
+    /** What a record index that lists fewer records than the data table is told as. */
+    const STALE = "REDCap's record index for this project lists fewer records than its data table, "
+        . 'so the records are listed from the data table';
+
+    /**
+     * May a walk over the record index say it is done? (live run 2026-10-30,
+     * LIVE-S1)
+     *
+     * Null when it may: the walk reads no record index, there is no data
+     * table or record-id field to count against, or the index lists at least
+     * as many records as the data table holds a record-id row for. Otherwise the page
+     * that would end the walk, `untrusted`, so the walk lists the project
+     * again from its data table (ScanPlanner::step()).
+     *
+     * A STATUS OF COMPLETE IS NOT ENOUGH. After a background import of 5,000
+     * records on REDCap 17.0.6 the cache held 1,347 of them and REDCap still
+     * called it complete: its own Record Status Dashboard showed 1,347. The
+     * scan listed the same 1,347 and reported "Every record was checked".
+     * stillTrusted() catches a cache REDCap knows it is rebuilding; this
+     * catches one it does not know is short.
+     *
+     * FEWER, NOT "NOT EQUAL". A record the index lists and the data table
+     * does not is read and found empty, which costs a read and no record; a
+     * record the data table holds and the index lacks is never read, which
+     * is the defect. So only an index short of the data table is refused. The
+     * gap that leaves: an index listing k records the data table lacks while
+     * it lacks m <= k that the data table holds counts as long enough. REDCap
+     * takes a deleted record off its index when it deletes it, so k is 0
+     * unless the index is stale in both directions at once. A count that
+     * cannot be read is short. A record made between the two counts can send
+     * a sound walk to the data table, which costs time and never a record.
+     *
+     * COUNTED BY BYTES. The walk lists 'T1' and 'T1 ' as two records, and a
+     * PAD SPACE collation counts them as one. The two tables need not share a
+     * collation, so a count by the column's own rules could differ between
+     * them for the same records.
+     *
+     * WHY ONLY AT THE END. Two counts per walk: the index's, one row per
+     * record and arm, and the data table's record-id rows, whose
+     * (project_id, field_name) prefix is one of its own indexes. Asked per
+     * page they would cost more than the pages.
+     */
+    private function indexCovers($after, array $emitted)
+    {
+        if ($this->via !== self::VIA_INDEX || $this->dataTable === null || $this->pk === null) return null;
+        try {
+            $i = $this->db->select('SELECT COUNT(DISTINCT CAST(' . $this->recordCol . ' AS BINARY)) FROM ' . $this->table
+                . ' WHERE project_id = ?', [$this->pid]);
+            $d = $this->db->select('SELECT COUNT(DISTINCT CAST(record AS BINARY)) FROM ' . $this->dataTable
+                . ' WHERE project_id = ? AND field_name = ?', [$this->pid, $this->pk]);
+        } catch (\Throwable $e) {
+            return $this->untrusted($after, $emitted, self::STALE);
+        }
+        if (!isset($i[0][0]) || !isset($d[0][0]) || (int) $i[0][0] < (int) $d[0][0]) {
+            return $this->untrusted($after, $emitted, self::STALE);
+        }
+        return null;
     }
 
     /** What a data table REDCap moved the project off is told as. */

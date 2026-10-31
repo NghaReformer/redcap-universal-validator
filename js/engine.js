@@ -1637,7 +1637,21 @@ function QRID_debounced(fn){
    respondent. Empty cells are skipped. */
 function QRID_fieldLabel(input, fieldName){
   function text(el){
-    var t = el && el.textContent ? el.textContent.replace(/\s+/g, " ").trim() : "";
+    var t = el && el.textContent ? el.textContent : "";
+    /* REDCap puts the field's icons in a cell of the label (.rc-field-icons):
+       the Missing Data Code "M" button and, once it has been opened, its menu
+       ("Mark field as:", "[Clear value]", each code). Their text is not the
+       label; the save dialog named "Reason for change Mark field as:[Clear
+       value]Unknown (UNK)" (live run 2026-10-30, LIVE-D3). */
+    if(t && el.querySelectorAll){
+      var icons = el.querySelectorAll(".rc-field-icons");
+      for(var k = 0; k < icons.length; k++){
+        var it = icons[k].textContent || "";
+        var at = it ? t.indexOf(it) : -1;
+        if(at >= 0) t = t.slice(0, at) + " " + t.slice(at + it.length);
+      }
+    }
+    t = t.replace(/\s+/g, " ").trim();
     return t ? t.slice(0, 80) : "";
   }
   try {
@@ -4037,7 +4051,26 @@ function QRID_answerStale(entry){
    the lock made read-only that REDCap then disables (form locking) counts.
    QRID_fieldLocked asks it of every control it reads. */
 function QRID_cannotEdit(input){
-  return !!((input.readOnly && input.__qridLockSetRO !== true) || (input.disabled && input.__qridLockSetDisabled !== true));
+  if(input.disabled && input.__qridLockSetDisabled !== true) return true;
+  if(!input.readOnly || input.__qridLockSetRO === true) return false;
+  var slider = QRID_sliderOf(input);
+  return slider ? QRID_sliderDisabled(slider) && slider.__qridLockSetDisabled !== true : true;
+}
+/* REDCap draws a slider's number box readonly (class "sldrnum") on every
+   form, and the person moves the slider widget (#slider-<field>) beside it,
+   which writes the box (live run 2026-10-30, LIVE-D1). Read as a read-only
+   field, every slider rule kept its note and never held the save. The box
+   counts as read-only only while the widget is disabled: @READONLY disables
+   it, and so does the write-once lock, which marks what it did. */
+function QRID_sliderOf(input){
+  var name = input.name || (input.getAttribute ? input.getAttribute("name") : "");
+  if(!name || !document.getElementById) return null;
+  return document.getElementById("slider-" + name);
+}
+function QRID_sliderDisabled(slider){
+  var cls = " " + (slider.className || "") + " ";
+  if(/ ui-slider-disabled | ui-state-disabled /.test(cls)) return true;
+  return !!(slider.getAttribute && slider.getAttribute("aria-disabled") === "true");
 }
 /* Whether a guard item speaks for its field when Save is pressed. A field a
    lock holds (UV_LOCKED) keeps its other modes' notes, but only the lock's own
@@ -4278,7 +4311,10 @@ function QRID_guardDataEntrySubmit(guard){
     var guarded = function(ob){
       if(!UV_guard.clickPass){
         var ev = { type: "dataEntrySubmit", preventDefault: function(){}, stopImmediatePropagation: function(){} };
-        if(!guard(ev, ob && ob.jquery ? ob[0] : ob)) return false;
+        if(!guard(ev, ob && ob.jquery ? ob[0] : ob)){
+          QRID_cancelEnter();
+          return false;
+        }
       }
       return orig.apply(this, arguments);
     };
@@ -4286,11 +4322,45 @@ function QRID_guardDataEntrySubmit(guard){
     window.dataEntrySubmit = guarded;
     return true;
   }
+  QRID_watchEnter();
   if(wrap() || document.readyState === "complete") return;
   if(document.readyState === "loading" && typeof document.addEventListener === "function"){
     document.addEventListener("DOMContentLoaded", wrap);
   }
   if(typeof window.addEventListener === "function") window.addEventListener("load", wrap);
+}
+/* The Enter key that led to a held save (LIVE-D4, live run 2026-10-30).
+   REDCap's keydown handler calls dataEntrySubmit and does not cancel the key,
+   so once the guard has held the save the browser goes on to its implicit
+   submission: it presses the form's first submit-type button. A button with
+   no type attribute is one, and REDCap draws the "Today" and "Now" buttons
+   beside date fields that way, with an onclick that returns false. On a held
+   save the date was set to today with no message and focus moved to it. When
+   REDCap's own save runs, form.submit() reads the form first, so the same
+   press changed nothing that was saved. The keydown and keypress of Enter in
+   this task are noted in the capture phase, before any page handler, and a
+   held save cancels them; the default action has not run yet while the
+   handlers of the same event run. A textarea's Enter starts a new line and is
+   left alone. */
+function QRID_watchEnter(){
+  if(UV_guard.enterWatched || typeof document.addEventListener !== "function") return;
+  UV_guard.enterWatched = true;
+  UV_guard.enterEvents = [];
+  function note(e){
+    if(!e || !(e.key === "Enter" || e.keyCode === 13 || e.which === 13)) return;
+    var t = e.target;
+    if(t && (t.tagName || "").toLowerCase() === "textarea") return;
+    if(!UV_guard.enterEvents.length) setTimeout(function(){ UV_guard.enterEvents = []; }, 0);
+    UV_guard.enterEvents.push(e);
+  }
+  document.addEventListener("keydown", note, true);
+  document.addEventListener("keypress", note, true);
+}
+function QRID_cancelEnter(){
+  var evs = UV_guard.enterEvents || [];
+  for(var i = 0; i < evs.length; i++){
+    try { if(typeof evs[i].preventDefault === "function") evs[i].preventDefault(); } catch(e){}
+  }
 }
 /* Wire one message region under one input: polite live region + programmatic
    error relationship, so dynamic verdicts are exposed to assistive technology
@@ -7535,7 +7605,15 @@ function QRIDWriteOnceInit(QRID_CONFIG){
        and REDCap would save the field blank. */
     var jq = typeof window !== "undefined" && window.jQuery;
     if(jq && el.__qridWidgetsLocked !== true){
-      try { var sl = jq("#slider-" + fieldName); if(sl.length && sl.slider) sl.slider("disable"); } catch(e){}
+      try {
+        var sl = jq("#slider-" + fieldName);
+        if(sl.length && sl.slider){
+          /* QRID_cannotEdit leaves out what the lock disabled */
+          var widget = document.getElementById ? document.getElementById("slider-" + fieldName) : null;
+          if(widget && !QRID_sliderDisabled(widget)) widget.__qridLockSetDisabled = true;
+          sl.slider("disable");
+        }
+      } catch(e){}
       try {
         var dp = jq(el);
         if(dp.hasClass && dp.hasClass("hasDatepicker") && dp.datepicker){

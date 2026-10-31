@@ -33,7 +33,11 @@
  *   - a @UVWRITEONCE lock arms the wrapper on its own; Enter puts back a value
  *     changed with no event and saves; a rule on the locked field that reads
  *     another field holds Enter only once that field changed since the page
- *     opened (QRID_guardSpeaks), as it holds a click.
+ *     opened (QRID_guardSpeaks), as it holds a click,
+ *   - a held Enter save cancels that Enter's keydown and keypress, so the
+ *     browser presses no type-less "Today" button (LIVE-D4); a save that goes
+ *     on, another key, a textarea's Enter and an Enter of an earlier task are
+ *     left alone.
  *
  * Run:  node tests/save_guard_enter_dom_js.cjs
  */
@@ -402,6 +406,53 @@ const HEAVIER = { type: 'constraint', fields: ['weight'], assert: '[weight]<[hei
   check('9 Enter puts the saved value back and saves', r === 'redcap-result' && env.calls.length === 1
     && locked.value === '2026-03-01');
   check('9 no alert for a value put back', env.win._alerts.length === 0);
+}
+// ---- 10) a held Enter cancels the key, so no "Today" button is pressed ------
+// Live run 2026-10-30 (LIVE-D4): REDCap's keydown handler does not cancel Enter, so after a held
+// save the browser's implicit submission pressed the type-less "Today" button beside a date field
+// and set the date to today. The engine notes Enter in the capture phase and cancels it on a hold.
+{
+  const input = idInput();
+  const env = boot([input], CHECK_RULE('hard'));
+  const btn = saveButton('submit-btn-saverecord');
+  const key = (type, target) => ({ type, key: 'Enter', keyCode: 13, target, _prevented: false,
+    preventDefault() { this._prevented = true; } });
+  check('10 the engine listens to keydown and keypress', (env.doc._handlers.keydown || []).length === 1
+    && (env.doc._handlers.keypress || []).length === 1);
+
+  input.value = '0ABC00001X';
+  input.fire('change');
+  const down = key('keydown', input), press = key('keypress', input);
+  env.doc.fire('keydown', down);
+  env.doc.fire('keypress', press);
+  check('10 a held Enter save returns false', pressEnter(env, input, btn) === false);
+  check('10 a held Enter save cancels the keydown and the keypress', down._prevented && press._prevented);
+
+  input.value = validId(env.NS);
+  input.fire('change');
+  const ok = key('keydown', input);
+  env.doc.fire('keydown', ok);
+  check('10 an Enter save that goes on leaves the key alone', pressEnter(env, input, btn) === 'redcap-result' && !ok._prevented);
+
+  const other = key('keydown', input);
+  other.key = 'a'; other.keyCode = 65;
+  const area = makeEl('textarea');
+  const inArea = key('keydown', area);
+  input.value = '0ABC00001X';
+  input.fire('change');
+  env.doc.fire('keydown', other);
+  env.doc.fire('keydown', inArea);
+  pressEnter(env, input, btn);
+  check('10 another key and an Enter in a textarea are not cancelled', !other._prevented && !inArea._prevented);
+
+  const stale = key('keydown', input);
+  env.doc.fire('keydown', stale);            // an Enter that led to no save in its task
+  pending.push(new Promise((resolve) => setTimeout(() => {
+    global.document = env.doc; global.window = env.win;
+    check('10 a later held save still returns false', pressEnter(env, input, btn) === false);
+    check('10 an Enter noted in an earlier task is not cancelled later', !stale._prevented);
+    resolve();
+  }, 0)));
 }
 // The values the other fields opened with are taken in a timer, after REDCap's start-up (review W4-2),
 // so each page is booted, left to start, and checked before the next one is booted, once the timers

@@ -32,7 +32,9 @@
  *     for the reason in a note that stays shown beside the options, even
  *     with the first option hidden, and a reason releases it;
  *   - a reason label holding "$&" or "$$" shows as written, and the note
- *     under an autocomplete dropdown sits after its text box.
+ *     under an autocomplete dropdown sits after its text box;
+ *   - the reason label leaves out REDCap's icons cell (.rc-field-icons),
+ *     where the Missing Data Code menu sits (LIVE-D3).
  *
  * Run:  node tests/justify_dom_js.cjs
  */
@@ -601,6 +603,21 @@ function checkboxOption(field, code) {
   check('an autocomplete dropdown: the note sits after the text box\'s wrapper, not between it and the select',
     j && j.parentNode === row && row.children.indexOf(j) > row.children.indexOf(wrap) && row.children.indexOf(dose) + 1 !== row.children.indexOf(j)
     && shown(env, 'dose', 'j') === NOTE('dose_why'), row.children.map((c) => c.id || c.tagName));
+}
+
+{
+  // LIVE-D3 (live run 2026-10-30): REDCap's label holds an icons cell with the Missing Data Code
+  // "M" button, and once that is opened its menu; their text is not the label
+  const wt = text('wt', '30'), why = text('wt_why', '');
+  const env = boot([wt, why], { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] });
+  const lab = makeEl('label'); lab.id = 'label-wt_why';
+  const icons = makeEl('td'); icons.className = 'rc-field-icons'; icons.textContent = 'Mark field as:[Clear value]Unknown (UNK)';
+  lab.appendChild(icons);
+  lab.textContent = 'Reason for change\n Mark field as:[Clear value]Unknown (UNK)';
+  env.allEls.push(lab, icons);
+  type(env, why, '');
+  check('the reason label leaves out the Missing Data Code menu, in the note', shown(env, 'wt', 'j') === NOTE('Reason for change'), shown(env, 'wt', 'j'));
+  check('... and in the save message', save(env) === 'held' && said(env).indexOf('(or give a reason in “Reason for change”)') >= 0, said(env));
 }
 
 // ---- 17) a survey save that does not finish the response (REQ-7) --------------------------

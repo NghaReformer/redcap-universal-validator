@@ -4678,6 +4678,40 @@ namespace INSPIRE\UniversalValidator\Scan {
             $res['ok'] === true && $cs->bumps === 2);
     }
 
+    // -- LIVE-S3: a browser request ends where its run enters a phase -----------
+    //
+    // Live run 2026-10-30: one browser request carried the run from scanning to
+    // the end, so the page never drew catch-up, the duplicate phase or the
+    // summary. A browser request now ends on entering a phase; a cron pass does
+    // not, since nobody watches it and each stop would cost a cron interval.
+    $browser = function () { return new WorkBudget(['mode' => 'browser', 'memoryLimit' => null,
+        'timeLimit' => null, 'min' => 1, 'max' => 100, 'first' => 10, 'startedAt' => microtime(true)]); };
+    list($store, $runId) = $fixture(['A', 'B', 'C']);
+    $phases = [];
+    $last = null;
+    for ($i = 0; $i < 12; $i++) {
+        $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $finder(1),
+            'budget' => $browser(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]);
+        $last = $w->work(800, $runId);
+        $phases[] = $last['phase'];
+        if (!empty($last['done']) || empty($last['ok'])) break;
+    }
+    check('worker S3: browser requests name each phase in turn',
+        $phases === [ScanPhase::CATCH_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP, ScanPhase::ROLLUP]);
+    check('worker S3: and the last request finishes the run',
+        $last['done'] === true);
+    list($store, $runId) = $fixture(['A', 'B', 'C']);
+    $first = (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $finder(1),
+        'budget' => $browser(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]))->work(800, $runId);
+    check('worker S3: a request that ended on entering a phase says why, and that it moved',
+        $first['worked'] === 3 && $first['stop'] === 'phase' && $first['done'] === false
+        && !empty($first['moved']));
+    list($store, $runId) = $fixture(['A', 'B', 'C']);
+    $c = (new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'evaluate' => $finder(1),
+        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]))->work(800, $runId);
+    check('worker S3: a cron pass goes on through every phase', $c['done'] === true
+        && $c['phase'] === ScanPhase::ROLLUP && $c['stop'] === null);
+
     // -- a finished run takes no more work -----------------------------------
     list($store, $runId) = $fixture(['A']);
     $store->finish($runId, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
