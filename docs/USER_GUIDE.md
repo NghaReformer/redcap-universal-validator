@@ -1089,12 +1089,15 @@ Yes — since 1.3.0 a **Unique** rule (the `@UVUNIQUE` tag, or the Unique kind
 in the Configure dialog) checks the value against every other record when it is
 entered or changed, with optional composite keys (`with`), project/DAG/event
 scopes, and a real save block. When the check cannot be made, staff see "Could
-not check" with the reason, and the save goes through; the exception is the
-limit of 60 lookups a minute, where a blocking rule holds the save until the
-server answers again. The live check is advisory: an answer is as old as the
-check that gave it, so Save asks again about any answer 30 seconds old or more.
-Two saves within 30 seconds of their last checks can both pass, and the post-save
-audit logs such a collision to the module log. Letter case is
+not check" with the reason, and the save goes through; the limit on lookups
+(120 values a minute that the session has not asked about before) is no
+exception. The live check is advisory: an answer is as old as the check that
+gave it. Save never asks the server; it goes by the answer the page has. Only a
+lookup already on its way holds the save, with no dialog, for at most 1.5
+seconds, and the save goes on by itself; nobody is asked to wait and save again.
+A value another record saved while the form stayed open can therefore pass. The
+post-save audit logs such a collision to the module log, and the next page the
+person opens says so once. Letter case is
 ignored, so `SP-1` and `sp-1` count as the same ID, and in a field validated as
 an integer or a number `007` and `7` do too. Add `"caseSensitive":true` when
 case tells two IDs apart.
@@ -1137,7 +1140,8 @@ window unchecked; `notFuture` and `notPast` still apply. A
 this one is open. On a survey, or for a user without rights to that form, the
 `from` date is not sent to the page; the page then checks only `notFuture` and
 `notPast`, and
-the window is checked when the record is saved. The same tag checks dates
+the window is checked when the record is saved. To check it live for every
+user, name the `from` field in the project setting **Shared reference fields**. The same tag checks dates
 counted from today (`"from":"today","window":[-7,0]`), calendar periods
 (`"period":"month","offset":-1` for last month) and `"notPast":true`; those parts
 judge a saved value against the day it was saved, so an old record never turns
@@ -1154,10 +1158,9 @@ Yes. The `@UVEXISTS` tag checks that a value is already saved in the project.
 `"event"` to look in one event, and `"scope":"dag"` to stay inside the record's
 Data Access Group. The page asks the server when the value is entered or
 changed, not on every keystroke, and answers found, not found, or could not
-check. Clicking Save re-checks the field and waits for an answer still on its
-way. "Could not check" never blocks a save, but a "not found" held for 30
-seconds or more is asked again at Save and stands if that second question gets
-no answer. The post-save audit checks the
+check. Save never asks the server: it goes by the answer the page has, and
+waits at most 1.5 seconds for an answer still on its way. "Could not check"
+never blocks a save. The post-save audit checks the
 value again unless a `match` field is still blank. Users are answered only
 about forms they may open. A user in a Data Access Group may check only
 records of their own group, and learns whether a value is saved in another
@@ -1599,7 +1602,11 @@ single-value rules.
 | Expected number of IDs | `expectedIds` | *(none)* | pooled |
 
 Project-level: **log-values** (`hashed` / `none` / `raw` / `off`, default
-`hashed`) and **debug-log** (off). A **log-values** that cannot be read, or that
+`hashed`), **debug-log** (off), **quiet-ok** (off; a field that passes shows no
+line), **shared-reference-fields** (blank; fields every data-entry form may
+read for its checks, whatever the person's form rights) and
+**after-save-notice-off** (off; when off, the next page tells the person who
+saved what the check after the save found for `@UVUNIQUE` and `@UVEXISTS`). A **log-values** that cannot be read, or that
 holds a value other than these four, is treated as `none`: the module log and
 the scan report name records by their keyed hash.
 

@@ -272,17 +272,18 @@ const pending = [];
   env.NS.guard.items.push(lookup);
   const r = pressEnter(env, input, saveButton('submit-btn-saverecord'));
   check('5 Enter waits for a lookup in flight', r === false && env.calls.length === 0);
-  check('5 the alert asks to wait', env.win._alerts.length === 1 && /please wait a moment/.test(env.win._alerts[0])
-    && /Specimen ID \(still being checked\)/.test(env.win._alerts[0]));
-  // A lookup held by the server's limit carries its own note (UNQ-3).
-  lookup.__qridPendingNote = ' (not checked yet: too many checks in the last minute)';
-  check('5 a lookup held by the limit says so instead', pressEnter(env, input, saveButton('submit-btn-saverecord')) === false
-    && env.calls.length === 0 && env.win._alerts.length === 2
-    && /Specimen ID \(not checked yet: too many checks in the last minute\)/.test(env.win._alerts[1])
-    && !/still being checked/.test(env.win._alerts[1]));
-  lookup.__qridPendingNote = null;
+  check('5 no dialog asks the person to wait', env.win._alerts.length === 0);
+  check('5 a second Enter meanwhile waits too', pressEnter(env, input, saveButton('submit-btn-saverecord')) === false
+    && env.calls.length === 0 && env.win._alerts.length === 0);
   lookup.__qridPending = false;
-  check('5 once answered, Enter saves', pressEnter(env, input, saveButton('submit-btn-saverecord')) === 'redcap-result');
+  check('5 once answered, Enter saves', pressEnter(env, input, saveButton('submit-btn-saverecord')) === 'redcap-result'
+    && env.calls.length === 1);
+  // The save kept back earlier does not come after it as a second one
+  // (tests/lookup_save_hold_dom_js.cjs follows a kept-back save through).
+  pending.push(new Promise((resolve) => setTimeout(() => {
+    check('5 the Enter kept back earlier saves nothing more', env.calls.length === 1);
+    resolve();
+  }, 120)));
 }
 
 // ---- 6) a dataEntrySubmit defined after the engine -------------------------

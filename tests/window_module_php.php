@@ -328,6 +328,36 @@ namespace {
     check('no rights: the saved date is nowhere in the page', strpos($p['html'], '2026-03-01') === false);
     check('no rights: no reason that would name the form', empty($r['deferredWhy']));
 
+    // ---- shared-reference-fields: the project lets every form read the "from" date ----
+    foreach (['visit_date_bl', ' other_field, [visit_date_bl] ', "x\nVISIT_DATE_BL"] as $listed) {
+        $ms = mod($DICT, $DATA, $PART, 'nurse');
+        $ms->projectSettings['shared-reference-fields'] = $listed;
+        $p = page($ms, 'form', '2', 'visit_form');
+        $r = ruleFor($p, 'visit_date_2');
+        check('shared field (' . json_encode($listed) . '), no rights to its form: the saved date is used',
+            $r && ($r['windowFromOp'] ?? null) === ['lit', '2026-03-01'] && empty($r['deferred']), json_encode($r['windowFromOp'] ?? null));
+    }
+    $ms = mod($DICT, $DATA, $PART, 'nurse');
+    $ms->projectSettings['shared-reference-fields'] = 'collected, visit date bl, visit_date_bl;drop';
+    $p = page($ms, 'form', '2', 'visit_form');
+    check('shared field: a name that is not a field name is left out, the rest still count',
+        (ruleFor($p, 'visit_date_2')['windowFromOp'] ?? null) === ['lit', '2026-03-01']);
+    $ms = mod($DICT, $DATA, $PART, 'nurse');
+    $ms->projectSettings['shared-reference-fields'] = 'collected';
+    $p = page($ms, 'form', '2', 'visit_form');
+    check('shared field: a field that is not listed stays withheld',
+        (ruleFor($p, 'visit_date_2')['windowFromOp'] ?? null) === ['withheld'] && strpos($p['html'], '2026-03-01') === false);
+    $ms = mod($DICT, $DATA, $PART, 'nurse');
+    $ms->projectSettings['shared-reference-fields'] = 'visit_date_bl';
+    $p = page($ms, 'survey', '2', 'visit_form');
+    check('shared field: never on a survey',
+        (ruleFor($p, 'visit_date_2')['windowFromOp'] ?? null) === ['withheld'] && strpos($p['html'], '2026-03-01') === false);
+    $ms = mod($DICT, $DATA, [], 'nurse');
+    $ms->projectSettings['shared-reference-fields'] = 'visit_date_bl';
+    $p = page($ms, 'form', '2', 'visit_form');
+    check('shared field: used also when the person\'s rights cannot be read',
+        (ruleFor($p, 'visit_date_2')['windowFromOp'] ?? null) === ['lit', '2026-03-01'], json_encode(ruleFor($p, 'visit_date_2')['windowFromOp'] ?? null));
+
     $p = page(mod($DICT, $DATA, $FULL, 'nurse'), 'survey', '2', 'visit_form');
     $r = ruleFor($p, 'visit_date_2');
     check('survey: withheld, nothing shipped', $r && ($r['windowFromOp'] ?? null) === ['withheld'] && empty($r['deferred']));

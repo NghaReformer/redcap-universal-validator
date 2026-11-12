@@ -425,6 +425,17 @@ const realNow = Date.now;
 
 // ---- 12) withheld "from" date ---------------------------------------------------
 {
+  {
+    // Quiet mode ("quietOk"): nothing the person can act on, so no line.
+    const v = dateEl('fu_date', '2026-01-01');
+    const env = boot([v], { quietOk: true, clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' },
+      rules: [{ type: 'window', fields: ['fu_date'], windowFrom: '[enrol_date]', windowFromOp: ['withheld'], windowLo: 0, windowHi: 30,
+        windowUnit: 'days', dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard' }] });
+    const msg = wMsg(env, 'fu_date');
+    check('withheld, quiet mode: no line', !msg || msg.style.display === 'none', msg && msg.style.cssText);
+    const ev = submitEv(); env.doc.fire('submit', ev);
+    check('withheld, quiet mode: the save goes through', ev._prevented === false);
+  }
   const withheldRule = (extra) => Object.assign({ type: 'window', fields: ['fu_date'], windowFrom: '[enrol_date]',
     windowFromOp: ['withheld'], windowLo: 0, windowHi: 30, windowUnit: 'days',
     dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard' }, extra || {});
@@ -432,8 +443,11 @@ const realNow = Date.now;
     const v = dateEl('fu_date', '2026-01-01');
     const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' }, rules: [withheldRule({ windowNotFuture: true })] });
     const msg = wMsg(env, 'fu_date');
-    check('withheld: staff are told the window is checked on save', /not checked on this page/.test(msg.innerHTML)
-      && /checked when the record is saved/.test(msg.innerHTML) && /\[enrol_date\]/.test(msg.innerHTML));
+    check('withheld: staff are told the window is not checked here, and that a miss is logged after the save',
+      /not checked on this page/.test(msg.innerHTML)
+      && /logged after the save/.test(msg.innerHTML) && /\[enrol_date\]/.test(msg.innerHTML));
+    check('withheld: a plain grey line, with no warning box or sign',
+      !/&#9888;/.test(msg.innerHTML) && /background:none/.test(msg.style.cssText) && /border:0/.test(msg.style.cssText), msg.style.cssText);
     check('withheld: no verdict on the field', v.getAttribute('aria-invalid') === null);
     let ev = submitEv(); env.doc.fire('submit', ev);
     check('withheld: the window part never blocks', ev._prevented === false);

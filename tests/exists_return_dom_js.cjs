@@ -345,8 +345,8 @@ for (const [label, reply, note] of [
   const stub = makeTransportStub();
   stub.next = 'HANG';
   const env = boot(f.list, { rules: [rule({ blockSave: 'off' })] }, stub);
-  check('a lookup on its way holds the save, even with "blockSave":"off"', !saved(env)
-    && /still being checked/.test(env.win._alerts.slice(-1)[0] || ''));
+  check('a lookup on its way makes the save wait, even with "blockSave":"off", with no dialog', !saved(env)
+    && env.win._alerts.length === 0);
   flushAll();
   check('...until it counts as "could not check"', saved(env));
 }
@@ -458,7 +458,7 @@ function later(ms, fn) {
   check('an answer for a branch the page no longer selects writes nothing', f.from.value === 'old' && f.date.value === '09-09-2020');
 }
 {
-  // A not-found grows old: a rule that cannot block does not ask again at Save, one that can does.
+  // A not-found grows old: Save never asks the server, whether the rule can block or not.
   for (const mode of ['off', 'confirm']) {
     const f = form('SP-404');
     const stub = makeDeferredStub();
@@ -470,14 +470,15 @@ function later(ms, fn) {
         check('"blockSave":"off": Save after a not-found 31 s old goes through at once, nothing asked again',
           ok && stub.calls.length === 1 && !env.win._alerts.length);
       } else {
-        check('"blockSave":"confirm": Save asks again about a not-found 31 s old and waits for the answer',
-          !ok && stub.calls.length === 2 && /please wait a moment/.test(env.win._alerts.slice(-1)[0] || ''));
+        // confirm() answers true in this harness: the dialog is the save's own, and nothing is asked
+        check('"blockSave":"confirm": Save after a not-found 31 s old goes by it, nothing asked again',
+          ok && stub.calls.length === 1 && env.win._alerts.length === 0);
       }
     });
   }
 }
 {
-  // A re-ask at Save that gets no usable answer keeps the old not-found, and is heard.
+  // Save does not ask again about an old not-found: the fields stay as the person left them.
   const f = form('SP-404');
   const stub = makeTransportStub();
   stub.next = { state: 'not-found' };
@@ -486,8 +487,8 @@ function later(ms, fn) {
   f.clearEvents();
   stub.next = { state: 'unknown', why: 'the saved values could not be read just now' };
   later(31000, () => { saved(env); });
-  check('a re-ask at Save answered "unknown" keeps the not-found: the fields are emptied, heard',
-    stub.calls.length === 2 && f.from.value === '' && f.from._events.join(',') === 'input,change' && /not saved/.test(xMsg(env, 'spec').innerHTML));
+  check('Save 31 s after a not-found asks nothing, and the not-found stands',
+    stub.calls.length === 1 && /not saved/.test(xMsg(env, 'spec').innerHTML));
 }
 {
   const f = form('SP-1');
@@ -582,8 +583,8 @@ function later(ms, fn) {
   const stub = makeTransportStub();
   stub.next = 'HANG';
   const env = boot(f.list, { rules: [rule({ blockSave: 'hard' })] }, stub);
-  check('a read-only field (@READONLY): a lookup on its way still holds the save', !saved(env)
-    && /still being checked/.test(env.win._alerts.slice(-1)[0] || ''));
+  check('a read-only field (@READONLY): a lookup on its way still makes the save wait, with no dialog', !saved(env)
+    && env.win._alerts.length === 0);
   flushAll();
   check('...no longer than the wait', saved(env));
 }
@@ -659,10 +660,15 @@ function later(ms, fn) {
   };
   const rules = [0, 1, 2, 3, 4].map((i) => ({ type: 'exists', fields: ['c' + i], existsReturnFields: ['c' + (i + 1)], blockSave: 'off' }));
   boot(chain, { rules }, stub);
-  check('a chain of lookups fills at page open, one rule after the other', chain[5].value === 'K>>>>>');
+  // Every rule is attached before the lookups of the page's start go out (QRID_lookup), as in a
+  // browser, where the answer lands after the page has started. The fill made as the page opens
+  // is quiet (it does not mark the form as changed), so it sets off no further lookup.
+  check('page open: the first lookup fills its field, quietly (got ' + chain.map((e) => e.value).join(' ') + ')',
+    chain[1].value === 'K>' && chain[2].value === '' && stub.calls.length === 1);
+  chain[5].value = 'kept';
   chain[0].value = 'J'; chain[0].fire('change');
   check('...a change runs down the chain four writes deep, and the fifth is not made (got ' + chain.map((e) => e.value).join(' ') + ')',
-    chain[4].value === 'J>>>>' && chain[5].value === 'K>>>>>');
+    chain[4].value === 'J>>>>' && chain[5].value === 'kept');
 }
 
 // ---- EXS-2: a form the person may only read, or a locked one ------------------------------------------

@@ -93,6 +93,48 @@ final class FieldValues
     }
 
     /**
+     * Whether $fields together have more than $limit rows in the data table;
+     * null when the table could not be read. Each field is counted only as
+     * far as the limit, through the (project_id, field_name) index, so a
+     * field of 400,000 rows costs $limit + 1 index entries. A live lookup
+     * asks this before recordsWhere(), which reads every row.
+     *
+     * @param string[] $fields
+     * @return bool|null
+     */
+    public function moreRowsThan($pid, array $fields, $limit)
+    {
+        $fields = array_values(array_unique(array_map('strval', $fields)));
+        $limit = (int) $limit;
+        if (!$fields || $limit < 0 || !is_object($this->module) || !is_callable([$this->module, 'query'])) return null;
+        $table = $this->tableOf($pid);
+        if ($table === null) return null;
+        $sql = 'SELECT COUNT(*) FROM (SELECT 1 FROM ' . $table . ' WHERE project_id = ? AND field_name = ? LIMIT '
+            . ($limit + 1) . ') AS n';
+        $rows = 0;
+        try {
+            foreach ($fields as $f) {
+                $q = $this->module->query($sql, [(int) $pid, $f]);
+                $row = null;
+                if (is_array($q)) {
+                    $row = isset($q[0]) && is_array($q[0]) ? array_values($q[0]) : null;
+                } elseif (is_object($q) && is_callable([$q, 'fetch_row'])) {
+                    $row = $q->fetch_row();
+                } elseif (is_object($q) && is_callable([$q, 'fetch_assoc'])) {
+                    $a = $q->fetch_assoc();
+                    $row = is_array($a) ? array_values($a) : null;
+                }
+                if (!is_array($row) || !isset($row[0]) || !is_numeric($row[0])) return null;
+                $rows += (int) $row[0];
+                if ($rows > $limit) return true;
+            }
+        } catch (\Throwable $e) {
+            return null;
+        }
+        return false;
+    }
+
+    /**
      * recordsWhere() over the rows of $records only: the ones whose row of
      * one of $fields $accepts, or null when the table could not be read. The
      * rows come through the (project_id, record, field_name) index, so the

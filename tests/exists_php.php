@@ -596,11 +596,21 @@ namespace {
         $_SESSION = [];
         $m = mod();
         $last = null;
-        for ($i = 0; $i < 60; $i++) $last = ask($m, 'res_spec', ['res_spec' => 'SP-2']);
-        check('throttle: 60 lookups a minute are answered', ($last['state'] ?? null) === 'found');
-        $r = ask($m, 'res_spec', ['res_spec' => 'SP-2']);
-        check('throttle: the 61st answers unknown, flagged as throttled', ($r['state'] ?? null) === 'unknown'
+        $LIMIT = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SIGNED_IN;
+        // The same question again is not counted: a form asks it as it opens and when the field is left.
+        for ($i = 0; $i < 3 * $LIMIT; $i++) $last = ask($m, 'res_spec', ['res_spec' => 'SP-2']);
+        check('throttle: one value asked ' . (3 * $LIMIT) . ' times in a minute is answered every time', ($last['state'] ?? null) === 'found');
+        $answered = 0;
+        for ($i = 1; $i < $LIMIT; $i++) {
+            $r = ask($m, 'res_spec', ['res_spec' => 'SP-T' . $i]);
+            if (($r['state'] ?? null) !== 'unknown') $answered++;
+        }
+        check('throttle: ' . $LIMIT . ' different values a minute are answered', $answered === $LIMIT - 1, $answered);
+        $r = ask($m, 'res_spec', ['res_spec' => 'SP-OVER']);
+        check('throttle: one value more answers unknown, flagged as throttled', ($r['state'] ?? null) === 'unknown'
             && strpos($r['why'], 'too many checks') !== false && ($r['throttled'] ?? null) === true);
+        $r = ask($m, 'res_spec', ['res_spec' => 'SP-2']);
+        check('throttle: a value asked before is still answered while new ones are refused', ($r['state'] ?? null) === 'found');
         $r = $m->redcap_module_ajax('unique-check', ['field' => 'res_uniq', 'values' => ['res_uniq' => 'U-1']],
             149, '1', 'result', 351, 1, null, null, null, '', '', 'nurse', null);
         check('throttle: one budget covers unique-check too, answered as exists-check is (UNQ-3)',
@@ -609,6 +619,70 @@ namespace {
         $r = $m->redcap_module_ajax('unique-check', ['field' => 'res_uniq', 'values' => ['res_uniq' => 'U-1']],
             149, '1', 'result', 351, 1, null, null, null, '', '', 'nurse', null);
         check('throttle: a fresh minute answers unique-check again', isset($r['used']));
+        // ---- "lookup-batch": the lookups of one pass in one request (LiveLookups::lookupBatch) ----
+        $_SESSION = [];
+        $batch = function ($m, $items, $user = 'nurse', $hash = null) {
+            return $m->redcap_module_ajax('lookup-batch', ['items' => $items],
+                149, '1', 'result', 351, 1, $hash, null, null, '', '', $user, null);
+        };
+        $X = ['action' => 'exists-check', 'payload' => ['field' => 'res_spec', 'values' => ['res_spec' => 'SP-2']]];
+        $Q = ['action' => 'unique-check', 'payload' => ['field' => 'res_uniq', 'values' => ['res_uniq' => 'U-1']]];
+        $one = [ask($m, 'res_spec', ['res_spec' => 'SP-2']),
+            $m->redcap_module_ajax('unique-check', $Q['payload'], 149, '1', 'result', 351, 1, null, null, null, '', '', 'nurse', null)];
+        $r = $batch($m, [$X, $Q]);
+        check('batch: each item is answered as a request of its own is, in the order asked',
+            isset($r['answers']) && json_encode($r['answers']) === json_encode($one), json_encode($r));
+        $r = $batch($m, [$X, ['action' => 'scan-start', 'payload' => []], ['action' => 'lookup-batch', 'payload' => ['items' => [$X]]],
+            ['action' => 'exists-check'], 'text', $Q]);
+        check('batch: only the two lookups are answered; any other item is null',
+            count($r['answers']) === 6 && isset($r['answers'][0]['state']) && $r['answers'][1] === null && $r['answers'][2] === null
+            && $r['answers'][3] === null && $r['answers'][4] === null && isset($r['answers'][5]['used']), json_encode($r));
+        $r = $batch($m, 'text');
+        check('batch: no list of items is a malformed request', ($r['error'] ?? null) === 'malformed request');
+        $MAX = \INSPIRE\UniversalValidator\UniversalValidator::LOOKUP_BATCH_MAX;
+        $r = $batch($m, array_fill(0, $MAX + 3, $X));
+        check('batch: items past ' . $MAX . ' are not answered',
+            count($r['answers']) === $MAX + 3 && isset($r['answers'][$MAX - 1]['state']) && $r['answers'][$MAX] === null && $r['answers'][$MAX + 2] === null);
+        // The limit counts a batch's items as it counts requests.
+        $_SESSION = [];
+        $m->systemSettings['lookup-new-values-per-minute'] = '2';
+        $new = function ($v) { return ['action' => 'exists-check', 'payload' => ['field' => 'res_spec', 'values' => ['res_spec' => $v]]]; };
+        $r = $batch($m, [$new('SP-B1'), $new('SP-B2'), $new('SP-B3'), $new('SP-B1')]);
+        check('batch: the limit on new values holds inside a batch',
+            !isset($r['answers'][0]['throttled']) && !isset($r['answers'][1]['throttled'])
+            && ($r['answers'][2]['throttled'] ?? null) === true && !isset($r['answers'][3]['throttled']), json_encode($r));
+        unset($m->systemSettings['lookup-new-values-per-minute']);
+        // No sign-in: each item meets the guards a single request meets.
+        $r = $batch($m, [$X, $Q], null, 'hash');
+        $alone = askSurvey($m, 'res_spec', ['res_spec' => 'SP-2']);
+        check('batch on a survey: an item is refused as the single request is',
+            isset($r['answers'][0]) && json_encode($r['answers'][0]) === json_encode($alone), json_encode($r));
+        $r = $batch($m, [$X, $Q], null, null);
+        check('batch with no sign-in and no survey: no item is answered with a value or a record',
+            is_array($r['answers']) && strpos(json_encode($r), '"record":"') === false
+            && !isset($r['answers'][0]['state']), json_encode($r));
+        $cfgJson = json_decode((string) file_get_contents(__DIR__ . '/../config.json'), true);
+        check('batch: config.json declares the action where the two lookups are declared',
+            in_array('lookup-batch', $cfgJson['auth-ajax-actions'], true) && in_array('lookup-batch', $cfgJson['no-auth-ajax-actions'], true));
+        // The system setting moves the limit.
+        $_SESSION = [];
+        $m->systemSettings['lookup-new-values-per-minute'] = '2';
+        ask($m, 'res_spec', ['res_spec' => 'SP-A']);
+        ask($m, 'res_spec', ['res_spec' => 'SP-B']);
+        $r = ask($m, 'res_spec', ['res_spec' => 'SP-C']);
+        check('throttle: "lookup-new-values-per-minute" 2 refuses the third new value', ($r['throttled'] ?? null) === true);
+        $r = ask($m, 'res_spec', ['res_spec' => 'SP-A']);
+        check('throttle: ... and still answers the first again', ($r['state'] ?? null) !== 'unknown');
+        // What is remembered: a hash per question, never the value, and no more than the cap.
+        $seen = $_SESSION['uvalidate_lookup_seen_149'] ?? [];
+        check('throttle: the session keeps 16 hex characters per question, not the value',
+            count($seen) === 2 && strpos(json_encode($_SESSION), 'SP-A') === false
+            && preg_match('/^[0-9a-f]{16}$/', (string) array_keys($seen)[0]) === 1, json_encode($seen));
+        // A question older than the remembered time counts as new again.
+        foreach ($seen as $h => $t) $_SESSION['uvalidate_lookup_seen_149'][$h] = $t - \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SEEN_SECONDS - 1;
+        $r = ask($m, 'res_spec', ['res_spec' => 'SP-A']);
+        check('throttle: a question older than the remembered time is counted as new', ($r['throttled'] ?? null) === true);
+        unset($m->systemSettings['lookup-new-values-per-minute']);
         $_SESSION = [];
     } else {
         check('throttle: a session could be started in this runtime', false);

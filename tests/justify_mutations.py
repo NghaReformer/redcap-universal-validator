@@ -489,13 +489,7 @@ MUTATIONS = [
     ("the note's languages not read", ENGINE,
      '            i18n: (QRID_CONFIG.i18n && typeof QRID_CONFIG.i18n === "object") ? QRID_CONFIG.i18n : null };\n  var NOTE = "Fix this value',
      '            i18n: null };\n  var NOTE = "Fix this value', MLM),
-    # round 3 (J3A-1 to J3A-9)
-    ('a stale "not found" asked again at Save though the reason is given (J3A-1)', ENGINE,
-     '                   && !(GITEM && !returnsOf(V).length && QRID_justified(GITEM))) ? cached : null;',
-     '                   ) ? cached : null;', DOM),
-    ('a pending lookup offers a reason that cannot release it (J3A-7)', ENGINE,
-     'concat(pend.map(function(el){ return label(el) + (el.__qridPendingNote',
-     'concat(pend.map(function(el){ return badLabel(el) + (el.__qridPendingNote', DOM),
+    # round 3 (J3A-2 to J3A-9; J3A-1 and J3A-7 went with the question Save asked)
     ('the log dedupes each kind of entry on its own past only (J3A-2)', UV,
      '        if ($this->loggedAlready($message, $where, $scope, $fp, $finding)) return;',
      '        if ($this->loggedAlready($message, $where, $scope, $fp, null)) return;', 'tests/justify_live_twin_php.php'),

@@ -27,8 +27,8 @@ const path = require('path');
 let n = 0, fail = 0;
 function check(label, cond) { n++; if (!cond) { fail++; console.error('FAIL: ' + label); } }
 
-/* The clock Save reads to decide whether a cached answer is fresh
-   (QRID_RECHECK_MS): tests move it forward with clockShift. */
+/* The clock: tests move it forward with clockShift, to show that Save goes
+   by the answer the page has however old it is (Save never asks the server). */
 let clockShift = 0;
 const realDateNow = Date.now;
 Date.now = () => realDateNow() + clockShift;
@@ -161,6 +161,9 @@ function uMsg(env, field) {
 function submitEv() {
   return { _prevented: false, preventDefault() { this._prevented = true; }, stopImmediatePropagation() {} };
 }
+/* A save kept back for a lookup shows no dialog: it waits a short while and
+   goes on by itself (tests/lookup_save_hold_dom_js.cjs follows it through). */
+const noWaitDialog = (env) => !env.win._alerts.some((a) => /wait a moment|still being checked|not checked yet/.test(a));
 const JSMO = 'EMStub.UV';
 
 // ---- 1) used value blocks; free value allows; record id shown to staff -----
@@ -181,14 +184,14 @@ const JSMO = 'EMStub.UV';
   let ev = submitEv(); env.doc.fire('submit', ev);
   check('used: hard block traps the save', ev._prevented === true);
   check('used: a fresh "used" decides the save without asking again', stub.calls.length === 1);
-  // An older one is asked again: the other record may have changed since.
+  // SAVE NEVER ASKS THE SERVER (reported 2026-11-11: a question asked at Save
+  // is a round trip every save pays). An older answer stands too.
   clockShift += 31000;
   ev = submitEv(); env.doc.fire('submit', ev);
-  check('used: the save asked again', stub.calls.length === 2 && stub.calls[1].payload.values.pid === 'AB100' && ev._prevented === true);
-  stub.next = { used: false, record: null };
-  clockShift += 31000;
+  check('used: an older "used" still blocks, and Save asks nothing', stub.calls.length === 1 && ev._prevented === true);
+  clockShift += 20 * 60000;
   ev = submitEv(); env.doc.fire('submit', ev);
-  check('used: a value freed since then lets the save through', ev._prevented === false && stub.calls.length === 3);
+  check('used: twenty minutes on, the same', stub.calls.length === 1 && ev._prevented === true);
 
   stub.next = { used: false, record: null };
   pid.value = 'FRESH1';
@@ -196,30 +199,36 @@ const JSMO = 'EMStub.UV';
   check('free: green note', /Not used before/.test(msg.innerHTML));
   ev = submitEv(); env.doc.fire('submit', ev);
   check('free: save allowed', ev._prevented === false);
-  check('free: a fresh cached "free" is not asked again', stub.calls.length === 4);
-  // An older "free" is asked again too (UNQ-4): the value may have been saved
-  // in another record since this one was typed.
+  check('free: a fresh cached "free" is not asked again', stub.calls.length === 2);
+  // A value another record takes meanwhile is saved; the save audit finds it
+  // and the next page says so (UniversalValidator::afterSaveNotice).
   stub.next = { used: true, record: '9' };
   clockShift += 31000;
   ev = submitEv(); env.doc.fire('submit', ev);
-  check('free: an older "free" is asked again at Save, and the value saved since then blocks it',
-    stub.calls.length === 5 && stub.calls[4].payload.values.pid === 'FRESH1' && ev._prevented === true
-    && /already recorded/.test(msg.innerHTML));
+  check('free: an older "free" lets the save through at once, and Save asks nothing',
+    stub.calls.length === 2 && ev._prevented === false && noWaitDialog(env)
+    && /Not used before/.test(msg.innerHTML));
+  // Changing the field asks: that is when the page learns of it.
+  pid.value = 'FRESH2';
+  pid.fire('change');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('free: a changed value is asked, and a duplicate blocks',
+    stub.calls.length === 3 && stub.calls[2].payload.values.pid === 'FRESH2' && ev._prevented === true);
 
   pid.value = '';
   pid.fire('change');
   check('empty: inert', msg.style.display === 'none');
-  check('empty: no request sent', stub.calls.length === 5);
+  check('empty: no request sent', stub.calls.length === 3);
 
   // The server trims the same characters, no more and no less.
   pid.value = '\u00A0AB200\0';
   pid.fire('change');
   check('trim: no-break spaces and NUL are trimmed before asking',
-    stub.calls.length === 6 && stub.calls[5].payload.values.pid === 'AB200');
+    stub.calls.length === 4 && stub.calls[3].payload.values.pid === 'AB200');
   pid.value = '\u2003AB300';
   pid.fire('change');
   check('trim: an em space is kept, as the server keeps it',
-    stub.calls.length === 7 && stub.calls[6].payload.values.pid === '\u2003AB300');
+    stub.calls.length === 5 && stub.calls[4].payload.values.pid === '\u2003AB300');
 }
 
 // ---- 1a) UNQ-6: a page drawn for a record not saved yet says so -------------
@@ -338,43 +347,32 @@ const JSMO = 'EMStub.UV';
   check('error response: save never trapped', ev._prevented === false);
 }
 {
-  // A throttled answer holds a rule that blocks: the server answers again
-  // within the minute, and Save asks again (UNQ-3).
+  // A throttled answer fails open like any other the server cannot give:
+  // nothing waits for the limit to clear, and Save does not ask again.
   const stub = makeTransportStub();
   const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'TH1';
-  stub.next = { unknown: true, record: null, throttled: true, why: 'too many checks in the last minute — wait a moment' };
+  stub.next = { unknown: true, record: null, throttled: true, why: 'too many checks in the last minute' };
   const env = boot([pid], {
     singleFields: [], pooledFields: [], jsmoName: JSMO,
     rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }],
   }, stub);
   const msg = uMsg(env, 'pid');
-  check('throttled: says it could not check, why, and that the save waits',
+  check('throttled: says it could not check and why, and promises no wait',
     msg.style.display === 'block'
-    && /Could not check whether this value is already recorded just now \(too many checks in the last minute — wait a moment\)\. The save waits until it can be checked\./.test(msg.innerHTML));
+    && /Could not check whether this value is already recorded just now \(too many checks in the last minute\)\.$/.test(msg.innerHTML)
+    && !/save waits/.test(msg.innerHTML));
   check('throttled: not marked invalid', pid.getAttribute('aria-invalid') !== 'true');
   let ev = submitEv(); env.doc.fire('submit', ev);
-  check('throttled: the save is held, and Save asked again',
-    ev._prevented === true && stub.calls.length === 2
-    && /wait a moment and save again/.test(env.win._alerts.slice(-1)[0] || ''));
-  // The alert names the limit, not a check underway (live UNQ-3, 2026-10-27).
-  check('throttled: the alert says the value is not checked yet because of the limit',
-    /\(not checked yet: too many checks in the last minute\)/.test(env.win._alerts.slice(-1)[0] || '')
-    && !/still being checked/.test(env.win._alerts.slice(-1)[0] || ''));
-  // While Save's question about the refused value is still out, the alert
-  // keeps the reason.
-  stub.next = 'HANG';
-  ev = submitEv(); env.doc.fire('submit', ev);
-  check('throttled: with the second question still out, the alert keeps the reason',
-    ev._prevented === true
-    && /\(not checked yet: too many checks in the last minute\)/.test(env.win._alerts.slice(-1)[0] || ''));
+  check('throttled: the save goes through, with no dialog and no second question',
+    ev._prevented === false && stub.calls.length === 1 && env.win._alerts.length === 0);
   stub.next = { used: true, record: '4' };
-  ev = submitEv(); env.doc.fire('submit', ev);
-  check('throttled: a duplicate found once the limit clears blocks', ev._prevented === true && /already recorded/.test(msg.innerHTML));
-  stub.next = { unknown: true, record: null, throttled: true, why: 'too many checks in the last minute — wait a moment' };
   pid.value = 'TH2'; pid.fire('change');
-  stub.next = { used: false, record: null };
   ev = submitEv(); env.doc.fire('submit', ev);
-  check('throttled: a free answer once the limit clears lets the save through', ev._prevented === false && /Not used before/.test(msg.innerHTML));
+  check('throttled: the next value is asked, and a duplicate blocks', ev._prevented === true && stub.calls.length === 2 && /already recorded/.test(msg.innerHTML));
+  stub.next = { used: false, record: null };
+  pid.value = 'TH3'; pid.fire('change');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('throttled: a free value saves', ev._prevented === false && /Not used before/.test(msg.innerHTML));
 }
 {
   // Any other answer the server cannot give fails open: it names its reason,
@@ -404,7 +402,7 @@ const JSMO = 'EMStub.UV';
   // A throttled rule that cannot block is never held.
   const stub = makeTransportStub();
   const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'TH9';
-  stub.next = { unknown: true, record: null, throttled: true, why: 'too many checks in the last minute — wait a moment' };
+  stub.next = { unknown: true, record: null, throttled: true, why: 'too many checks in the last minute' };
   const env = boot([pid], {
     singleFields: [], pooledFields: [], jsmoName: JSMO,
     rules: [{ type: 'unique', fields: ['pid'], blockSave: 'off' }],
@@ -470,8 +468,8 @@ const JSMO = 'EMStub.UV';
   }, stub);
   check('pending: checking note shown', /checking/.test(uMsg(env, 'pid').innerHTML));
   const ev = submitEv(); env.doc.fire('submit', ev);
-  check('pending: a save click waits for the answer', ev._prevented === true
-    && /still being checked/.test(env.win._alerts.slice(-1)[0] || ''));
+  check('pending: a save click waits for the answer, with no dialog', ev._prevented === true
+    && env.win._alerts.length === 0);
 }
 {
   // ...for a bounded time: no answer in time fails open, and Save does not ask
@@ -644,86 +642,35 @@ const JSMO = 'EMStub.UV';
   check('unknown uniqueness discards late response',!ev._prevented&&pid.getAttribute('aria-invalid')!=='true');
 }
 
-// ---- a real transport answers later: Save waits once, then decides ----------------
+// ---- a real transport answers later: Save goes by the answer it has ---------------
 for (const mode of ['confirm', 'hard']) {
   const stub = makeDeferredStub();
   const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'AB100';
   const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
     rules: [{ type: 'unique', fields: ['pid'], blockSave: mode }] }, stub);
-  stub.answer({ used: true, record: '7' });
   const confirms = [];
   env.win.confirm = (m) => { confirms.push(m); return false; };
   const click = () => { const ev = submitEv(); env.doc.fire('submit', ev); return ev; };
   const told = () => mode === 'confirm' ? confirms.length : env.win._alerts.filter((a) => /fix the flagged/.test(a)).length;
   let ev = click();
-  check(mode + ' async: a fresh "used" decides the first click, with no request', ev._prevented && told() === 1 && stub.calls.length === 1);
-  clockShift += 31000;
-  ev = click();
-  check(mode + ' async: an older "used" is asked again, and the click waits for it',
-    ev._prevented && stub.calls.length === 2 && /still being checked/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
+  check(mode + ' async: a save while the first answer is on its way waits, with no dialog',
+    ev._prevented && told() === 0 && stub.calls.length === 1 && noWaitDialog(env));
   stub.answer({ used: true, record: '7' });
   ev = click();
-  check(mode + ' async: the next click is decided by the answer, not held again', ev._prevented && told() === 2 && stub.calls.length === 2);
+  check(mode + ' async: the answer decides the next click, with no request', ev._prevented && told() === 1 && stub.calls.length === 1);
+  clockShift += 31000;
+  ev = click();
+  check(mode + ' async: an older "used" still decides, and Save asks nothing',
+    ev._prevented && stub.calls.length === 1 && told() === 2 && noWaitDialog(env));
   click(); click();
-  check(mode + ' async: further clicks ask nothing', stub.calls.length === 2 && told() === 4);
-  clockShift += 31000;
-  click();
-  const errs = errorsDuring(() => stub.answer('ERROR'));
-  ev = click();
-  check(mode + ' async: a re-ask that fails keeps the known duplicate',
-    ev._prevented && told() === 5 && stub.calls.length === 3 && /already recorded/.test(uMsg(env, 'pid').innerHTML) && errs.length === 1);
-  clockShift += 31000;
-  click();
-  const quiet = errorsDuring(() => stub.answer({ unknown: true, record: null }));
-  ev = click();
-  check(mode + ' async: an "unknown" re-ask keeps it too, and is no error',
-    ev._prevented && told() === 6 && stub.calls.length === 4 && quiet.length === 0);
-  clockShift += 31000;
-  click();
+  check(mode + ' async: further clicks ask nothing', stub.calls.length === 1 && told() === 4);
+  // The value is changed to one that is free: asked once, then Save goes on.
+  pid.value = 'AB101'; pid.fire('change');
   stub.answer({ used: false, record: null });
+  clockShift += 31000;
   ev = click();
-  check(mode + ' async: a value freed since then lets the next click save', !ev._prevented && stub.calls.length === 5);
-}
-// A re-ask with no answer in time keeps the known duplicate.
-{
-  const realST = global.setTimeout;
-  const long = [];
-  global.setTimeout = (fn, ms) => { if ((ms || 0) >= 5000) { long.push(fn); return 0; } return realST(fn, ms); };
-  try {
-    const stub = makeDeferredStub();
-    const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'AB100';
-    const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
-      rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, stub);
-    stub.answer({ used: true, record: '7' });
-    clockShift += 31000;
-    let ev = submitEv(); env.doc.fire('submit', ev);
-    long.forEach((fn) => fn()); long.length = 0;
-    ev = submitEv(); env.doc.fire('submit', ev);
-    check('async: a re-ask with no answer in time keeps the known duplicate',
-      ev._prevented && stub.calls.length === 2 && /already recorded/.test(uMsg(env, 'pid').innerHTML)
-      && /fix the flagged/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
-  } finally { global.setTimeout = realST; }
-}
-// An older "free" asked again with no answer in time keeps "free": the save goes through (UNQ-4).
-{
-  const realST = global.setTimeout;
-  const long = [];
-  global.setTimeout = (fn, ms) => { if ((ms || 0) >= 5000) { long.push(fn); return 0; } return realST(fn, ms); };
-  try {
-    const stub = makeDeferredStub();
-    const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'FREE77';
-    const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
-      rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, stub);
-    stub.answer({ used: false, record: null });
-    clockShift += 31000;
-    let ev = submitEv(); env.doc.fire('submit', ev);
-    check('async: an older "free" is asked again, and the click waits for it',
-      ev._prevented && stub.calls.length === 2 && /still being checked/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
-    long.forEach((fn) => fn()); long.length = 0;
-    ev = submitEv(); env.doc.fire('submit', ev);
-    check('async: ...with no answer in time it keeps "free" and the next click saves',
-      !ev._prevented && stub.calls.length === 2 && /Not used before/.test(uMsg(env, 'pid').innerHTML));
-  } finally { global.setTimeout = realST; }
+  check(mode + ' async: an older "free" lets the save through, and Save asks nothing',
+    !ev._prevented && stub.calls.length === 2 && told() === 4 && noWaitDialog(env));
 }
 // A first answer of "unknown" (the server's read budget) is no error either.
 {

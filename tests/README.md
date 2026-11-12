@@ -34,6 +34,9 @@ php  tests/repeat_metadata_php.php   # what repeats, read from \Project or the s
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
 node tests/unique_dom_js.cjs      # @UVUNIQUE browser rule (transport, fail-open, cache, "also" message)
+node tests/lookup_save_hold_dom_js.cjs  # Save never asks the server; a lookup already on its way holds the save briefly with no dialog, then it goes on by itself
+node tests/quiet_ok_dom_js.cjs          # quiet mode ("quietOk"): a field that passes shows no line; problems show and block as before
+node tests/lookup_batch_dom_js.cjs      # the lookups a page asks as it opens go out as one request; a server without the action is asked field by field
 php  tests/unique_also_scan_php.php  # @UVUNIQUE lookups in the durable scan: settled, re-read by form, never findings
 node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
@@ -914,7 +917,7 @@ to a finding saved with a reason.
   that is no reason: blank, spaces, a Missing Data Code, a hidden row, a
   read-only field, and a reason on another survey page. A reason typed in
   the embedded box releases the field (C8).
-- `justify_mutations.py` applies 164 mutations to a copy of the code, one at a
+- `justify_mutations.py` applies 162 mutations to a copy of the code, one at a
   time, and fails if the named suite still passes on any of them. Twenty-two mutate
   the stores, the rollup, the kept counts and the status poll of the durable
   scan and are killed only by `tests/mysql/run.php`; they run

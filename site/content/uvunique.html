@@ -96,8 +96,11 @@ covered by the post-save audit and the Validation scan.</p>
 re-checks the saved value against every other record and logs a collision as
 <code>type: unique</code>, <code>reason: duplicate-value</code> — review the module log
 for races. A failed check fails <strong>open</strong>, so a network error on a first check
-never traps a save. When Save asks again about an "already used" the page has held for
-30 seconds or more and gets no answer, that earlier answer stands and is enforced.</p>
+never traps a save. Save never asks the server: it goes by the answer the page has, so an
+"already used" is enforced and a "not used before" lets the save through. Only a lookup
+already on its way holds the save, with no dialog, for at most 1.5 seconds; nobody is asked
+to wait and save again. When the check after the save finds the value in another record,
+the next page the person opens says so once.</p>
 
 <h2>Field types</h2>
 

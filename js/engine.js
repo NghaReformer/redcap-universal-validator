@@ -4010,18 +4010,81 @@ function QRID_answerCache(max){
     }
   };
 }
-/* How long a save waits on a lookup still in flight before the lookup counts
-   as unanswered (QRID_registerBlocker holds the save meanwhile). */
+/* How long a lookup's "checking" notice waits for its answer before the
+   field says it could not be checked. A save waits less (QRID_SAVE_HOLD_MS). */
 var QRID_PENDING_MS = 10000;
-/* What the save alert adds to a lookup held because the server refused it for
-   its limit (UNQ-3), in place of " (still being checked)": the field already
-   says it could not be checked, and the alert should not say it is underway. */
-var QRID_THROTTLED_NOTE = " (not checked yet: too many checks in the last minute)";
-/* How long Save trusts a cached answer that blocks it ("used", "not found").
-   Older, Save asks the server again, since another record may have changed
-   in the meantime, and holds the save until the answer lands. A fresh answer
-   decides the next click, so a second click gets the "Save anyway?" dialog
-   or the block message instead of another wait. */
+/* How long a save waits, with no dialog, for a lookup still on its way. The
+   save goes on by itself when the answer lands, or after this long without
+   one: a lookup that cannot answer never keeps a person from saving, and the
+   server checks the saved value again (the save audit, the Validation scan).
+   0 never waits. The server sends another length as "lookupHoldMs" (system
+   setting lookup-save-hold-ms). */
+var QRID_SAVE_HOLD_MAX_MS = 10000;
+/* QUIET MODE (project setting quiet-ok, sent as "quietOk"): a field that
+   passes shows no line. The green lines that only say a value passed
+   ("OK.", "ID verified", "Not used before.") are left out for the ID check,
+   the constraint, the date window and the no-duplicates lookup; everything
+   that reports a problem, a notice or a lookup still on its way shows as
+   before, and so do the lines that carry information of their own (what an
+   @UVEXISTS lookup found, the count under a pooled scan). The line is still
+   written, only not displayed, so nothing else on the page changes: the
+   field's state, the save guard and the audit are the same.
+   tests/quiet_ok_dom_js.cjs locks this. */
+var QRID_QUIET_OK = !!(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.quietOk === true);
+/* The display a message line gets: passed says the line only confirms. */
+function QRID_okShown(passed){ return (passed && QRID_QUIET_OK) ? "display:none" : "display:block"; }
+var QRID_SAVE_HOLD_MS = (function(){
+  var v = QRID_COMBINED_CONFIG ? QRID_COMBINED_CONFIG.lookupHoldMs : null;
+  return (typeof v === "number" && isFinite(v) && v >= 0 && v <= QRID_SAVE_HOLD_MAX_MS) ? Math.floor(v) : 1500;
+})();
+/* How often a held save looks whether its lookups have answered, and how
+   long it has waited before the page says so (a wait of a few tens of
+   milliseconds shows nothing). */
+var QRID_SAVE_HOLD_TICK_MS = 25;
+var QRID_SAVE_HOLD_NOTE_MS = 300;
+var QRID_SAVE_BUTTON_PREFIX = "submit-btn-save";
+/* The save button an event's target is, or sits in; null for any other. */
+function QRID_saveButtonOf(t){
+  while(t && t.getAttribute){
+    var nm = (t.getAttribute("name") || t.id || "");
+    if(nm.indexOf(QRID_SAVE_BUTTON_PREFIX) === 0) return t;
+    t = t.parentNode;
+  }
+  return null;
+}
+/* The line a held save shows once it has waited QRID_SAVE_HOLD_NOTE_MS. */
+function QRID_saveHoldNote(on){
+  try {
+    var id = "uv-save-hold-note", el = document.getElementById ? document.getElementById(id) : null;
+    if(!on){ if(el) el.style.display = "none"; return; }
+    if(!el){
+      if(!document.body || typeof document.createElement !== "function") return;
+      el = document.createElement("div");
+      el.id = id;
+      el.setAttribute("role", "status");
+      el.setAttribute("aria-live", "polite");
+      el.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:100000;" +
+        "padding:8px 14px;border-radius:4px;border:1px solid #c9dbf5;background:#eef3fb;color:#3a567f;" +
+        "font-size:14px;font-family:inherit;box-shadow:0 2px 6px rgba(0,0,0,.2)";
+      el.innerHTML = "&#8230; Checking a value, then saving&hellip;";
+      document.body.appendChild(el);
+    }
+    el.style.display = "block";
+  } catch(e){}
+}
+/* SAVE NEVER ASKS THE SERVER. A lookup's round trip is a third of a second
+   to a second on a live server whatever the project's size (measured on
+   2026-11-12: the cost is the request, not the search), so a question asked
+   at Save is time every save pays. Save goes by the answer the page has,
+   however old: "already recorded" and "not found" still block, "not used
+   before" and "found" let it through. A value another record took while the
+   form stayed open is saved, and the save audit says so on the next page.
+   Only a lookup already on its way when Save is pressed (a value typed just
+   before) is waited for, and no longer than QRID_SAVE_HOLD_MS.
+
+   How old the "found" answer of a rule that fills fields may be before
+   judging the field again (a change, leaving the field) asks once more: the
+   entry it copies from may have changed. Save does not ask. */
 var QRID_RECHECK_MS = 30000;
 /* A copy of a lookup answer, stamped with the time it was given. */
 function QRID_stampAnswer(resp){
@@ -4030,7 +4093,7 @@ function QRID_stampAnswer(resp){
   o.__at = Date.now();
   return o;
 }
-/* Whether Save asks again about a cached answer given QRID_RECHECK_MS ago or earlier. */
+/* Whether a cached answer was given QRID_RECHECK_MS ago or earlier. */
 function QRID_answerStale(entry){
   return !entry || typeof entry.__at !== "number" || Date.now() - entry.__at >= QRID_RECHECK_MS;
 }
@@ -4211,16 +4274,30 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
       if(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0) return false;
       return QRID_itemHolds(el) && !QRID_justified(el);
     });
-    /* A lookup still in flight holds the save. Clicking Save blurs the field,
-       and the blur is when a lookup asks: letting the save through would
-       decide it before the answer that may block it arrives. Only items whose
-       active rule can block, or fills fields from the answer (@UVEXISTS
-       "return"), set __qridPending, and they drop it when the answer comes
-       or after QRID_PENDING_MS. */
+    /* A lookup still on its way makes the save wait, with no dialog: clicking
+       Save blurs the field, and the blur is when a lookup asks, so letting
+       the save through at once would decide it before the answer that may
+       block it arrives. The save goes on by itself when the answers are in,
+       or after QRID_SAVE_HOLD_MS without one (holdSave), and is judged again
+       then. Only items whose active rule can block, or fills fields from the
+       answer (@UVEXISTS "return"), set __qridPending. A save that already
+       waited does not wait again: a lookup still out is given up. */
     var pend = live.filter(function(el){
       return el.__qridPending && bad.indexOf(el) < 0 && !(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0);
     });
-    if(!bad.length && !pend.length) return true;
+    if(pend.length){
+      if(!UV_guard.resuming && QRID_SAVE_HOLD_MS > 0){
+        e.preventDefault();
+        if(e.stopImmediatePropagation) e.stopImmediatePropagation();
+        holdSave(e, by);
+        return false;
+      }
+      pend.forEach(giveUp);
+    }
+    /* This save is decided now, let through or refused: a save kept back
+       earlier must not come after it as a second one. */
+    dropHold();
+    if(!bad.length) return true;
     var label = QRID_guardLabel;
     /* one label a line (QRID_fieldLabel folds a label's own line breaks):
        a label may hold a comma, so a list joined by ", " reads as more
@@ -4230,15 +4307,13 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
       return QRID_justifiable(el)
         ? label(el) + " (or give a reason in \u201C" + UV_JUSTIFY[el.__qridFieldName].label() + "\u201D)" : label(el);
     }
-    var names = bad.map(badLabel).concat(pend.map(function(el){ return label(el) + (el.__qridPendingNote || " (still being checked)"); }))
-      .map(function(t){ return "\n• " + t; }).join("");
-    var hard = pend.length > 0 || bad.some(function(el){ return el.__qridBlockMode === "hard"; });
+    var names = bad.map(badLabel).map(function(t){ return "\n• " + t; }).join("");
+    var hard = bad.some(function(el){ return el.__qridBlockMode === "hard"; });
     if(hard){
       e.preventDefault();
       if(e.stopImmediatePropagation) e.stopImmediatePropagation();
-      window.alert(bad.length ? "Cannot save yet — please fix the flagged field(s):" + names
-                              : "Cannot save yet — please wait a moment and save again:" + names);
-      try { (bad[0] || pend[0]).focus(); } catch(_f){}
+      window.alert("Cannot save yet — please fix the flagged field(s):" + names);
+      try { bad[0].focus(); } catch(_f){}
       return false;
     }
     /* An empty required field failed no validation: name what it is (REQ-13). */
@@ -4251,23 +4326,77 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
     if(e.stopImmediatePropagation) e.stopImmediatePropagation();
     return false;
   }
-  document.addEventListener("submit", function(e){ return guard(e, e && e.submitter); }, true);
-  document.addEventListener("click", function(e){
-    var t = e.target;
-    while(t && t.getAttribute){
-      var nm = (t.getAttribute("name") || t.id || "");
-      if(nm.indexOf("submit-btn-save") === 0){
-        /* A click the guard let through goes on, in this same task, to the
-           button's own onclick, dataEntrySubmit(this). The verdict cannot
-           change in between, so the wrapper does not judge again; a re-run
-           would repeat every recheck. */
-        if(guard(e, t)){
-          UV_guard.clickPass = true;
-          setTimeout(function(){ UV_guard.clickPass = false; }, 0);
+  /* A lookup the save stops waiting for: its field says it could not be
+     checked, and it no longer holds anything. */
+  function giveUp(el){
+    try { if(typeof el.__qridGiveUp === "function") el.__qridGiveUp(); } catch(_g){}
+    el.__qridPending = false;
+  }
+  /* How to ask for the held save again, the way it was asked: REDCap's
+     dataEntrySubmit with its own arguments (e.again, set by the wrapper), a
+     form submit through requestSubmit so the submit event fires again, or the
+     button's click. Each comes back through the guard, which judges the
+     answers that have landed. */
+  function saveAgain(e, by){
+    if(e && typeof e.again === "function") return e.again;
+    if(e && e.type === "submit"){
+      var form = e.target;
+      return function(){
+        if(form && typeof form.requestSubmit === "function"){
+          try { form.requestSubmit(by || undefined); return; } catch(_s){}
+          try { form.requestSubmit(); return; } catch(_s2){}
         }
+        if(by && typeof by.click === "function") by.click();
+      };
+    }
+    return function(){
+      if(by && typeof by.click === "function") by.click();
+      else if(typeof window.dataEntrySubmit === "function") window.dataEntrySubmit(by);
+    };
+  }
+  /* Keep a save back while a lookup is on its way, then ask for it again
+     (saveAgain) without the person doing anything: as soon as no lookup is
+     out, or after QRID_SAVE_HOLD_MS. A second click meanwhile changes only
+     which button the save goes on with. */
+  function dropHold(){
+    if(!UV_guard.hold) return;
+    UV_guard.hold.dropped = true;
+    UV_guard.hold = null;
+    QRID_saveHoldNote(false);
+  }
+  function holdSave(e, by){
+    var again = saveAgain(e, by);
+    if(UV_guard.hold){ UV_guard.hold.again = again; return; }
+    var h = UV_guard.hold = { again: again, from: Date.now(), dropped: false };
+    function out(){
+      return UV_guard.items.some(function(el){ return !!el.__qridPending && QRID_guardSpeaks(el); });
+    }
+    function tick(){
+      if(h.dropped) return;
+      var waited = Date.now() - h.from;
+      if(out() && waited >= 0 && waited < QRID_SAVE_HOLD_MS){
+        if(waited >= QRID_SAVE_HOLD_NOTE_MS) QRID_saveHoldNote(true);
+        setTimeout(tick, QRID_SAVE_HOLD_TICK_MS);
         return;
       }
-      t = t.parentNode;
+      UV_guard.hold = null;
+      QRID_saveHoldNote(false);
+      UV_guard.resuming = true;
+      try { h.again(); } catch(_a){} finally { UV_guard.resuming = false; }
+    }
+    setTimeout(tick, 0);
+  }
+  document.addEventListener("submit", function(e){ return guard(e, e && e.submitter); }, true);
+  document.addEventListener("click", function(e){
+    var t = QRID_saveButtonOf(e.target);
+    if(!t) return;
+    /* A click the guard let through goes on, in this same task, to the
+       button's own onclick, dataEntrySubmit(this). The verdict cannot
+       change in between, so the wrapper does not judge again; a re-run
+       would repeat every recheck. */
+    if(guard(e, t)){
+      UV_guard.clickPass = true;
+      setTimeout(function(){ UV_guard.clickPass = false; }, 0);
     }
   }, true);
   QRID_guardDataEntrySubmit(guard);
@@ -4310,7 +4439,11 @@ function QRID_guardDataEntrySubmit(guard){
     if(orig.__qridGuarded) return true;
     var guarded = function(ob){
       if(!UV_guard.clickPass){
-        var ev = { type: "dataEntrySubmit", preventDefault: function(){}, stopImmediatePropagation: function(){} };
+        var self = this, args = arguments;
+        /* again: a save the guard keeps back for a lookup is asked for
+           again with the same arguments, through this wrapper */
+        var ev = { type: "dataEntrySubmit", preventDefault: function(){}, stopImmediatePropagation: function(){},
+                   again: function(){ return window.dataEntrySubmit.apply(self, args); } };
         if(!guard(ev, ob && ob.jquery ? ob[0] : ob)){
           QRID_cancelEnter();
           return false;
@@ -4565,6 +4698,7 @@ var QRID_late = { list: [], timer: null, mo: null };
 function QRID_lateRun(tick){
   var list = QRID_late.list, keep = [];
   QRID_late.list = [];                    /* a sweep added while this runs waits for the next */
+  QRID_lookupsOpen();                     /* the lookups of the fields found now: one request */
   for(var i = 0; i < list.length; i++){
     var e = list[i], done = false;
     try { done = e.sweep(tick === true) === true; } catch(err){ done = false; }
@@ -4572,6 +4706,7 @@ function QRID_lateRun(tick){
     if(tick === true) e.tries++;
     if(e.tries < 20) keep.push(e);
   }
+  QRID_lookupsClose();
   QRID_late.list = keep.concat(QRID_late.list);
   if(!QRID_late.list.length) QRID_lateStop();
 }
@@ -4808,7 +4943,7 @@ function QRIDSingleInit(QRID_CONFIG){
     var c = (kind === true) ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
           : (kind === "info") ? "#c9dbf5;background:#eef3fb;color:#3a567f"
           : "#e0b4b0;background:#fbeceb;color:#c62828";
-    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+    el.style.cssText = QRID_okShown(kind === true) + ";margin:4px 0;padding:6px 10px;border-radius:4px;" +
       "font-size:13px;font-family:inherit;border:1px solid " + c;
   }
 
@@ -5246,7 +5381,7 @@ function QRIDConstraintInit(QRID_CONFIG){
   function styleMsg(el, ok){
     var c = ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
                : "#e0b4b0;background:#fbeceb;color:#c62828";
-    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+    el.style.cssText = QRID_okShown(!!ok) + ";margin:4px 0;padding:6px 10px;border-radius:4px;" +
       "font-size:13px;font-family:inherit;border:1px solid " + c;
   }
   function makeVariant(cfg){
@@ -5486,7 +5621,7 @@ function QRIDWindowInit(QRID_CONFIG){
   function styleMsg(el, ok){
     var c = ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
                : "#e0b4b0;background:#fbeceb;color:#c62828";
-    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+    el.style.cssText = QRID_okShown(!!ok) + ";margin:4px 0;padding:6px 10px;border-radius:4px;" +
       "font-size:13px;font-family:inherit;border:1px solid " + c;
   }
   function bound(v){ return (typeof v === "number" && isFinite(v) && Math.floor(v) === v) ? v : null; }
@@ -5728,11 +5863,16 @@ function QRIDWindowInit(QRID_CONFIG){
         setGuard(false); QRID_setModeState(input, "w", null);
         return;
       }
-      msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
-        "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
-      msg.innerHTML = "&#9888; The window counted from " + QRID_escapeHtml(V.fromName || "another date") +
-        " is not checked on this page: that date is on a form you cannot view here." +
-        " It is checked when the record is saved.";
+      /* Nothing the person at the field can act on: the date is one their
+         rights do not let this page read. A plain grey line, no warning box,
+         and no line at all in quiet mode (QRID_QUIET_OK). The project can let
+         the page read the date (setting shared-reference-fields). */
+      if(QRID_QUIET_OK){ inert(); return; }
+      msg.style.cssText = "display:block;margin:2px 0;padding:0;font-size:12px;font-family:inherit;" +
+        "border:0;background:none;color:#6b7280";
+      msg.innerHTML = "The window counted from " + QRID_escapeHtml(V.fromName || "another date") +
+        " is not checked on this page (that date is on a form you cannot open)." +
+        " A date outside the window is logged after the save.";
       setGuard(false); QRID_setModeState(input, "w", null);
     }
     function check(){
@@ -7732,7 +7872,7 @@ function QRIDWriteOnceInit(QRID_CONFIG){
    see gets no note. The note follows the reason field, every change of the
    field's other modes (QRID_setModeState) and REDCap's branching. A reason
    never adds a hold: a rule with blockSave "off" still only warns, a lookup
-   still being checked still waits, and a locked write-once field stays
+   still on its way still makes the save wait a short while, and a locked write-once field stays
    locked. Without the reason field on this
    page (another survey page) the tag does nothing here, and a reason field
    the person cannot see gives no reason: its row hidden by branching logic,
@@ -8534,13 +8674,72 @@ function QRID_ajaxTransport(){
 }
 /* The transport's first name, from when @UVUNIQUE was its only user. */
 var QRID_uniqueTransport = QRID_ajaxTransport;
+/* ---- ONE REQUEST FOR THE LOOKUPS OF ONE PASS --------------------------------
+   A form with several lookup fields (@UVUNIQUE, @UVEXISTS) asks about each
+   as it opens, and the framework sends module requests one after another:
+   measured on a live server, six fields took six round trips of a third of a
+   second to a second each before the last one showed its answer. The lookups
+   asked during one pass over the page (the start of the page, or a sweep for
+   fields REDCap rendered late) go out as ONE "lookup-batch" request, which
+   the server answers item by item through the same two endpoints
+   (LiveLookups::lookupBatch), so every guard and limit there is the one a
+   single request meets.
+
+   A pass is bracketed by QRID_lookupsOpen() / QRID_lookupsClose(). Outside a
+   pass a lookup goes out at once, on its own, as before: leaving a field asks
+   about that field only. One lookup in a pass is sent as a plain request. A
+   batch the server does not answer item for item (an older module on the
+   server, a refused action) is asked again one by one, and an item with no
+   answer fails open like any lookup with none.
+   tests/lookup_batch_dom_js.cjs locks this. */
+var QRID_LOOKUP_BATCH_ACTION = "lookup-batch";
+var QRID_LOOKUP_BATCH_MAX = 40;   /* twin of UniversalValidator::LOOKUP_BATCH_MAX */
+var QRID_lookups = { depth: 0, queue: [] };
+function QRID_lookupSend(t, action, payload, ok, err){
+  try {
+    var p = t.ajax(action, payload);
+    if(p && typeof p.then === "function") p.then(ok, function(e){ err(e || "rejected"); });
+    else err("no promise from transport");
+  } catch(e){ err(e); }
+}
+function QRID_lookupsFlush(){
+  var queue = QRID_lookups.queue;
+  QRID_lookups.queue = [];
+  function alone(it){ QRID_lookupSend(it.t, it.action, it.payload, it.ok, it.err); }
+  function send(part){
+    if(part.length === 1){ alone(part[0]); return; }
+    var items = part.map(function(it){ return { action: it.action, payload: it.payload }; });
+    QRID_lookupSend(part[0].t, QRID_LOOKUP_BATCH_ACTION, { items: items }, function(r){
+      var answers = (r && Array.isArray(r.answers) && r.answers.length === part.length) ? r.answers : null;
+      if(!answers){ part.forEach(alone); return; }
+      part.forEach(function(it, i){
+        if(answers[i] && typeof answers[i] === "object") it.ok(answers[i]);
+        else it.err("no answer");
+      });
+    }, function(){ part.forEach(alone); });
+  }
+  while(queue.length) send(queue.splice(0, QRID_LOOKUP_BATCH_MAX));
+}
+function QRID_lookupsOpen(){ QRID_lookups.depth++; }
+function QRID_lookupsClose(){
+  if(QRID_lookups.depth > 0) QRID_lookups.depth--;
+  if(QRID_lookups.depth === 0 && QRID_lookups.queue.length) QRID_lookupsFlush();
+}
+/* Ask the server one lookup; ok(response) or err(why) is called once. */
+function QRID_lookup(t, action, payload, ok, err){
+  if(QRID_lookups.depth > 0){
+    QRID_lookups.queue.push({ t: t, action: action, payload: payload, ok: ok, err: err });
+    return;
+  }
+  QRID_lookupSend(t, action, payload, ok, err);
+}
 function QRIDUniqueInit(QRID_CONFIG){
   function styleMsg(el, kind){   /* true=free, false=used, "info"=checking, "warn"=could not check */
     var c = (kind === true) ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
           : (kind === "info") ? "#c9dbf5;background:#eef3fb;color:#3a567f"
           : (kind === "warn") ? "#d9c48a;background:#fdf8e6;color:#7a5c00"
           : "#e0b4b0;background:#fbeceb;color:#c62828";
-    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+    el.style.cssText = QRID_okShown(kind === true) + ";margin:4px 0;padding:6px 10px;border-radius:4px;" +
       "font-size:13px;font-family:inherit;border:1px solid " + c;
   }
   function makeVariant(cfg){
@@ -8587,15 +8786,12 @@ function QRIDUniqueInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "unique");
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    /* note: what the save alert says of this field while it is pending (null:
-       " (still being checked)") */
-    function setPending(on, note){ if(GITEM){ GITEM.__qridPending = !!on; GITEM.__qridPendingNote = on && note ? note : null; } }
+    /* pending: a lookup is on its way, and a save waits for it a short
+       while (QRID_SAVE_HOLD_MS) */
+    function setPending(on){ if(GITEM){ GITEM.__qridPending = !!on; } }
     function inert(){ msg.style.display = "none"; QRID_setModeState(input, "q", null); setGuard(false); setPending(false); QRID_setModeState(input, "q", null); }
     var seq = 0;            /* stale-response guard: only the LATEST request may render */
     var pendingKey = null;  /* candidate key already asked, awaiting an answer */
-    /* The key the server last refused for its limit: Save asks it again, and
-       while that question is out the alert still says why it waits. */
-    var throttledKey = null;
     /* Answer cache. The direct input listeners and the when-registry self-watch
        BOTH recheck on a change; the cache turns the second pass (and a gate
        re-flip over the same values) into a synchronous render instead of a
@@ -8606,9 +8802,9 @@ function QRIDUniqueInit(QRID_CONFIG){
     var failedKey = null, failedWhy = null;
     var dirty = {};         /* field name => typed since its last change/blur */
     function typing(){ for(var k in dirty){ if(Object.prototype.hasOwnProperty.call(dirty, k) && dirty[k]) return true; } return false; }
-    /* No answer: say so on staff forms, as @UVEXISTS does, and never block.
-       A throttled server, a failed read and no answer in time all land here
-       (UNQ-3); before, the notice simply went away. */
+    /* No answer: say so on staff forms, as @UVEXISTS does, and never block
+       or hold the save. A throttled server, a failed read and no answer in
+       time all land here (UNQ-3). */
     function unknown(why){
       if(QRID_IS_SURVEY){ inert(); return; }
       styleMsg(msg, "warn");
@@ -8618,15 +8814,9 @@ function QRIDUniqueInit(QRID_CONFIG){
       msg.innerHTML = "&#9888; Could not check whether this value is already recorded just now" +
         (why ? " (" + QRID_escapeHtml(String(why)) + ")" : "") + ".";
     }
-    /* Throttled: the server answers again within the minute (a refused
-       check does not count toward the limit). A rule that blocks holds the
-       save until then instead of letting an unchecked value through, and
-       Save asks again (UNQ-3). */
-    function held(why){
-      unknown(why);
-      setPending(true, QRID_THROTTLED_NOTE);
-      msg.innerHTML += " The save waits until it can be checked.";
-    }
+    /* What gives up the lookup now on its way, when a save has waited
+       QRID_SAVE_HOLD_MS for it (null when none is out). */
+    var lapseNow = null;
     function renderResp(resp, V){
       if(resp.used){
         styleMsg(msg, false);
@@ -8700,21 +8890,16 @@ function QRIDUniqueInit(QRID_CONFIG){
       }
       var key = JSON.stringify([payload.values, payload.cond]);
       var cached = answers.get(key);
-      /* Save asks again about a cached answer older than QRID_RECHECK_MS,
-         "used" or "free": another record may have changed since, and a
-         "free" given twenty minutes ago let a value saved meanwhile through
-         (UNQ-4). The guard holds the save meanwhile. A re-ask that gets no
-         usable answer keeps the old one. */
-      var prior = (cached && saving === true && typeof cached.used === "boolean" && QRID_answerStale(cached)) ? cached : null;
-      if(cached && !prior){
+      /* The answer the page has stands, at Save too, however old (see
+         QRID_RECHECK_MS: Save never asks the server). */
+      if(cached){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */
         ++seq; pendingKey = null; setPending(false);
         renderResp(cached, V); return;
       }
       if(pendingKey === key) return;                    /* already asked; the answer will render */
-      if(saving === true && failedKey === key && !prior){ ++seq; pendingKey = null; unknown(failedWhy); return; }
-      function keepPrior(){ answers.put(key, QRID_stampAnswer(prior)); renderResp(prior, V); }
+      if(saving === true && failedKey === key){ ++seq; pendingKey = null; unknown(failedWhy); return; }
       var t = QRID_ajaxTransport();
       if(!t){
         try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the uniqueness check — rule inert."); } catch(e){}
@@ -8722,21 +8907,24 @@ function QRIDUniqueInit(QRID_CONFIG){
       }
       var my = ++seq;
       pendingKey = key;
-      /* pending: informative, and it holds a save click until the answer
-         comes (fail open if none comes within QRID_PENDING_MS) */
+      /* pending: informative, and a save waits for the answer a short while
+         (QRID_SAVE_HOLD_MS). No answer by then, or within QRID_PENDING_MS
+         with no save, fails open: an earlier answer is kept, else the field
+         says it could not be checked. */
       styleMsg(msg, "info");
       msg.innerHTML = "&#8230; checking whether this value is already recorded&hellip;";
       QRID_setModeState(input, "q", "info");
       setGuard(false);
-      setPending(V.blockSave !== "off", throttledKey === key ? QRID_THROTTLED_NOTE : null);
+      setPending(V.blockSave !== "off");
       QRID_setModeState(input, "q", null);
-      setTimeout(function(){
+      var lapse = function(){
         if(my === seq && pendingKey === key){
           ++seq; pendingKey = null; setPending(false);
-          if(prior){ keepPrior(); return; }
           failedKey = key; failedWhy = "no answer in time"; unknown(failedWhy);
         }
-      }, QRID_PENDING_MS);
+      };
+      lapseNow = lapse;
+      setTimeout(lapse, QRID_PENDING_MS);
       function render(err, resp){
         if(my !== seq) return;   /* a newer keystroke superseded this answer */
         pendingKey = null;
@@ -8744,30 +8932,20 @@ function QRIDUniqueInit(QRID_CONFIG){
         /* "unknown": the server could not settle it (its read budget, a
            failed read). Not an error, and not "free" either. */
         var unsettled = !err && resp && !resp.error && resp.unknown === true;
-        throttledKey = null;
         if(err || !resp || resp.error || unsettled || typeof resp.used === "undefined"){
           if(!unsettled){
             try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: uniqueness check failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
           }
-          if(prior){ keepPrior(); return; }
-          if(unsettled && resp.throttled === true && V.blockSave !== "off" && !QRID_IS_SURVEY){
-            failedKey = null; throttledKey = key; held(typeof resp.why === "string" ? resp.why : null); return;
-          }
+          /* a throttled server included: Save does not ask it again, and
+             nothing waits for the limit to clear */
           failedKey = key;
           failedWhy = (resp && typeof resp.why === "string" && resp.why !== "") ? resp.why : null;
           unknown(failedWhy); return;   /* fail open; the server audit is the net */
         }
-        answers.put(key, QRID_stampAnswer(resp));
+        answers.put(key, resp);
         renderResp(resp, V);
       }
-      try {
-        var p = t.ajax("unique-check", payload);
-        if(p && typeof p.then === "function"){
-          p.then(function(r){ render(null, r); }, function(e){ render(e || "rejected", null); });
-        } else {
-          render("no promise from transport", null);
-        }
-      } catch(e){ render(e, null); }
+      QRID_lookup(t, "unique-check", payload, function(r){ render(null, r); }, function(e){ render(e, null); });
     }
     /* Typing clears the verdict; change and blur ask, as @UVEXISTS does
        (UNQ-3). Asking after every pause sent one request per character, and
@@ -8788,7 +8966,13 @@ function QRIDUniqueInit(QRID_CONFIG){
     /* Save re-judges the field first, typing or not: the click ends the
        typing, and a change no event reported (REDCap's radio "reset" link)
        must not leave a stale verdict deciding the save. */
-    if(GITEM) GITEM.__qridRecheck = function(){ for(var dk in dirty) dirty[dk] = false; check(true); };
+    if(GITEM){
+      GITEM.__qridRecheck = function(){ for(var dk in dirty) dirty[dk] = false; check(true); };
+      /* a lookup: asked as a save button is about to be pressed, and given
+         up by a save that has waited long enough */
+      GITEM.__qridLookup = true;
+      GITEM.__qridGiveUp = function(){ if(lapseNow) lapseNow(); };
+    }
     /* watch the field itself and every composite member through the shared
        when-registry (same trick as QRIDRequiredInit — wiring only). Asked
        at once, unless someone is typing: a picked option or a flipped
@@ -8917,7 +9101,7 @@ function QRIDExistsInit(QRID_CONFIG){
        even with "blockSave":"off": the values come with the answer. A field
        the user cannot edit (@READONLY) never blocks the save (UX-003, see
        QRID_registerBlocker), but a rule that fills fields still holds it
-       while its answer is on the way, and no longer than QRID_PENDING_MS. */
+       while its answer is on the way, and no longer than QRID_SAVE_HOLD_MS. */
     var EDITABLE = !QRID_fieldLocked(input, fieldName);
     if(!configError && ((ANY_BLOCK && EDITABLE) || OWNED_ANY)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
@@ -8927,18 +9111,16 @@ function QRIDExistsInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, EDITABLE ? VS.firstBlock : "off", "exists");
     }
     function setGuard(invalid, mode){ if(GITEM && EDITABLE){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    /* note: what the save alert says of this field while it is pending (null:
-       " (still being checked)") */
-    function setPending(on, note){ if(GITEM){ GITEM.__qridPending = !!on; GITEM.__qridPendingNote = on && note ? note : null; } }
+    /* pending: a lookup is on its way, and a save waits for it a short
+       while (QRID_SAVE_HOLD_MS) */
+    function setPending(on){ if(GITEM){ GITEM.__qridPending = !!on; } }
     function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); setPending(false); QRID_setModeState(input, "x", null); }
     var seq = 0;            /* stale-response guard: only the LATEST request may render */
     var pendingKey = null;  /* payload already asked, awaiting an answer */
-    /* The payload the server last refused for its limit, as for @UVUNIQUE. */
-    var throttledKey = null;
     var answers = QRID_answerCache(16);   /* found / not-found answers only */
     /* The last payload that got no usable answer (unknown, an error, or none
        in time), and why. Save does not ask it again: a server that cannot
-       answer would otherwise hold every click for another QRID_PENDING_MS. */
+       answer would otherwise make every save wait QRID_SAVE_HOLD_MS. */
     var unanswered = { key: null, why: null };
     var dirty = {};         /* field name => typed since its last change/blur */
     function typing(){ for(var k in dirty){ if(Object.prototype.hasOwnProperty.call(dirty, k) && dirty[k]) return true; } return false; }
@@ -8953,13 +9135,8 @@ function QRIDExistsInit(QRID_CONFIG){
       msg.innerHTML = "&#9888; Could not check this value just now" +
         (why ? " (" + QRID_escapeHtml(String(why)) + ")" : "") + ".";
     }
-    /* Throttled: as @UVUNIQUE does, a rule that blocks holds the save until
-       the server answers again, and Save asks again (UNQ-3). */
-    function held(V, why){
-      unknown(V, why);
-      setPending(true, QRID_THROTTLED_NOTE);
-      msg.innerHTML += " The save waits until it can be checked.";
-    }
+    /* What gives up the lookup now on its way, as for @UVUNIQUE. */
+    var lapseNow = null;
     /* Write the fields the rule fills: vals is field -> text, and a field it
        does not name keeps what it holds. quiet for the fill made as the page
        opens: it does not mark the form as changed (QRID_writeReturned). A
@@ -9142,27 +9319,17 @@ function QRIDExistsInit(QRID_CONFIG){
          copies from may have changed since. Judging the field again after
          QRID_RECHECK_MS asks again; Save does not, it goes by what it has. */
       if(cached && cached.state === "found" && saving !== true && returnsOf(V).length && QRID_answerStale(cached)) cached = null;
-      /* Save asks again about a cached "not found" older than QRID_RECHECK_MS
-         when the rule can block: the value may have been saved elsewhere
-         since (another tab, a colleague). The guard holds the save until the
-         answer lands. A re-ask that gets no usable answer keeps the old one.
-         A rule that cannot block holds the save only while a lookup is
-         already on its way. A field whose reason is given (@UVJUSTIFY) is
-         not asked again: the reason releases a "not found" and a "found"
-         holds nothing, so the save has nothing to wait for, unless the rule
-         fills fields from the entry it finds. */
-      var prior = (cached && saving === true && cached.state === "not-found" && V.blockSave !== "off" && EDITABLE
-                   && QRID_answerStale(cached)
-                   && !(GITEM && !returnsOf(V).length && QRID_justified(GITEM))) ? cached : null;
-      if(cached && !prior){
+      /* Any other answer the page has stands, at Save too, however old (see
+         QRID_RECHECK_MS: Save never asks the server). The save waits only
+         for a lookup already on its way. */
+      if(cached){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */
         ++seq; pendingKey = null; setPending(false);
         renderResp(cached, V, quiet); return;
       }
       if(pendingKey === key) return;
-      if(saving === true && unanswered.key === key && !prior){ ++seq; pendingKey = null; unknown(V, unanswered.why); return; }
-      function keepPrior(){ answers.put(key, QRID_stampAnswer(prior)); renderResp(prior, V, quiet); }
+      if(saving === true && unanswered.key === key){ ++seq; pendingKey = null; unknown(V, unanswered.why); return; }
       var t = QRID_ajaxTransport();
       if(!t){
         try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the lookup — rule inert."); } catch(e){}
@@ -9170,21 +9337,23 @@ function QRIDExistsInit(QRID_CONFIG){
       }
       var my = ++seq;
       pendingKey = key;
-      /* pending: informative, and it holds a save click until the answer
-         comes; no answer within QRID_PENDING_MS counts as "could not check" */
+      /* pending: informative, and a save waits for the answer a short while
+         (QRID_SAVE_HOLD_MS); no answer by then, or within QRID_PENDING_MS
+         with no save, counts as "could not check" */
       styleMsg(msg, "info");
       msg.innerHTML = "&#8230; checking&hellip;";
       QRID_setModeState(input, "x", "info");
       setGuard(false);
-      setPending((V.blockSave !== "off" && EDITABLE) || returnsOf(V).length > 0, throttledKey === key ? QRID_THROTTLED_NOTE : null);
-      setTimeout(function(){
+      setPending((V.blockSave !== "off" && EDITABLE) || returnsOf(V).length > 0);
+      var lapse = function(){
         if(my === seq && pendingKey === key){
           ++seq; pendingKey = null; setPending(false);
-          if(prior){ keepPrior(); return; }
           unanswered = { key: key, why: "no answer from the server" };
           unknown(V, unanswered.why);
         }
-      }, QRID_PENDING_MS);
+      };
+      lapseNow = lapse;
+      setTimeout(lapse, QRID_PENDING_MS);
       function render(err, resp){
         if(my !== seq) return;
         /* An answer for values the page no longer holds is stale too: a
@@ -9194,30 +9363,18 @@ function QRIDExistsInit(QRID_CONFIG){
         if(lookupKey(lookupValues(V), QRID_condValues(VS.all)) !== key) return;
         pendingKey = null;
         setPending(false);
-        throttledKey = null;
         if(err || !resp || resp.error || (resp.state !== "found" && resp.state !== "not-found" && resp.state !== "unknown")){
           try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: lookup failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
-          if(prior){ keepPrior(); return; }
           unanswered = { key: key, why: null };
           unknown(V, null); return;
         }
-        if(resp.state === "unknown" && prior){ keepPrior(); return; }
-        if(resp.state === "unknown" && resp.throttled === true && V.blockSave !== "off" && EDITABLE && !QRID_IS_SURVEY){
-          unanswered = { key: null, why: null }; throttledKey = key; held(V, typeof resp.why === "string" ? resp.why : null); return;
-        }
+        /* "unknown", a throttled server included: Save does not ask it
+           again, and nothing waits for the limit to clear */
         if(resp.state !== "unknown") answers.put(key, QRID_stampAnswer(resp));
-
         else unanswered = { key: key, why: resp.why || null };
         renderResp(resp, V, quiet);
       }
-      try {
-        var p = t.ajax("exists-check", payload);
-        if(p && typeof p.then === "function"){
-          p.then(function(r){ render(null, r); }, function(e){ render(e || "rejected", null); });
-        } else {
-          render("no promise from transport", null);
-        }
-      } catch(e){ render(e, null); }
+      QRID_lookup(t, "exists-check", payload, function(r){ render(null, r); }, function(e){ render(e, null); });
     }
     /* Typing clears the verdict; change and blur ask. */
     function watchTyping(name, el){
@@ -9234,8 +9391,12 @@ function QRIDExistsInit(QRID_CONFIG){
     /* Save re-judges the field first, typing or not: the click ends the
        typing, and a change no event reported (REDCap's radio "reset" link)
        must not leave a stale verdict deciding the save. A value with no
-       answer yet is asked now, and the guard holds the save until it lands. */
-    if(GITEM) GITEM.__qridRecheck = function(){ for(var dk in dirty) dirty[dk] = false; check(true); };
+       answer yet is asked now, and the save waits for it a short while. */
+    if(GITEM){
+      GITEM.__qridRecheck = function(){ for(var dk in dirty) dirty[dk] = false; check(true); };
+      GITEM.__qridLookup = true;
+      GITEM.__qridGiveUp = function(){ if(lapseNow) lapseNow(); };
+    }
     /* Anything else that changes (REDCap's date picker or autocomplete without
        a native event, a "match" field, a "when" field) reaches the shared
        when-registry. Asked after a pause, and only when nobody is typing. */
@@ -10095,6 +10256,13 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     if(document.readyState === "loading" && typeof document.addEventListener === "function") document.addEventListener("DOMContentLoaded", QRID_lockReadsAfterStart);
     else QRID_lockReadsAfterStart();
   }
+  /* The lookups the factories ask as they attach go out as one request
+     (QRID_lookup). A factory attaches now, or on DOMContentLoaded through a
+     listener it adds below; the two listeners here are added before and
+     after those, so they bracket them. */
+  var startsLater = document.readyState === "loading" && typeof document.addEventListener === "function";
+  if(startsLater) document.addEventListener("DOMContentLoaded", QRID_lookupsOpen);
+  QRID_lookupsOpen();
   rules.forEach(function(rule){
     var cfg = cfgFor(rule);
     /* config-error rules keep their fields as-is (their message is shown once in
@@ -10114,6 +10282,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       QRIDSingleInit(cfg);
     }
   });
+  QRID_lookupsClose();
+  if(startsLater) document.addEventListener("DOMContentLoaded", QRID_lookupsClose);
 })();
 
 /* ---- single public namespace (module deviation; REDCap JS guidance strongly

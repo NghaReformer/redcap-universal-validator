@@ -1219,19 +1219,29 @@ value: "This value is already recorded in field **study_id_scan** (record **12**
   values compare by code. `@UVEXISTS` compares the same way, so the two tags agree when
   one field carries both. Values that only look alike stay different: `SP–1` with an
   en dash is not `SP-1`, and neither is `SP-1` after a zero-width space from a paste.
-- **Save asks again.** A value the page found already used 30 seconds or more
-  before Save is clicked is asked once more, so a record changed since then no
-  longer blocks the save. That click waits for the answer; the next one is decided
-  by it. When the server cannot answer, the earlier answer stands.
+- **Save never asks the server.** Save goes by the answer the page has,
+  however old: "already used" blocks as the rule says, "not used before" lets
+  the save through. A value typed just before Save is asked as Save re-judges
+  the field; the save then waits with no dialog, for at most 1.5 seconds, and
+  goes on by itself when the answer lands or the time is up. To ask again
+  about a value, change it or reload the form.
 - **Missing Data Codes are never duplicates.** Ten records marked `UNK` share no
   value, and `unk` typed in one record is no duplicate of a saved `UNK`.
-- **The race is audited, not denied.** Two near-simultaneous saves can both pass the
-  live check. The post-save audit re-checks the saved value against every other record
-  and logs a collision (`type: unique`, `reason: duplicate-value`) — review the module
-  log for races.
-- **Transport failures fail open.** A network error on a first check never traps a
-  save. A failed answer to Save's second question leaves the earlier "already used"
-  in force (see *Save asks again* above).
+- **The race is audited, not denied.** Two saves can both pass the live check, and so
+  can a value another record saved while the form stayed open. The post-save audit
+  re-checks the saved value against every other record and logs a collision
+  (`type: unique`, `reason: duplicate-value`). The next page the person opens says so
+  once, naming the record and the field (project setting **Notice after a save** turns
+  this off).
+- **Transport failures fail open.** A network error never traps a save: the field says
+  "could not check" and the save goes through.
+- **The limit counts new values.** 120 values a minute that the session has not asked
+  about in the last ten minutes, shared with `@UVEXISTS` (system setting **Live
+  lookups: new values a minute**). A value asked before is always answered. Over the
+  limit a lookup answers "could not check".
+- **One request as the form opens.** The lookups of a form's `@UVUNIQUE` and
+  `@UVEXISTS` fields go out together when it opens, and each field asks alone after
+  that.
 
 ### `@UVUNIQUE` JSON keys
 
@@ -1579,8 +1589,12 @@ warning.
   this one is open. On a survey, or without rights to that form, the value is not
   sent to the page at all. The browser then checks only `notFuture` and
   `notPast`; staff see a
-  note that the window is checked when the record is saved, and a survey
-  respondent sees nothing about it.
+  grey line saying the window is not checked on this page and that a date
+  outside it is logged after the save (no line in quiet mode), and a survey
+  respondent sees nothing about it. To check the window live for every user,
+  name the `from` field in the project setting **Shared reference fields**:
+  each data-entry form of the record may then read it, whatever the person's
+  form rights. Surveys never do.
 - **`notFuture` and `notPast` keep their `blockSave`.** "After today" and
   "before today" do not depend on the `from` date, so a hard rule still blocks a
   future date, or a new past one, when the window part is advisory or not sent. A `from` in another event works the same way: the window
@@ -1967,7 +1981,8 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   `@READONLY` field. An answer that lands after the value changed (a date
   picker or an autocomplete pick can change it without an event) is dropped
   and the value asked again. A *found* answer is asked again when the field is
-  judged 30 seconds or more after it; Save goes by the answer it has. After
+  judged 30 seconds or more after it, except at Save, which never asks and goes
+  by the answer it has. After
   the save, the post-save audit asks again as the person who saved and writes
   the values that differ, together with any `@UVRANGE` returned values, in one
   save per event and instance of this record. A number field holding the same
@@ -2226,13 +2241,12 @@ this record.
   field is changed or left, and once when the form opens. Typing clears the last
   answer, so a half-typed value never reads "not found"; typing in a text field
   a `when` condition reads counts too.
-- **Save waits for the answer.** Clicking Save re-checks the field first: a value
-  typed and saved at once is asked before the save is decided, and the save is
-  held while the answer is on its way. After 10 seconds without one, the value
-  counts as *could not check*. A *not found* the page has held for 30 seconds or
-  more is asked again at Save when the rule can block it, since the value may
-  have been saved elsewhere since. If the server cannot answer that second
-  question, the earlier *not found* stands and is enforced.
+- **Save never asks the server.** Save goes by the answer the page has, however
+  old: *not found* blocks as the rule says, *found* lets the save through. A
+  value typed and saved at once is asked as Save re-judges the field, and the
+  save waits with no dialog while that answer is on its way, then goes on by
+  itself. After 1.5 seconds without one, the value counts as *could not check*
+  and the save goes through.
 - **Three answers.** *Found* (green), *not found* (red; enforced per `blockSave`),
   and *could not check* (amber; never blocks). A rule with `where` adds a fourth
   for staff, saved but not in an entry that meets it (Level 7), enforced as *not
@@ -2253,7 +2267,8 @@ this record.
   hold the searched field, the `match` fields and the `where` fields, and, for a
   rule with `return`, the copied fields. A record-ID lookup without `where` needs
   no extra form.
-  At most 60 lookups a minute per user session, shared with `@UVUNIQUE`. A
+  At most 120 values a minute that the session has not asked about in the last
+  ten minutes, shared with `@UVUNIQUE`; a value asked before is always answered. A
   user in a Data Access Group may check only records of their own group; they
   learn whether a value is saved in another group, never which record holds
   it.
@@ -4793,7 +4808,7 @@ to texts.
 - The note shows while a covered rule holds the save or asks "Save anyway?"
   and no reason is given. The rules' own notes stay once the reason is given.
 - A reason never lets anything else through. A rule with `blockSave` `"off"`
-  still only warns, and a lookup still being checked still holds the save.
+  still only warns, and a lookup still on its way still makes the save wait its moment.
 - On a rule that only warns (`blockSave` `"off"`, or any rule that reads
   another event or instance, which the page shows only as advice; an
   `@UVWINDOW` whose condition reads this page alone keeps its `blockSave`) a
@@ -6579,7 +6594,8 @@ No `when`, `caseSensitive`, `blockSave` or `references`.
 | Entries in one `alternates` list | 8 |
 | `@UVWINDOW` bound, either side of `from` | 36,500 units |
 | `@UVEXISTS` `match` pairs | 5 |
-| `@UVEXISTS` lookups per user session | 60 a minute, shared with `@UVUNIQUE` |
+| `@UVEXISTS` lookups per user session | 120 new values a minute, shared with `@UVUNIQUE` (Control Center setting) |
+| Lookups in one `lookup-batch` request | 40 |
 | `@UVEXISTS` lookups into one other project, per browser session | 30 a minute (Control Center setting) |
 | `@UVEXISTS` lookups one project answers for signed-in data entry in other projects | 1,200 a minute (Control Center setting) |
 | `@UVEXISTS` lookups one project answers for post-save checks and scans of other projects | 1,200 a minute (same setting, its own count) |

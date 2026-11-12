@@ -13,7 +13,7 @@
  *     goes, while the rule's own note stays; clearing the reason brings both
  *     back; this holds for "hard" and "confirm", in either boot order;
  *   - a reason never adds or lifts anything else: a rule with blockSave
- *     "off" only warns and gets no note, a lookup still being checked still
+ *     "off" only warns and gets no note, a lookup still on its way still
  *     holds the save, a duplicate (@UVUNIQUE) still holds it, and a locked
  *     write-once field stays read-only;
  *   - a reason field whose row branching logic hides gives no reason, a
@@ -317,26 +317,24 @@ for (const order of ['reason first', 'reason last']) {
 
 // ---- 7) a reason never lifts a hold it does not stand for ---------------------------------------
 {
-  // a lookup still being checked still waits
+  // a lookup still on its way still makes the save wait (with no dialog)
   const stub = makeTransportStub(); stub.next = 'HANG';
   const spec = text('spec', 'SP-1'), why = text('spec_why', 'lab sent it late');
   const env = boot([spec, why], { jsmoName: 'EMStub.UV', rules: [{ type: 'exists', fields: ['spec'], blockSave: 'hard' }, J(['spec'], 'spec_why')] }, { stub });
-  /* the line names the wait and offers no reason, which could not release it */
-  check('a lookup still being checked holds the save, reason or not, and offers no reason',
-    save(env) === 'held' && said(env) === 'Cannot save yet — please wait a moment and save again:\n• spec (still being checked)', said(env));
+  check('a lookup still on its way makes the save wait, reason or not, and shows no dialog',
+    save(env) === 'prevented' && said(env) === '', said(env));
   type(env, why, '');
   check('... nor with the reason field empty',
-    save(env) === 'held' && said(env) === 'Cannot save yet — please wait a moment and save again:\n• spec (still being checked)', said(env));
+    save(env) === 'prevented' && said(env) === '', said(env));
 }
 {
-  // a lookup held by the server's limit (UNQ-3) waits too, and says why
+  // a lookup the server refused for its limit holds nothing: it could not be checked
   const stub = makeTransportStub();
   stub.next = { state: 'unknown', why: 'too many checks in the last minute', throttled: true };
   const spec = text('spec', 'SP-1'), why = text('spec_why', 'lab sent it late');
   const env = boot([spec, why], { jsmoName: 'EMStub.UV', rules: [{ type: 'exists', fields: ['spec'], blockSave: 'hard' }, J(['spec'], 'spec_why')] }, { stub });
-  check('a throttled lookup holds the save with its own words and offers no reason',
-    save(env) === 'held'
-    && said(env) === 'Cannot save yet — please wait a moment and save again:\n• spec (not checked yet: too many checks in the last minute)', said(env));
+  check('a throttled lookup does not hold the save and shows no dialog',
+    save(env) === 'saved' && said(env) === '', said(env));
 }
 {
   // a not-found answer is released by the reason
@@ -364,8 +362,8 @@ for (const order of ['reason first', 'reason last']) {
     check('... and asks the server nothing', stub.calls.length === asked, stub.calls.length - asked);
     type(env, why, '');
     shift += 31000;
-    check('the reason cleared, 31 s on: Save asks again and waits for the answer',
-      save(env) === 'held' && /• spec \(still being checked\)$/.test(said(env)) && stub.calls.length === asked + 1, said(env));
+    check('the reason cleared, 31 s on: the "not found" the page has blocks, and Save asks nothing',
+      save(env) === 'held' && /fix the flagged/.test(said(env)) && stub.calls.length === asked, said(env));
   } finally { Date.now = realNow; }
 }
 {

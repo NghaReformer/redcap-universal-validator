@@ -82,9 +82,9 @@ shows a configuration error under that field.</p>
 <li>Once the reason is given, the field no longer holds the save for those rules. Their
     own notes stay, so the person still sees what the rule found.</li>
 <li>A reason never lets anything else through. A rule with <code>blockSave</code>
-    <code>"off"</code> still only warns. A lookup still being checked
-    (<code>@UVUNIQUE</code>, <code>@UVEXISTS</code>) still holds the save until its answer
-    comes. A field locked by <code>@UVWRITEONCE</code> stays locked.</li>
+    <code>"off"</code> still only warns. A lookup still on its way
+    (<code>@UVUNIQUE</code>, <code>@UVEXISTS</code>) still makes the save wait up to 1.5
+    seconds for its answer. A field locked by <code>@UVWRITEONCE</code> stays locked.</li>
 <li>On a rule that only warns (<code>blockSave</code> <code>"off"</code>, or any rule
     that reads another event or instance, which the page shows only as advice; an
     <code>@UVWINDOW</code> whose condition reads this page alone keeps its
