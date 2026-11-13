@@ -86,6 +86,20 @@ foreach ($fx['plausible'] as $c) {
     check('plausible(' . json_encode($c['y']) . ', ' . json_encode($c['lo']) . ', ' . json_encode($c['hi']) . ', ' . json_encode($c['exact'] ?? null)
         . ') (got ' . json_encode($got) . ')', $got === $c['want']);
 }
+// RNG-6: a bundled table is trusted by its SHA-256 at run time and checked row
+// by row here (and by tools/build_growth_rows.php --check): both readings must
+// give the same rows, as the same floats.
+$differs = [];
+G::reset();
+foreach (G::catalog(null)['references'] as $id => $e) {
+    try {
+        if (G::table($e) !== G::verified($e)) $differs[] = $id;
+    } catch (\RuntimeException $ex) {
+        $differs[] = $id . ': ' . $ex->getMessage();
+    }
+}
+check('bundled tables: every row passes the full check, and the trusted reading gives the same floats (differs: '
+    . json_encode($differs) . ')', $differs === [] && count(G::catalog(null)['references']) >= 12);
 // RNG-3: the folder an administrator names is a folder on this server. A name
 // PHP would open as a stream is refused before anything is opened: "ftp://"
 // made every catalog read wait on a connection, "phar://" opens an archive.

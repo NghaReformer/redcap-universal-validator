@@ -37,7 +37,14 @@ $want = [];  // file name => script text
 foreach ($catalog['references'] as $id => $entry) {
     $path = GrowthReference::rowsPath($entry['sha256']);
     if (isset($want[basename($path)])) continue;  // two entries may share one file
-    $table = GrowthReference::table($entry);
+    // every row checked: GrowthReference::table() trusts a bundled table by
+    // its SHA-256 from here on (RNG-6)
+    try {
+        $table = GrowthReference::verified($entry);
+    } catch (\RuntimeException $e) {
+        fwrite(STDERR, 'the bundled reference "' . $id . '" cannot be used: ' . $e->getMessage() . "\n");
+        exit(1);
+    }
     $rows = ['scale' => $table['scale'], 'first' => $table['first'], 'male' => $table['male'], 'female' => $table['female']];
     $json = json_encode($rows);
     if ($json === false) {

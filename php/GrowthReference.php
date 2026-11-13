@@ -398,6 +398,13 @@ final class GrowthReference
      * two entries may share one file with different ranges or lookups.
      * Throws \RuntimeException with a sentence a designer can act on.
      *
+     * A bundled table that matches its SHA-256 is not checked row by row
+     * again (RNG-6): the release check did that (verified(), which
+     * tools/build_growth_rows.php and tests/growth_php.php call for every
+     * bundled table), the hash says it is that file, and the 11,000 numbers
+     * of a WHO table took more of each request than reading it. A table in
+     * the administrator's folder is checked in full on every read.
+     *
      * @return array ['scale' => int, 'first' => int, 'male' => [[L,M,S], ...], 'female' => [...]]
      */
     public static function table(array $entry)
@@ -410,13 +417,26 @@ final class GrowthReference
         return $out;
     }
 
+    /**
+     * The rows of a reference with every row checked, whichever folder it is
+     * in, and nothing remembered: what a release must pass for each bundled
+     * table before table() may trust its SHA-256.
+     */
+    public static function verified(array $entry)
+    {
+        $out = self::readTable($entry, true);
+        $gap = self::coverProblem($entry, $out);
+        if ($gap !== null) throw new \RuntimeException('the table ' . $entry['file'] . ' ' . $gap);
+        return $out;
+    }
+
     /** The memo key of an entry's table file: its path and pinned SHA-256. */
     private static function fileKey(array $entry)
     {
         return $entry['dir'] . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $entry['file']) . '|' . $entry['sha256'];
     }
 
-    private static function readTable(array $entry)
+    private static function readTable(array $entry, $everyRow = false)
     {
         $path = $entry['dir'] . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $entry['file']);
         // A table its index names that is not there is the folder as the
@@ -439,9 +459,16 @@ final class GrowthReference
         if (!isset($t['first']) || !is_int($t['first']) || abs($t['first']) > self::MAX_AXIS * 1000) {
             throw $bad('needs "first" as a whole number from -' . (self::MAX_AXIS * 1000) . ' to ' . (self::MAX_AXIS * 1000) . '.');
         }
+        // the hash above was the index's pin: a bundled file is the one the release checked
+        $trusted = !$everyRow && $entry['dir'] === self::bundledDir();
         foreach (['male', 'female'] as $sex) {
             if (!isset($t[$sex]) || !is_array($t[$sex]) || !$t[$sex] || array_keys($t[$sex]) !== range(0, count($t[$sex]) - 1)) {
                 throw $bad('needs a list of "' . $sex . '" rows.');
+            }
+            if ($trusted) {
+                // the same floats the full check leaves, without its tests
+                foreach ($t[$sex] as $i => $row) $t[$sex][$i] = [(float) $row[0], (float) $row[1], (float) $row[2]];
+                continue;
             }
             foreach ($t[$sex] as $i => $row) {
                 if (!is_array($row) || count($row) !== 3 || array_keys($row) !== [0, 1, 2]) throw $bad('row ' . $i . ' of "' . $sex . '" is not [L, M, S].');
