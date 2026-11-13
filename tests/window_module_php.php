@@ -72,7 +72,8 @@ namespace {
         public static $data = [];
         public static $dictionary = [];
         public static $rights = [];
-        public static function getData($p) { return self::$data; }
+        public static $reads = [];   // the "fields" of every getData call
+        public static function getData($p) { self::$reads[] = isset($p['fields']) ? $p['fields'] : null; return self::$data; }
         public static function getDataDictionary($pid, $f = 'array') {
             if (!$pid) throw new \RuntimeException('needs pid');
             return self::$dictionary;
@@ -802,6 +803,24 @@ namespace {
     check('windowSaved: a value that is not UTF-8 is null, and the page still gets its rules',
         is_array($pu8['cfg']) && !empty($pu8['cfg']['rules']) && array_key_exists('w_today', $pu8['cfg']['windowSaved'])
         && $pu8['cfg']['windowSaved']['w_today'] === null);
+    // WIN-9: a page with a today-relative rule read the record twice, once for
+    // the conditions and "from" dates and once for the saved values.
+    \REDCap::$reads = [];
+    $p1 = page(mod($P9, $D9, $FULL, 'nurse'), 'form', '2', 'visit_form');
+    check('page: the record is read once for the conditions and the saved values (WIN-9) (got ' . count(\REDCap::$reads) . ' reads)',
+        count(\REDCap::$reads) === 1 && in_array('w_past', \REDCap::$reads[0], true) && in_array('v_start', \REDCap::$reads[0], true));
+    check('page: ... and the saved values are those of the record',($p1['cfg']['windowSaved']['w_past'] ?? null) === '2026-10-01'
+        && ($p1['cfg']['windowSaved']['w_today'] ?? null) === '2026-09-01' && ($p1['cfg']['windowSaved']['w_now'] ?? null) === '2026-10-09 12:27');
+    check('page: ... the rule counted from a field still gets its "from" as a live ref',
+        (ruleFor($p1, 'w_field_nf')['windowFromOp'] ?? null) === ['ref', 'v_start', null]);
+    $PN = ['record_id' => $DICT['record_id'], 'w_past' => $P9['w_past']];
+    \REDCap::$reads = [];
+    $p2 = page(mod($PN, $D9, $FULL, 'nurse'), 'form', '2', 'visit_form');
+    check('page: with no condition to fold, the saved values are still read, once', count(\REDCap::$reads) === 1
+        && ($p2['cfg']['windowSaved']['w_past'] ?? null) === '2026-10-01');
+    \REDCap::$reads = [];
+    $p3 = page(mod($PN, $D9, $FULL, 'nurse'), 'form', null, 'visit_form');
+    check('page: a record not saved yet reads nothing', \REDCap::$reads === []);
     // The scan: no save in progress, so a value the log does not show is not checked.
     $ms = $stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20260902100000', "w_today = '2026-08-30'"), $row('20261009090000', "w_past = '2026-10-01'")]);
     $res = $ms->scanProject(149);

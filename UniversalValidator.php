@@ -5789,16 +5789,43 @@ class UniversalValidator extends AbstractExternalModule
         return array_keys($out);
     }
 
-    /** field => saved value (null when it could not be read) for this entry; empty for a record not saved yet. */
+    /**
+     * @var ?array what foldRuleConditions() read for the page being built
+     * (key, fields, values, resolution), for windowSavedValues() to take
+     * (WIN-9). One hand-over: taken or dropped by the next page build, never
+     * kept across a save.
+     */
+    private $pageRead = null;
+
+    /** The entry a page read was made for, as one string. */
+    private static function pageReadKey($pid, $record, $instrument, $event_id, $repeat_instance)
+    {
+        return json_encode([(string) $pid, (string) $record, (string) $instrument, (string) $event_id, (string) $repeat_instance]);
+    }
+
+    /**
+     * field => saved value (null when it could not be read) for this entry;
+     * empty for a record not saved yet. The values come from the read
+     * foldRuleConditions() made for this page when it holds every field
+     * asked for (WIN-9), else from a read of its own.
+     */
     private function windowSavedValues($pid, $record, $instrument, $event_id, $repeat_instance, array $fields)
     {
+        $held = $this->pageRead;
+        $this->pageRead = null;
         if ($record === null || $record === '' || $pid === null) return new \stdClass();
         $resolution = [];
-        try {
-            $values = $this->readValues($pid, $record, $fields, $event_id, $instrument, $repeat_instance, true, $resolution);
-        } catch (\Throwable $e) {
-            $values = [];
-            foreach ($fields as $f) $resolution[$f] = 'unreadable';
+        if ($held !== null && $held['key'] === self::pageReadKey($pid, $record, $instrument, $event_id, $repeat_instance)
+                && !array_diff_key(array_fill_keys(array_map('strval', $fields), true), $held['fields'])) {
+            $values = $held['values'];
+            $resolution = $held['resolution'];
+        } else {
+            try {
+                $values = $this->readValues($pid, $record, $fields, $event_id, $instrument, $repeat_instance, true, $resolution);
+            } catch (\Throwable $e) {
+                $values = [];
+                foreach ($fields as $f) $resolution[$f] = 'unreadable';
+            }
         }
         $out = [];
         foreach ($fields as $f) {
@@ -6248,9 +6275,17 @@ class UniversalValidator extends AbstractExternalModule
      * Values are read in ONE getData call for all rules. Without a record
      * (a brand-new form) there is nothing to read and every off-page
      * comparison folds against '' — exactly what REDCap's own branching sees.
+     *
+     * $alsoRead: fields the page build reads later for this same entry (the
+     * saved values of the today-relative @UVWINDOW fields, windowSavedValues).
+     * They ride on this call and are kept in $pageRead for that reader, so a
+     * page with such a rule asks REDCap for the record once, not twice
+     * (WIN-9). They take no part in the folding.
      */
-    private function foldRuleConditions(array $rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context = 'form')
+    private function foldRuleConditions(array $rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context = 'form', array $alsoRead = [])
     {
+        // nothing read for an earlier page build is handed to this one (WIN-9)
+        $this->pageRead = null;
         // condition text => parsed AST, for every live rule/branch on the page
         $asts = [];
         $refs = [];
@@ -6301,11 +6336,19 @@ class UniversalValidator extends AbstractExternalModule
         $values = [];
         $resolution = [];
         if ($refs && $record !== null && $record !== '') {
+            $read = array_values(array_unique(array_merge(array_map('strval', array_keys($refs)), array_map('strval', $alsoRead))));
             try {
-                $values = $this->readValues($pid, $record, array_keys($refs), $event_id, $instrument, $repeat_instance, true, $resolution);
+                $values = $this->readValues($pid, $record, $read, $event_id, $instrument, $repeat_instance, true, $resolution);
+                // Kept whole for windowSavedValues (WIN-9); the folding below
+                // sees the fields its conditions name, as before.
+                $this->pageRead = ['key' => self::pageReadKey($pid, $record, $instrument, $event_id, $repeat_instance),
+                                   'fields' => array_fill_keys($read, true), 'values' => $values, 'resolution' => $resolution];
+                $values = array_intersect_key($values, $refs);
+                $resolution = array_intersect_key($resolution, $refs);
             } catch (\Throwable $e) {
                 // readValues already reports 'unreadable' per field for a failed
                 // read; this catch only covers a throw from outside it.
+                $resolution = [];
                 foreach (array_keys($refs) as $rf) $resolution[$rf] = 'unreadable';
             }
         }
@@ -11270,7 +11313,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave',
         'returnBarred', 'valueHistoryOverride', 'roleBookOverride', 'auditPid', 'uniqueAuditPlan', 'uniqueAuditReads',
-        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveStaffLookup', 'liveReadSkipped'];
+        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveStaffLookup', 'liveReadSkipped', 'pageRead'];
 
     /** Every SCAN_MEMOS property back to its declared default. */
     private function resetScanMemos()
