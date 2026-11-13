@@ -765,8 +765,10 @@ that it is not after today or not before it:
 - **Today is the server's date.** The page gets the server clock and moves it
   forward while it stays open, so a wrong computer clock cannot accept tomorrow's
   date and a form left open past midnight moves to the next day. A computer clock
-  moved forward while the form is open moves it too; the post-save audit reads the
-  server clock and still logs the date. The project setting **Time zone for
+  set forward or back while the form is open changes nothing; where the page
+  cannot tell a clock set forward from a computer that slept, a date the two
+  readings judge differently is not checked on the page, staff see why, and the
+  post-save audit, which reads the server clock, judges it. The project setting **Time zone for
   @UVWINDOW "notFuture"** sets the time zone, when it differs from the server's.
 - **Blank checks nothing.** A blank field is not checked, and a date still
   being typed shows no verdict. A blank `from` date leaves the window part

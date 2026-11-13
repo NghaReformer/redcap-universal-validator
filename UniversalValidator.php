@@ -5715,7 +5715,9 @@ class UniversalValidator extends AbstractExternalModule
         // today (it was after every earlier day too), but a pass shows no
         // green "OK": the value may have been in the future on its save day
         // (WIN-2). A field whose saved value could not be read, or is not
-        // valid UTF-8, maps to null, and the page treats it as unchanged.
+        // valid UTF-8, maps to null: the page cannot tell whether a value
+        // there is new, so it judges it, shows a finding without blocking
+        // the save, and says why (WIN-5).
         $todayFields = self::windowTodayFields($config['rules']);
         if ($todayFields) {
             $config['windowSaved'] = $this->windowSavedValues($pid, $record, $instrument, $event_id, $repeat_instance, $todayFields);

@@ -1625,8 +1625,18 @@ warning.
 - **Today is the server's date.** The page gets the server clock when it opens
   and moves it forward while it stays open, so a wrong computer clock cannot
   accept tomorrow's date and a form left open past midnight moves to the next
-  day. A computer clock moved forward while the form is open moves it too; the
-  post-save audit reads the server clock and still logs the date. The date is
+  day. The page counts the time it has been open on the browser's steady clock,
+  which a change of the computer's date does not move, so a computer clock set
+  forward or back while the form is open changes nothing. That steady clock may
+  stand still while the computer sleeps, and the page cannot tell a sleep from
+  a clock set forward. When the two clocks differ by more than a minute the
+  page judges against both, and a date they judge differently is not checked
+  against today on the page: staff see why, the save is not blocked, and the
+  post-save audit, which reads the server clock, judges it. Reloading
+  the page starts a fresh clock. A saved value the server could not read when
+  the page opened gets the same treatment for `notPast` and a `from` of `today`
+  or `now`: the page cannot tell whether the date is new, so it shows the
+  finding without blocking and says so. The date is
   taken in the server's time zone unless the project setting **Time zone for
   @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. An older
   name of a zone, such as `Asia/Calcutta` or `US/Eastern`, works too, also on a
