@@ -2430,6 +2430,52 @@ namespace {
             check('LABELS: anything that is not one is refused before it is printed',
                 $V::isJsIdentifierPath($bad) === false);
         }
+        // FRM-14: "$" in the pattern matched before a final line break.
+        foreach (["EM.a\n", "a\n", "\nEM.a", "EM.a\r\n", "EM.a\n\n"] as $bad) {
+            check('FRM-14: a name with a line break is not an identifier path (' . json_encode($bad) . ')',
+                $V::isJsIdentifierPath($bad) === false);
+        }
+    }
+
+    {
+        /* -----------------------------------------------------------------
+         * FRM-14. A module page asked for by its own address has no $module.
+         * Both pages then died on "Call to a member function ... on null",
+         * which under display_errors prints the server's path. Each now
+         * answers 404 with an empty body before it touches $module, and the
+         * script address the scan page prints is escaped.
+         * ----------------------------------------------------------------- */
+        $bare = function ($file) {
+            $code = null; $threw = null;
+            ob_start();
+            try {
+                (static function () use ($file) { include $file; })();
+            } catch (\Throwable $e) {
+                $threw = get_class($e) . ': ' . $e->getMessage();
+            }
+            $out = ob_get_clean();
+            return [$out, $threw, http_response_code()];
+        };
+        foreach (['scan.php', 'export.php'] as $page) {
+            $file = __DIR__ . '/../pages/' . $page;
+            $src = file_get_contents($file);
+            list($out, $threw, $code) = $bare($file);
+            check('FRM-14: pages/' . $page . ' without the framework prints nothing and throws nothing (got '
+                . json_encode([$out, $threw]) . ')', $out === '' && $threw === null);
+            $guardAt = strpos($src, 'if (!isset($module) || !($module instanceof UniversalValidator)) {');
+            preg_match('/\$module->|\$_(SERVER|POST|GET)\b/', $src, $first, PREG_OFFSET_CAPTURE, (int) strpos($src, "\nnamespace "));
+            check('FRM-14: ...because its guard answers 404 before the page reads $module or the request',
+                $guardAt !== false && isset($first[0][1]) && $guardAt < $first[0][1]
+                && preg_match('/instanceof UniversalValidator\)\) \{\s*http_response_code\(404\);\s*return;/', $src) === 1);
+            $wrong = new \stdClass();
+            ob_start();
+            (static function () use ($file, $wrong) { $module = $wrong; include $file; })();
+            check('FRM-14: ...and a $module that is not this module is treated the same', ob_get_clean() === '');
+        }
+        $scanSrc = file_get_contents(__DIR__ . '/../pages/scan.php');
+        check('FRM-14: no getUrl() is printed unescaped on the scan page',
+            preg_match('/echo\s+\$module->getUrl\(/', $scanSrc) === 0
+            && strpos($scanSrc, "htmlspecialchars((string) \$module->getUrl('js/scan.js'), ENT_QUOTES, 'UTF-8')") !== false);
     }
 
     {

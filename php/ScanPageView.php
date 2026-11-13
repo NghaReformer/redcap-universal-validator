@@ -876,7 +876,9 @@ class ScanPageView
     public static function isJsIdentifierPath($name)
     {
         if (!is_string($name) || $name === '' || strlen($name) > 200) return false;
-        return (bool) preg_match('/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/', $name);
+        // \A and \z, not ^ and $: $ also matches before a final line break,
+        // so "a.b\n" passed and was printed into the script (FRM-14).
+        return (bool) preg_match('/\A[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\z/', $name);
     }
 
     /** The notice, rendered wherever a scan would otherwise have been started. */

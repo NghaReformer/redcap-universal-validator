@@ -37,6 +37,14 @@ namespace INSPIRE\UniversalValidator;
 
 /** @var UniversalValidator $module */
 
+// Asked for by its own address, not through the framework, there is no
+// $module: answer 404 and nothing else, not a fatal error that names the
+// server's path (FRM-14).
+if (!isset($module) || !($module instanceof UniversalValidator)) {
+    http_response_code(404);
+    return;
+}
+
 $pid = $module->getProjectId();
 if (!$pid) { echo 'This page only works inside a project.'; return; }
 
@@ -394,7 +402,7 @@ reporting a clean project.
 </p>
 
 <?php echo $jsmo['boot']; ?>
-<script src="<?php echo $module->getUrl('js/scan.js'); ?>"></script>
+<script src="<?php echo htmlspecialchars((string) $module->getUrl('js/scan.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
 <script>
 (function () {
     // The module's own AJAX transport. Given to the client rather than built by

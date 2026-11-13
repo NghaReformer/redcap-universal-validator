@@ -34,6 +34,14 @@ namespace INSPIRE\UniversalValidator;
 
 /** @var UniversalValidator $module */
 
+// Asked for by its own address, not through the framework, there is no
+// $module: answer 404 and nothing else, not a fatal error that names the
+// server's path (FRM-14).
+if (!isset($module) || !($module instanceof UniversalValidator)) {
+    http_response_code(404);
+    return;
+}
+
 $method = isset($_SERVER['REQUEST_METHOD']) ? strtoupper((string) $_SERVER['REQUEST_METHOD']) : '';
 if ($method !== 'POST') {
     header('Content-Type: text/plain; charset=UTF-8', true, 405);
