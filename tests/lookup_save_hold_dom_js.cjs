@@ -323,6 +323,39 @@ function typeIn(env, value) { env.field.value = value; env.field.fire('input'); 
     await sleep(60);
     check('8 the line is taken away when the save goes on', env.saves.length === 1 && env.note().style.display === 'none');
   }
+  // ---- 9) @UVEXISTS: every path a save could wait on (EXI-2) ------------------------
+  for (const block of ['hard', 'off']) {
+    // A rule that fills fields holds the save for its answer, blockSave off too:
+    // no longer than lookupHoldMs, and the save then goes on by itself.
+    const env = boot('', Object.assign(EXISTS(block), { existsReturnFields: ['site'] }));
+    typeIn(env, 'SP-4');
+    const ev = env.btn.click();
+    check('9 @UVEXISTS "return", blockSave ' + block + ': kept back for a lookup on its way, with no dialog',
+      ev._prevented && env.saves.length === 0 && env.win._alerts.length === 0);
+    // Polled: a loaded machine runs the hold's timer late.
+    for (let waited = 0; waited < 3000 && env.saves.length === 0; waited += 25) await sleep(25);
+    check('9 ...and with no answer the save goes on after lookupHoldMs', env.saves.length === 1 && env.win._alerts.length === 0, env.saves.length);
+    check('9 ...the field says it could not be checked', /Could not check/.test(env.msg().innerHTML), env.msg().innerHTML);
+    const asked = env.stub.calls.length;
+    env.btn.click();
+    check('9 ...and the next save neither waits nor asks again', env.saves.length === 2 && env.stub.calls.length === asked);
+  }
+  {
+    // The server's limit answered: nothing waits for the limit to clear.
+    const env = boot('SP-5', EXISTS());
+    env.stub.answer({ state: 'unknown', record: null, why: 'too many checks in the last minute', throttled: true });
+    const ev = env.btn.click();
+    check('9 @UVEXISTS: a lookup the limit held does not keep the save back', !ev._prevented && env.saves.length === 1 && env.stub.calls.length === 1);
+  }
+  {
+    // An old "found" of a rule that fills fields is asked again on a change, never at Save.
+    const env = boot('SP-6', Object.assign(EXISTS(), { existsReturnFields: ['site'] }));
+    env.stub.answer({ state: 'found', record: '3', values: { site: 'North' } });
+    clockShift += STALE_MS;
+    const ev = env.btn.click();
+    check('9 @UVEXISTS "return": an old "found" saves at once, and Save asks nothing',
+      !ev._prevented && env.saves.length === 1 && env.stub.calls.length === 1, env.stub.calls.length);
+  }
 
   console.log(`lookup_save_hold_dom_js: ${n} checks, ${fail} failure(s)`);
   process.exit(fail === 0 ? 0 : 1);
