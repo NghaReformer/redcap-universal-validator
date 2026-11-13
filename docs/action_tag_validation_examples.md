@@ -1674,6 +1674,17 @@ warning.
   `now` when it differs either way. A rule that also has a window or period
   counted from a field or a fixed date keeps it; only the parts judged against
   the clock are dropped, and staff see why on the form.
+- **Sites in several time zones share one "today".** The project has one time
+  zone for these rules, and no site has its own. For a site ahead of it, the
+  hours after its own midnight are still "yesterday" to the rule: `notFuture`
+  refuses the site's own date, and a hard block holds the save until the
+  project's midnight. For a site behind it, the hours before its own midnight
+  are already "tomorrow": `notPast` refuses the site's own date, and
+  `notFuture` accepts the next day's. With `notFuture`, set the time zone to
+  the one furthest ahead among the sites, so no site's own date is refused,
+  and with `notPast` to the one furthest behind. A project that uses both, or
+  a `from` of `today`, across zones should use `"blockSave":"confirm"` for
+  them, so staff can pass the hours where the two days differ.
 - **Hours and minutes count wall-clock time.** `"window":[0,6],"unit":"hours"`
   compares the times as written, so across a daylight-saving change the window
   spans 5 or 7 hours of elapsed time.
@@ -1687,10 +1698,14 @@ warning.
   the missed bound in the detail line, such as "The window opens 21 days after
   [visit_date_bl].", "The window opens 30 days before today." or "The date must
   be in last month.". Where the log does not
-  show when a value was saved, `notFuture` is judged against the day the scan
-  runs. Each part of a durable scan reads the clock when that part runs, and
-  stores with each finding the day it was judged against (`as_of`); the durable
-  scan's report, which will show it, has not shipped yet.
+  show when a value was saved, `notFuture` is judged against the scan's day.
+  A scan takes that day once, when the run is planned, and every record of the
+  run is judged by it, also when the run goes on past midnight. The page says
+  "Dates were judged as of" that date and the downloaded file gives it on its
+  `# judged_as_of` line. A record edited after the run was planned can hold a
+  date later than that day; when the log cannot show the day it was saved,
+  that date is reported as not checked. Each finding stores the day it was
+  judged against (`as_of`), and the report's detail line names it.
 - **Configure dialog:** none. `@UVWINDOW` exists only as an action tag.
 
 ### `@UVWINDOW` JSON keys
