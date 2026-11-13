@@ -345,6 +345,35 @@ trait TemporalIntegration
     }
 
     /** $only: the indexes of the rules this pass audits (null = all); $rules as a whole decides the fields claimed twice. */
+    /**
+     * Whether a rule hosted in the entry $context can read the entry being saved
+     * ($event, $instance), from the references it reads other entries by
+     * ($reads, TemporalRules::crossReads()). A reference lands on one event from
+     * each host (ProjectShape::eventId()); one that walks back to the nearest
+     * value reads the entries its walk passes (AddressResolver::walkReads()).
+     * A save of visit 3 cannot change what visit 2 compares with, and with a
+     * value at every visit a save of visit 1 changes visit 2 alone, so the other
+     * entries are not judged again. Whatever cannot be said queues the entry, as
+     * before.
+     */
+    private function entryReadsSaved(array $reads,AddressResolver $resolver,ProjectShape $shape,array $context,$event,$instance)
+    {
+        foreach($reads as $read){
+            $ref=$read['ref'];
+            if($read['walks']){
+                // null: this reference does not walk, and lands on one event as any other does
+                $walk=$resolver->walkReads($ref,$context,$event,$instance);
+                if($walk===true)return true;
+                if($walk===false)continue;
+            }
+            $meta=$shape->field($ref[1]);
+            if(!$meta||empty($meta['form']))return true;
+            $at=$shape->eventId($ref[3]??null,$context['event'],$meta['form']);
+            if(($at['state']??null)==='absent')continue;
+            if(($at['state']??null)!=='ok'||(string)$at['event']===(string)$event)return true;
+        }
+        return false;
+    }
     private function auditTemporalRules(array $rules,$pid,$record,$instrument,$event,$instance,$logMode,?array $only=null)
     {
         $extended=[];$dd=$this->dataDictionary($pid)?:[];$only=$only===null?null:array_fill_keys($only,true);
@@ -361,7 +390,9 @@ trait TemporalIntegration
             foreach ($extended as $i=>$rule) $this->logUnconfigurable($i,$rule['fields'],'Extended audit incomplete: source data unavailable; run the validation scan.',$instrument,$event,$instance);
             return;
         }
-        $limit=(int)$this->getProjectSetting('qualified-audit-max-contexts',$pid);if($limit<1)$limit=500;$count=0;
+        // The limit counts entries (a form at one event and instance), not rule and entry
+        // pairs: 40 tagged fields on a 13-visit record are 13 entries, not 520 (review DLT-3).
+        $limit=(int)$this->getProjectSetting('qualified-audit-max-contexts',$pid);if($limit<1)$limit=500;$entries=[];
         $dupes=array_fill_keys(self::duplicateFields($rules),true);
         $stopped=false;
         // The entry being saved is judged first, for every rule, and another host context
@@ -369,15 +400,19 @@ trait TemporalIntegration
         // context limit stopped before the saved entry of a long repeat, and every save
         // re-logged every other entry's violation. A rule that reads the saved instrument
         // across entries (TemporalRules::crossFields()) may change anywhere; one that reads
-        // it only in its own row changes only where that row is the saved one.
+        // it only in its own row changes only where that row is the saved one. Of the
+        // entries elsewhere, only one whose rule can read the saved entry is queued
+        // (entryReadsSaved, review DLT-3).
         $saved=[];$rest=[];$row=(int)($instance?:1);
+        $resolver=$instrument===null?null:$this->temporalResolverFor($shape,$node,false);
         foreach($extended as $i=>$rule){
             $everywhere=$instrument===null;
+            $reads=$instrument===null?null:TemporalRules::crossReads($rule);
             foreach(TemporalRules::crossFields($rule) as $f)if(!isset($dd[$f]['form_name'])||$dd[$f]['form_name']===$instrument)$everywhere=true;
             foreach($this->ruleHostForms($rule,$pid)['forms'] as $form=>$fields)foreach($this->hostContextsFor($all,$form,$pid) as $ctx){
                 $here=(string)$ctx['event_id']===(string)$event&&(int)$ctx['instance']===$row;
                 if($here&&$form===$instrument)$saved[]=[$i,$rule,$form,$fields,$ctx];
-                elseif($everywhere||$here)$rest[]=[$i,$rule,$form,$fields,$ctx];
+                elseif($here||($everywhere&&($reads===null||$this->entryReadsSaved($reads,$resolver,$shape,$this->temporalContext($ctx,$form),$event,$row))))$rest[]=[$i,$rule,$form,$fields,$ctx];
             }
         }
         $named=[];
@@ -385,7 +420,14 @@ trait TemporalIntegration
             // Once the audit stops, every rule and host it did not finish is named once.
             // Returning after the first notice left the later rules unchecked AND unmentioned.
             if($stopped){if(!isset($named[$i.'|'.$form])){$named[$i.'|'.$form]=true;$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$event,$instance);}continue;}
-            if(++$count>$limit || $this->temporalBudget->exhausted()){$named[$i.'|'.$form]=true;$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$ctx['event_id'],$ctx['instance']);$stopped=true;continue;}
+            if($this->temporalBudget->exhausted()){$named[$i.'|'.$form]=true;$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$ctx['event_id'],$ctx['instance']);$stopped=true;continue;}
+            // An entry past the limit is left to the scan and named once per rule; the entries
+            // already counted are still judged for the rules that follow.
+            $entry=$form.'|'.$ctx['event_id'].'|'.$ctx['instance'];
+            if(!isset($entries[$entry])){
+                if(count($entries)>=$limit){if(!isset($named[$i.'|'.$form])){$named[$i.'|'.$form]=true;$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$ctx['event_id'],$ctx['instance']);}continue;}
+                $entries[$entry]=true;
+            }
             $prepared=$this->temporalPrepared($rule,$shape,$node,$this->temporalContext($ctx,$form));
             if($prepared['problems']){
                 // Only "absent": the entry the rule reads does not exist here (no visit before the

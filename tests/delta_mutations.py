@@ -35,6 +35,7 @@ GROWTH_MODULE = 'tests/growth_module_php.php'
 TEMPORAL_INT = 'tests/temporal_integration_php.php'
 BRANCHING = 'php/Branching.php'
 RESOLVER = 'php/AddressResolver.php'
+INTEGRATION = 'php/TemporalIntegration.php'
 SHAPE = 'php/ProjectShape.php'
 # What the copy holds: every folder and file the named suites read (registry_php.php reads
 # site/, growth_module_php.php reads README.md and site/).
@@ -855,6 +856,37 @@ MUTATIONS = [
     ('test() passes a value that cannot be compared', ENGINE,
      'if(v === "up" || v === "down" || v === "invalid") return false;',
      'if(v === "up" || v === "down") return false;', DOM),
+    # ---- what a save re-checks, and what the context limit counts (DLT-3) ----
+    ('the context limit counts rule and entry pairs', INTEGRATION,
+     '                $entries[$entry]=true;',
+     '                $entries[]=true;', MODULE),
+    ('the context limit ignored', INTEGRATION,
+     'if(count($entries)>=$limit){',
+     'if(false){', MODULE),
+    ('a save re-checks every entry of the record', INTEGRATION,
+     '$reads=$instrument===null?null:TemporalRules::crossReads($rule);',
+     '$reads=null;', MODULE),
+    ('a walk that stopped before the saved visit still counted as reading it', RESOLVER,
+     "                if ($stop !== null && (string)$stop['event'] === (string)$id) return false;",
+     '', MODULE),
+    ('a walk that passes the saved visit not counted as reading it', RESOLVER,
+     '                if ((string)$id === (string)$event) return true;',
+     '                if ((string)$id === (string)$event) return false;', MODULE),
+    ('an instance walk that stopped after the saved instance counted as reading it', RESOLVER,
+     "        return $stop === null || (int)$instance >= (int)$stop['instance'];",
+     '        return true;', MODULE),
+    ('a later instance counted as read by an earlier one', RESOLVER,
+     '        if ((int)$instance >= $own) return false;',
+     '', MODULE),
+    ('a walk that cannot be read taken as not reading the saved entry', RESOLVER,
+     "        if (!in_array($r['state'] ?? null, ['ok','absent'], true)) return true;",
+     "        if (!in_array($r['state'] ?? null, ['ok','absent'], true)) return false;", MODULE),
+    ('a reference that lands on the saved event not re-checked', INTEGRATION,
+     "if(($at['state']??null)!=='ok'||(string)$at['event']===(string)$event)return true;",
+     "if(($at['state']??null)!=='ok')return true;", MODULE),
+    ('a rule with record uniqueness narrowed by its references', TEMPORAL,
+     "        if(isset($rule['references'])||($rule['uniqueScope']??null)==='record')return null;\n        $out=[];",
+     "        $out=[];", TEMPORAL_INT),
     ('the shorthand name sent to the page (DLT-7)', MODES,
      '"serverKeys": ["deltaVsName", "deltaAdjacent"],',
      '"serverKeys": ["deltaAdjacent"],', MODULE),

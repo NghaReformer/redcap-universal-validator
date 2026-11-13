@@ -129,6 +129,31 @@ final class TemporalRules
         return $errors;
     }
 
+    /**
+     * The qualified references one rule reads other entries by, as
+     * [['ref' => the parsed reference, 'walks' => whether it walks back to the
+     * nearest value (ModeRegistry::nearestKey())], ...]. null when the rule
+     * reads more than a reference names (a binding, record uniqueness) or a
+     * condition does not parse: the save audit then cannot say which entries a
+     * save leaves alone (review DLT-3).
+     */
+    public static function crossReads(array $rule)
+    {
+        if(isset($rule['references'])||($rule['uniqueScope']??null)==='record')return null;
+        $out=[];
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
+            $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))return null;
+            foreach(Logic::qualifiedRefs($p['ast']) as $r){if($r[0]!=='qref')return null;$out[]=['ref'=>$r,'walks'=>false];}
+        }
+        foreach(self::operands($rule) as list($rk,$op))if($op[0]==='qref')$out[]=['ref'=>$op,'walks'=>ModeRegistry::nearestKey($rk,$rule)!==null];
+        foreach($rule['branches']??[] as $branch){
+            $flat=array_merge($rule,$branch);unset($flat['branches']);$sub=self::crossReads($flat);
+            if($sub===null)return null;
+            $out=array_merge($out,$sub);
+        }
+        return $out;
+    }
+
     /** Events needed for one rendered host. null means metadata cannot narrow safely. */
     public static function eventIds(array $rule,ProjectShape $shape,$current)
     {

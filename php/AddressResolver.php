@@ -228,6 +228,43 @@ final class AddressResolver
         return $answer + ['nearest' => $byEvent ? 'event' : 'instance'];
     }
 
+    /**
+     * Whether resolveNearest() of $ref, asked from $context, reads the entry at
+     * $event and $instance: the walk passes it or stops on it. null when the
+     * reference is not one that walks. A walk that cannot be read (a layout
+     * or an entry that does not resolve, a spent budget) answers true: the
+     * entry may read the saved one. The save audit asks this to leave alone
+     * the entries a save cannot change (review DLT-3): with a value at every
+     * visit, only the next visit reads the saved one.
+     */
+    public function walkReads(array $ref, array $context, $event, $instance)
+    {
+        $byEvent = ($ref[3] ?? null) === 'previous-event-name';
+        $byInstance = !$byEvent && ($ref[4] ?? null) === 'previous-instance';
+        if (!$byEvent && !$byInstance) return null;
+        $field = $this->shape->field($ref[1]);
+        if (!$field || empty($field['form'])) return true;
+        $r = $this->resolveNearest($ref, $context);
+        if (!in_array($r['state'] ?? null, ['ok','absent'], true)) return true;
+        // Where the walk stopped; null when it found no value and so passed every earlier entry.
+        $stop = $this->holdsValue($r) && isset($r['location']) ? $r['location'] : null;
+        if ($byEvent) {
+            $earlier = $this->shape->earlierEvents($context['event'], $field['form']);
+            if ($earlier['state'] !== 'ok') return true;
+            foreach ($earlier['events'] as $id) {
+                if ((string)$id === (string)$event) return true;
+                if ($stop !== null && (string)$stop['event'] === (string)$id) return false;
+            }
+            return false;
+        }
+        $at = $this->shape->eventId($ref[3] ?? null, $context['event'], $field['form']);
+        if ($at['state'] !== 'ok') return true;
+        if ((string)$at['event'] !== (string)$event) return false;
+        $own = isset($context['instance']) ? (int)$context['instance'] : 1;
+        if ((int)$instance >= $own) return false;
+        return $stop === null || (int)$instance >= (int)$stop['instance'];
+    }
+
     /** Declarative bindings. Match sources are scalar field references, never executable logic. */
     public function resolveBinding(array $binding, array $context)
     {

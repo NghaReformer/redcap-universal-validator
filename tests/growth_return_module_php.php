@@ -715,11 +715,16 @@ NASK, Not asked";
     save($m, 'enrol_form', 1, '2', 1);
     check('the enrolment saved: both visits are filled, one save each (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
         count(\REDCap::$saves) === 2 && written(0) === ['2' => [2 => $want]] && written(1) === ['2' => [3 => $w11]]);
-    // A rule that reads its own form in another event: one visit's save can change the other.
+    // A rule that reads its own form at visit 1: a save of visit 1 can change visit 2, and
+    // a save of visit 2 changes nothing visit 1 reads (review DLT-3).
+    $m = evMod(dict([], evTag('"when":"[visit_arm_1][weight]<>\'none\'",' . RET_ALL)), $two);
+    save($m, 'anthro_form', 1, '2', 2);
+    check('visit 1 saved, the rule reading visit 1: both are filled, visit 1 first (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
+        count(\REDCap::$saves) === 2 && written(0) === ['2' => [2 => $want]] && written(1) === ['2' => [3 => $w11]]);
     $m = evMod(dict([], evTag('"when":"[visit_arm_1][weight]<>\'none\'",' . RET_ALL)), $two);
     save($m, 'anthro_form', 1, '2', 3);
-    check('visit 2 saved, the rule reading visit 1: both are filled, visit 2 first (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
-        count(\REDCap::$saves) === 2 && written(0) === ['2' => [3 => $w11]] && written(1) === ['2' => [2 => $want]]);
+    check('visit 2 saved, the rule reading visit 1: visit 2 alone, since visit 1 reads nothing of visit 2 (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
+        count(\REDCap::$saves) === 1 && written(0) === ['2' => [3 => $w11]]);
     $m = evMod(dict([], $evRet), $two);
     \REDCap::$saveErrorsFor = function ($data) { return isset($data['2'][3]) ? ['2' => 'the form is locked'] : []; };
     save($m, 'enrol_form', 1, '2', 1);

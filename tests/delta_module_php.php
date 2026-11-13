@@ -786,9 +786,23 @@ namespace {
         $hits === ['#3:up:instance 1', '#6:up:instance 3']);
     $m = mod($RD, $LONG, $FULL, $REFS);
     $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 1);
-    check('the save audit agrees with the scan from every instance (got ' . json_encode(array_keys(deltaBy($m))) . ')',
+    // A save re-checks the instances whose walk reads the saved one (review DLT-3): instance 3
+    // reads instance 1 past the blank 2; instance 6 stops at instance 3 and never reads 1.
+    check('the save audit agrees with the scan: instance 1 saved re-checks instance 3, which reads it (got ' . json_encode(array_keys(deltaBy($m))) . ')',
+        (deltaBy($m, 351, 3)['weight']['vs_found'] ?? null) === 'instance 1' && !isset(deltaBy($m, 351, 6)['weight'])
+        && !isset(deltaBy($m, 351, 8)['weight']));
+    $m = mod($RD, $LONG, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 3);
+    check('... instance 3 saved: itself, and instance 6, which reads it past the blank 4 and 5; not instance 8',
         (deltaBy($m, 351, 3)['weight']['vs_found'] ?? null) === 'instance 1' && (deltaBy($m, 351, 6)['weight']['vs_found'] ?? null) === 'instance 3'
         && !isset(deltaBy($m, 351, 8)['weight']));
+    $m = mod($RD, $LONG, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 4);
+    check('... a blank instance 4 saved: instance 6 walks past it, so it is re-checked', (deltaBy($m, 351, 6)['weight']['vs_found'] ?? null) === 'instance 3'
+        && !isset(deltaBy($m, 351, 3)['weight']));
+    $m = mod($RD, $LONG, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 8);
+    check('... the last instance saved: nothing else is re-checked', !deltaBy($m));
     $RADJ = $RD;
     $RADJ['weight'] = f('visit_form', '@UVDELTA={"vs":"previous-instance","max":2,"previous":"adjacent"}', 'number');
     $m = mod($RADJ, $DEL, $FULL, $REFS);
@@ -1265,7 +1279,8 @@ namespace {
     $R2ok = $R2; $R2ok['h1']['field_annotation'] = '@UVDELTA={"vs":"[first-event-name][h1][first-instance]","max":1}';
     check('... which is accepted', $errAt($R2ok, 'h1', 'visit_form', 3) === '');
     $m = mod($R2ok, ['2' => [3 => ['h1' => '90'], 'repeat_instances' => [2 => ['visit_form' => [1 => ['h1' => '70'], 2 => ['h1' => '72']]]]]], $FOUR, $REFS);
-    $m->redcap_save_record(PID, '2', 'visit_form', 3, null, null, null, 1);
+    // the first visit's first instance is saved: the entries that read it are re-checked
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
     check('... and compares each entry with the first visit\'s first instance (got ' . json_encode(deltaBy($m)) . ')',
         (deltaBy($m, 3, 1)['h1']['reason'] ?? null) === 'up' && (deltaBy($m, 2, 2)['h1']['reason'] ?? null) === 'up');
     $R2['h1']['field_annotation'] = '@UVDELTA={"vs":"[first-event-name][h1]","max":1}';
@@ -1837,6 +1852,108 @@ namespace {
     check('... fixed, that tag is offered the first event (got ' . json_encode($e) . ')', $e === [$SELF9 . 'first-event".']);
     check('... and the two are accepted together',
         $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"first-event","max":1} @UVDELTA={"vs":"previous-event","max":5}') === []);
+    // ---- DLT-3: what a save re-checks, and what the context limit counts -----------------
+    // 13 visits of one form, 40 tagged fields: 520 rule and entry pairs, 13 entries.
+    $wide = function ($events, $fields, $tag) {
+        \Project::$isLongitudinal = true;
+        $info = [1 => ['unique_event_name' => 'enrol_arm_1', 'arm_num' => 1]];
+        $forms = [1 => ['enrol_form']];
+        \REDCap::$mappings = [['event_id' => 1, 'form' => 'enrol_form']];
+        for ($i = 2; $i <= $events + 1; $i++) {
+            $info[$i] = ['unique_event_name' => 'visit' . ($i - 1) . '_arm_1', 'arm_num' => 1];
+            $forms[$i] = ['visit_form'];
+            \REDCap::$mappings[] = ['event_id' => $i, 'form' => 'visit_form'];
+        }
+        \Project::$eventInfoAll = $info; \Project::$eventsFormsAll = $forms; \Project::$repeats = [];
+        $dict = ['record_id' => f('enrol_form')];
+        for ($k = 0; $k < $fields; $k++) $dict['w' . $k] = f('visit_form', $tag, 'number');
+        return $dict;
+    };
+    // every visit doubles the one before, so every entry after the first holds a finding
+    $doubling = function ($events, $fields) {
+        $rec = [1 => ['record_id' => '2']];
+        for ($i = 2; $i <= $events + 1; $i++) for ($k = 0; $k < $fields; $k++) $rec[$i]['w' . $k] = (string) (10 * pow(2, $i - 2));
+        return ['2' => $rec];
+    };
+    $incomplete = function ($m) {
+        return count(array_filter(findings($m, 'uvalidate-unconfigurable'), function ($e) { return strpos((string) $e['why'], 'Extended audit incomplete') === 0; }));
+    };
+    $eventsHit = function ($m) {
+        $e = [];
+        foreach (findings($m) as $x) if (($x['type'] ?? '') === 'delta') $e[(int) $x['event_id']] = true;
+        ksort($e);
+        return array_keys($e);
+    };
+    $WD = $wide(13, 40, '@UVDELTA={"vs":"previous-event","maxPct":10}');
+    $WDATA = $doubling(13, 40);
+    $m = mod($WD, $WDATA, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
+    check('DLT-3: 40 fields on 13 visits, the first visit saved: every field of the next visit is re-checked (got ' . count(deltaBy($m, 3)) . ')',
+        count(deltaBy($m, 3)) === 40);
+    check('... and the audit is complete: 13 entries are inside the limit of 500 (got ' . $incomplete($m) . ' notices)', $incomplete($m) === 0);
+    check('... with a value at every visit only the next one reads the saved visit, so only it is re-checked (got ' . json_encode($eventsHit($m)) . ')',
+        $eventsHit($m) === [3]);
+    $m = mod($WD, $WDATA, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 6, null, null, null, 1);
+    check('DLT-3: visit 5 saved: itself and visit 6, no earlier visit and none further on (got ' . json_encode($eventsHit($m)) . ')',
+        $eventsHit($m) === [6, 7] && $incomplete($m) === 0);
+    // visits 6 to 9 left blank: visit 10 walks back over them to visit 5, so it is the one re-checked
+    $GAP = $WDATA;
+    for ($i = 7; $i <= 10; $i++) foreach ($GAP['2'][$i] as $k => $v) $GAP['2'][$i][$k] = '';
+    $m = mod($WD, $GAP, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 6, null, null, null, 1);
+    check('DLT-3: visit 5 saved before four blank visits: visit 10 reads it and is re-checked (got ' . json_encode($eventsHit($m)) . ')',
+        $eventsHit($m) === [6, 11] && count(deltaBy($m, 11)) === 40 && (deltaBy($m, 11)['w0']['vs_found'] ?? null) === 'visit5_arm_1');
+    $m = mod($WD, $GAP, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 8, null, null, null, 1);
+    check('DLT-3: a blank visit saved inside the gap: visit 10 walks past it and is re-checked', $eventsHit($m) === [11]);
+    // walkReads itself, on four visits holding 70, a blank, 80 and 90.
+    $ws = new \INSPIRE\UniversalValidator\ProjectShape([
+        1 => ['name' => 'v1_arm_1', 'arm' => 1, 'order' => 0, 'forms' => ['visit_form'], 'repeats' => [], 'eventRepeats' => false],
+        2 => ['name' => 'v2_arm_1', 'arm' => 1, 'order' => 1, 'forms' => ['visit_form'], 'repeats' => [], 'eventRepeats' => false],
+        3 => ['name' => 'v3_arm_1', 'arm' => 1, 'order' => 2, 'forms' => ['visit_form'], 'repeats' => [], 'eventRepeats' => false],
+        4 => ['name' => 'v4_arm_1', 'arm' => 1, 'order' => 3, 'forms' => ['visit_form'], 'repeats' => [], 'eventRepeats' => false]],
+        ['w' => ['form' => 'visit_form']], true, 'record_id');
+    $wn = [1 => ['w' => '70'], 2 => ['w' => ''], 3 => ['w' => '80'], 4 => ['w' => '90']];
+    $wr = new \INSPIRE\UniversalValidator\AddressResolver($ws, $wn);
+    $prev = ['qref', 'w', null, 'previous-event-name', null];
+    $from = function ($e) { return ['event' => $e, 'instrument' => 'visit_form', 'instance' => 1, 'values' => [], 'unsaved' => false]; };
+    check('walkReads: visit 3 walks past the blank visit 2 and stops on visit 1: it reads both',
+        $wr->walkReads($prev, $from(3), 2, 1) === true && $wr->walkReads($prev, $from(3), 1, 1) === true);
+    check('walkReads: visit 4 stops on visit 3 and reads nothing before it',
+        $wr->walkReads($prev, $from(4), 3, 1) === true && $wr->walkReads($prev, $from(4), 2, 1) === false && $wr->walkReads($prev, $from(4), 1, 1) === false);
+    check('walkReads: no visit reads itself or a later one', $wr->walkReads($prev, $from(2), 2, 1) === false && $wr->walkReads($prev, $from(2), 3, 1) === false);
+    check('walkReads: a reference that does not walk says so (null)', $wr->walkReads(['qref', 'w', null, 'first-event-name', null], $from(3), 1, 1) === null);
+    $wr0 = new \INSPIRE\UniversalValidator\AddressResolver($ws, $wn, 10000, new \INSPIRE\UniversalValidator\ReferenceBudget(0));
+    check('walkReads: a spent budget cannot say, so the entry may read the saved one (true)', $wr0->walkReads($prev, $from(4), 1, 1) === true);
+    $m = mod($WD, $WDATA, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 14, null, null, null, 1);
+    check('DLT-3: the last visit saved: only itself', $eventsHit($m) === [14] && count(deltaBy($m, 14)) === 40);
+    // "previous":"adjacent" reads one event back, so a save re-checks itself and the next visit alone
+    $WA = $wide(13, 3, '@UVDELTA={"vs":"previous-event","maxPct":10,"previous":"adjacent"}');
+    $m = mod($WA, $doubling(13, 3), $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 6, null, null, null, 1);
+    check('DLT-3: adjacent, visit 5 saved: itself and visit 6 (got ' . json_encode($eventsHit($m)) . ')', $eventsHit($m) === [6, 7]);
+    // the first event: every visit reads it, and no visit reads another
+    $WF = $wide(13, 3, '@UVDELTA={"vs":"first-event","maxPct":10}');
+    $m = mod($WF, $doubling(13, 3), $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 6, null, null, null, 1);
+    check('DLT-3: first-event, visit 5 saved: only itself', $eventsHit($m) === [6]);
+    $m = mod($WF, $doubling(13, 3), $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
+    check('DLT-3: first-event, the first visit saved: every later visit', $eventsHit($m) === range(3, 14));
+    // The limit counts entries: with 3, the saved entry and two more are judged for every
+    // field, and each field says once that the rest is left to the scan.
+    $m = mod($WF, $doubling(13, 3), $FULL, $REFS);
+    $m->projectSettings['qualified-audit-max-contexts'] = 3;
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
+    check('DLT-3: a limit of 3 entries: three entries judged for all three fields (got ' . json_encode([$eventsHit($m), count(deltaBy($m, 3)), count(deltaBy($m, 4))]) . ')',
+        $eventsHit($m) === [3, 4] && count(deltaBy($m, 3)) === 3 && count(deltaBy($m, 4)) === 3);
+    check('... and each field says once that its audit is incomplete (got ' . $incomplete($m) . ')', $incomplete($m) === 3);
+    $m = mod($WF, $doubling(13, 3), $FULL, $REFS);
+    $m->projectSettings['qualified-audit-max-contexts'] = 13;
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
+    check('... a limit of 13 entries holds all 13 visits', $eventsHit($m) === range(3, 14) && $incomplete($m) === 0);
     classic();
     // Extended path: a "vs" the resolver could not read arrives without a
     // value and with the reason, and the evaluator reports it.

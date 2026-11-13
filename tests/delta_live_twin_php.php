@@ -314,11 +314,10 @@ namespace {
     $m = firstSave($C, true, 381, 'uv_delta_test');
     check('C4: visit_2: 80 is 2.6% above 78; 82 is 10.8% above 74 and 17.1% above 70', hits($m, 381) === [
         'ud_twoev@381#1:up [first-event-name][ud_twoev]', 'ud_twoev@381#1:up [previous-event-name][ud_twoev]'], hits($m, 381));
-    // ud_bl at visit_1 reads its own entry and xv_weight at baseline, which a save of
-    // uv_delta_test at visit_2 cannot change, so that save leaves it alone (P4).
-    check('C4: the same save re-checks the visit_1 findings it can change, which stand', hits($m, 380) === [
-        'ud_height@380#1:down [first-event-name][ud_height]', 'ud_twoev@380#1:up [previous-event-name][ud_twoev]',
-        'ud_wt@380#1:up [previous-event-name][ud_wt]'], hits($m, 380));
+    // No rule at visit_1 reads visit_2 (they read the previous event, the first event and
+    // baseline), so a save of visit_2 cannot change a verdict there and leaves it alone
+    // (P4, review DLT-3).
+    check('C4: the same save does not re-check visit_1, whose rules cannot read visit_2', hits($m, 380) === [], hits($m, 380));
     // C5: correcting baseline re-checks the later visits that compare with it.
     $C['XE-1'][379]['ud_wt'] = '76';
     $m = firstSave($C, true, 379, 'uv_delta_test');
