@@ -4578,7 +4578,7 @@ cannot name an earlier entry at every event that holds the form (see Level 3).
 
 ## `@UVWRITEONCE` — values entered once
 
-A consent date, a randomisation arm or a baseline weight is entered once and
+A consent date, an enrolment site or a baseline weight is entered once and
 then left alone. `@UVWRITEONCE` leaves the field open until its first save of
 a value and locks it from then on. Named user roles can still change it.
 
@@ -4592,7 +4592,11 @@ The first save of a value locks the field, whoever makes it. A blank and a
 missing data code lock nothing, so a field marked "unknown" can still be
 filled in later. On a form or a survey the locked field keeps the value it
 opened with, and a note under it reads "This value was saved once and is
-locked. It cannot be changed here."
+locked. It cannot be changed here." The lock does not wait for the form to be
+complete: a save REDCap accepts with a required field still missing locks
+what it wrote. A field the randomisation module fills is not a tested use: if
+REDCap logs the allocation in a row that is not a data save, the check finds
+no first save and reports a rule problem.
 
 ### Level 2 — roles that may still change it
 
@@ -4614,9 +4618,14 @@ locked. It cannot be changed here."
   to the new value; a member who clears it releases the lock, and the next
   value saved locks it again.
 - A survey respondent holds no role, so a survey locks the field for everyone.
-- Roles are read when the audit or the scan runs, not as they were at the
-  save, because REDCap's log names who saved but not the role they held. A
-  change counts as the role's while its maker holds the role.
+- REDCap's log names who saved but not the role they held. The audit of a
+  save notes, for each save of a locked field it judges, whether its maker
+  held one of the roles then, and later audits and scans read that note. So a
+  data manager's correction stays theirs after they leave the role, and a
+  role granted later excuses nothing. A save with no note (an import, an API
+  call, a save made before this version, or one made while the module's log
+  is off) is judged by the roles its maker holds when the audit or the scan
+  runs. The scan writes no notes.
 - Rights that have expired and a suspended account hold no role. An
   administrator who is not a user of the project holds none either, and is
   locked out.
@@ -4641,19 +4650,32 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
 
 ### Semantics worth knowing
 
-- The lock is the browser's only. A change made with the Data Import Tool or
-  the API is not stopped. It is found afterwards, from REDCap's log, by the
-  audit of the next save of the form that holds the field and by the
-  Validation scan.
+- The lock is the browser's only, put on when the page is built; REDCap gives
+  a module no way to refuse a save once it is posted. Not stopped: the Data
+  Import Tool, the API and the REDCap Mobile App; a page opened before the
+  value was first saved (a second tab, or a second person on the record) or
+  before the `since` day, and saved after; a browser that did not run the
+  module's script; a survey's Start Over; and deleting a form's data, an
+  event or a repeating instance. Each is found afterwards, from REDCap's log,
+  by the audit of the next save of the form that holds the field and by the
+  Validation scan. The locked value is not written back, since a value put
+  back on a wrong reading of the log would replace real data. The person
+  whose save went over a locked value is told on the next page.
 - A text box is made read-only, the radio buttons are disabled and their
   "reset" link hidden, the enhanced radio buttons take no clicks, the slider is
-  disabled, and the date picker is kept from opening, with its button and
+  disabled and its "reset" link hidden, and the date picker is kept from opening, with its button and
   REDCap's Today and Now buttons hidden. Nothing the form posts is disabled,
   since REDCap would save the field blank: a dropdown takes no clicks instead,
   and a change made with the keyboard or a script is undone, and the note says
   so. A dropdown or SQL field whose saved code is no longer one of its
   choices gets that code back as an option. The lock touches only the field's
-  own controls: a field embedded in its row keeps its own buttons.
+  own controls: a field embedded in its row keeps its own buttons, and a
+  locked field embedded in another field's row has its links and buttons
+  hidden there.
+- A locked field that branching logic hides keeps its value. When REDCap asks
+  to erase the hidden field's value and the person says OK, the lock puts the
+  value back, the field stays hidden, and the save writes it unchanged.
+- On a survey shown one section per page, each page locks the fields it shows.
 - When the saved value cannot be read, the field is not locked. Staff see a
   note saying so, and the audit still checks a change.
 - A person's own first answer is locked as soon as it is saved: after Save &
@@ -4677,22 +4699,36 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
   Save or on Enter.
 - The tag takes no `when`, `caseSensitive` or `blockSave`, and no `references`.
 - Not on a calc or a checkbox field, a field with `@CALCTEXT`, `@CALCDATE`,
-  `@SETVALUE`, `@PREFILL` or `@DOWNLOAD-COUNT`, or a field another rule returns a value to
+  `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT`, `@LANGUAGE-CURRENT-FORM` or
+  `@LANGUAGE-CURRENT-SURVEY`, or a field another rule returns a value to
   (`@UVEXISTS` or `@UVRANGE` "return"): each of those is written again by
   itself. Not on a field with `@RICHTEXT` or an ontology search (BioPortal,
   FHIR or any other service) either, whose widget keeps its own copy of the
-  text.
+  text. One of those tag names inside another tag's quoted text
+  (`@PLACEHOLDER="see @SETVALUE note"`) is text and refuses nothing.
 - A field given `@UVWRITEONCE` twice is refused: the tag takes no `when`, so
   there is nothing to choose between them.
 - The audit logs `type: writeonce` with reason `changed` or `cleared`, plus
-  `locked_at` and `changed_at`. Each record and event is read on its own,
+  `locked_at` and `changed_at`, and `locked_by` and `changed_by`: the users
+  who saved the locked value and the one over it (keyed fingerprints of the
+  names when the log keeps no record id; no `locked_by` when `since` locked
+  the value). Each record and event is read on its own,
   back to the row REDCap writes when it makes the record. That row counts only
   when its record id line comes before every other Text or Notes value in it,
   since a Notes value could hold a typed copy of that line. A deletion of the
   whole record starts a new history, and so does an erase of all the
   project's records; a deletion of one form or one event at another event
-  changes nothing. A log that holds more rows of the record and event than
-  are read (5,000), a deletion of this event's data or of one arm, a deletion
+  changes nothing. A deletion of one form's data at this event, or of this
+  event, is read as a clearing of the fields it removed on the instance it
+  names, by the person who deleted, so a locked field among them is "Cleared
+  after it was locked"; the other forms and instances are read as before. The
+  Data Access Group line REDCap writes among a save's values is read past,
+  and a Notes value of several lines is one value whatever line breaks the
+  browser sent. A log that holds more rows of the record and event than
+  are read (5,000), a deletion of one form at this event whose row names the
+  instance but not the fields (for that instance), a deletion of this event
+  that names no instance or is described in no way the check knows, a
+  deletion of one arm, a deletion
   at another event the log does not describe as one form or one event (and in
   a project of several arms, every deletion of the record), a record whose log
   does not show it being made (renamed while its saves stay under the old
@@ -4747,7 +4783,8 @@ the page locks nothing before that day. The date is written YYYY-MM-DD.
 
 Once the data dictionary and the user roles are read, the module also refuses a
 role the project does not have, a calc or checkbox field, a field with
-`@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT` or
+`@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT`,
+`@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY` or
 `@RICHTEXT`, a field that searches an ontology of any service, a field given the tag twice, and a field another
 rule returns a value to.
 
