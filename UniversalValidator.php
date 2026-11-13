@@ -4427,10 +4427,20 @@ class UniversalValidator extends AbstractExternalModule
      * a survey, since a hidden row gives no reason on the page (@HIDDEN-APP
      * and -PDF are allowed), not one with a @UVJUSTIFY of its own, which would let two
      * fields stand for each other, and not a write-once one, since a reason
-     * must be cleared when the value changes for another reason. A tag name
-     * inside another tag's value is text (AnnotationRules::maskValues). A
-     * field another rule returns a value to is refused in applyJustify, which
-     * sees every rule.
+     * must be cleared when the value changes for another reason. Nor a field
+     * whose widget keeps its own copy of the text (JUS-2): the rich text
+     * editor (@RICHTEXT) writes its copy into the field after the save guard
+     * has read it, and saves markup such as "<p>&nbsp;</p>" for an empty box,
+     * which would count as a reason; an ontology search box (BioPortal, FHIR)
+     * does the same with its pick.
+     *
+     * The module's own tags are read as its parser reads them: a tag name
+     * inside another tag's value is text (AnnotationRules::maskValues).
+     * REDCap's tags are looked for in the annotation as written (JUS-4):
+     * REDCap finds an action tag wherever its name stands, also inside
+     * another tag's quoted value or an @IF, so "@CHARLIMIT=' @DEFAULT=..'"
+     * may still fill the field. A field another rule returns a value to is
+     * refused in applyJustify, which sees every rule.
      */
     private function annotateJustifyDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
@@ -4452,24 +4462,43 @@ class UniversalValidator extends AbstractExternalModule
         if ($reason === $this->recordIdFieldOf($pid)) {
             return $err('"reason" names "[' . $reason . ']", the record ID field — it is never blank, so it would release every broken value; name a field the person fills in.');
         }
-        $ann = AnnotationRules::maskValues(isset($dd[$reason]['field_annotation']) ? (string) $dd[$reason]['field_annotation'] : '');
+        $raw = isset($dd[$reason]['field_annotation']) ? (string) $dd[$reason]['field_annotation'] : '';
+        $ann = AnnotationRules::maskValues($raw);
+        // a REDCap tag found only inside another tag's value is named as such
+        $inValue = function ($tag) use ($ann) {
+            return preg_match('/@' . preg_quote($tag, '/') . '(?![\w-])/i', $ann) ? ''
+                : ' (inside another tag\'s value, where REDCap may still read it)';
+        };
         $filled = implode('|', array_map(function ($t) { return preg_quote($t, '/'); }, self::JUSTIFY_FILLED_TAGS));
-        if (preg_match('/@(' . $filled . ')(?![\w-])/i', $ann, $m)) {
-            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
+        $families = implode('|', array_map(function ($t) { return preg_quote($t, '/') . '[A-Z0-9-]*[A-Z0-9]'; }, self::JUSTIFY_FILLED_FAMILIES));
+        if (preg_match('/@(' . $families . '|' . $filled . ')(?![\w-])/i', $raw, $m)) {
+            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1]) . $inValue($m[1])
                 . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.');
         }
-        if (preg_match('/@(READONLY(?:-[A-Z]+)?)(?![\w-])/i', $ann, $m)) {
-            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
+        if (preg_match('/@(READONLY(?:-[A-Z]+)?)(?![\w-])/i', $raw, $m)) {
+            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1]) . $inValue($m[1])
                 . ' — the person cannot write a reason there; name a field the person fills in.');
+        }
+        if (preg_match('/@RICHTEXT(?![\w-])/i', $raw)) {
+            return $err('"reason" names "[' . $reason . ']", which has @RICHTEXT' . $inValue('RICHTEXT')
+                . ' — the rich text editor keeps its own copy of the text and saves markup for an empty box, which would count as a reason; name a plain Text or Notes field.');
+        }
+        // A Text field's choices hold "SERVICE:CATEGORY" when it searches an
+        // ontology (BIOPORTAL:, FHIR: and any other service REDCap adds).
+        $enum = isset($dd[$reason]['select_choices_or_calculations']) ? ltrim((string) $dd[$reason]['select_choices_or_calculations']) : '';
+        if ($type === 'text' && preg_match('/^[A-Za-z][A-Za-z0-9_-]*:/', $enum)) {
+            return $err('"reason" names "[' . $reason . ']", which searches an ontology'
+                . ' — its search box keeps its own text and writes its pick into the field after the save was judged; name a plain Text or Notes field.');
         }
         /* @HIDDEN-FORM and @HIDDEN-SURVEY too (J3A-6): where the row is
            hidden the note and the save would ask for a reason the person
            cannot write, and a reason saved elsewhere gives none there, since
            a hidden row gives no reason on the page. @HIDDEN-APP and
            @HIDDEN-PDF hide nothing on a form or a survey. */
-        if (preg_match('/@HIDDEN(-FORM|-SURVEY)?(?![\w-])/i', $ann, $m)) {
+        if (preg_match('/@HIDDEN(-FORM|-SURVEY)?(?![\w-])/i', $raw, $m)) {
             $where = !isset($m[1]) || $m[1] === '' ? 'on every page' : (strtoupper($m[1]) === '-FORM' ? 'on the data entry form' : 'on the survey');
-            return $err('"reason" names "[' . $reason . ']", which has @HIDDEN' . (isset($m[1]) ? strtoupper($m[1]) : '')
+            $tag = 'HIDDEN' . (isset($m[1]) ? strtoupper($m[1]) : '');
+            return $err('"reason" names "[' . $reason . ']", which has @' . $tag . $inValue($tag)
                 . ' — the field is hidden ' . $where . ', so the person cannot write a reason there; name a field the person fills in.');
         }
         if (preg_match('/' . preg_quote(AnnotationRules::TAG_JUSTIFY, '/') . '(?![\w-])/i', $ann)) {
@@ -4497,6 +4526,15 @@ class UniversalValidator extends AbstractExternalModule
         'NOW-SERVER', 'NOW-UTC', 'NOW', 'TODAY-SERVER', 'TODAY-UTC', 'TODAY',
         'APPUSERNAME-APP', 'USERNAME', 'LATITUDE', 'LONGITUDE', 'DOWNLOAD-COUNT',
         'LANGUAGE-CURRENT-FORM', 'LANGUAGE-CURRENT-SURVEY'];
+
+    /**
+     * Families of such tags, by the start of their name: every tag of the
+     * family is refused, also one a later REDCap adds. MyCap writes the
+     * participant's code, join date and time zone into @MC-PARTICIPANT-*
+     * fields and a task's dates, status and result into @MC-TASK-* fields
+     * (JUS-4). The @MC-FIELD-* tags only pick how MyCap draws a field.
+     */
+    const JUSTIFY_FILLED_FAMILIES = ['MC-PARTICIPANT-', 'MC-TASK-'];
 
     /**
      * Justify mode (@UVJUSTIFY) finds nothing of its own: it marks the

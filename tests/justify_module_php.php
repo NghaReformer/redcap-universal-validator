@@ -368,8 +368,11 @@ namespace {
     // the record ID field, a field REDCap fills in itself, a read-only field, a
     // field @HIDDEN, @HIDDEN-FORM or @HIDDEN-SURVEY hides, a field with a
     // @UVJUSTIFY of its own and a write-once field are refused, word for
-    // word, in any letter case. A tag
-    // name inside another tag's value is text (AnnotationRules::maskValues).
+    // word, in any letter case. So are a field MyCap fills in (@MC-PARTICIPANT-*,
+    // @MC-TASK-*, JUS-4) and one with the rich text editor (JUS-2). The name of
+    // one of REDCap's tags inside another tag's value is refused too, and the
+    // refusal says where it stands (JUS-4): REDCap reads an action tag wherever
+    // it is written. The module's own tags are read as its parser reads them.
     $R = function ($reason) use ($J) { return '@UVRANGE={"hard":[0,10]} ' . $J($reason); };
     $FILLED = ['ct_why' => '@CALCTEXT(if([r_ct]>10,"auto","auto"))', 'cd_why' => '@CALCDATE([r_cd],1,"d")', 'df_why' => '@DEFAULT="n/a"',
         'sv_why' => '@SETVALUE="checked"', 'pf_why' => '@PREFILL="checked"', 'now_why' => '@NOW', 'nows_why' => '@NOW-SERVER',
@@ -382,16 +385,30 @@ namespace {
         // lower case, as REDCap reads its own tags
         'dfl_why' => '@default="n/a"', 'rol_why' => '@readonly-survey', 'hdl_why' => '@hidden', 'wol_why' => '@uvwriteonce', 'hfl_why' => '@hidden-form',
         // a real tag after a value that holds a tag name
-        'tv_why' => "@PLACEHOLDER='not @DEFAULT' @DEFAULT='n/a'"];
-    // reason fields that stay: the forms of @HIDDEN that hide nothing on a form or a survey, and tag names inside another tag's value
-    $KEPT = ['ha_why' => '@HIDDEN-APP', 'hp_why' => '@HIDDEN-PDF',
-        'tm_why' => '@UVREQUIRED={"message":"Say why; this field is the @UVJUSTIFY reason of [r_tm]. Not @UVWRITEONCE, not @HIDDEN."}',
-        'tp_why' => "@PLACEHOLDER='e.g. scale reset, not @DEFAULT settings'"];
+        'tv_why' => "@PLACEHOLDER='not @DEFAULT' @DEFAULT='n/a'",
+        // MyCap writes these itself (JUS-4), and the rich text editor saves markup for an empty box (JUS-2)
+        'mcp_why' => '@MC-PARTICIPANT-CODE', 'mcj_why' => '@PLACEHOLDER="x" @MC-PARTICIPANT-JOINDATE-UTC', 'mct_why' => '@mc-task-status',
+        'rt_why' => '@RICHTEXT', 'rtl_why' => '@CHARLIMIT=200 @richtext',
+        // a tag an @IF may pick
+        'ifr_why' => "@IF([r_ok]='1', '@READONLY', '')"];
+    // one of REDCap's tags inside another tag's value: REDCap may still read it there (JUS-4)
+    $INVALUE = ['tm_why' => '@UVREQUIRED={"message":"Say why; this field is the @UVJUSTIFY reason of [r_tm]. Not @UVWRITEONCE, not @HIDDEN."}',
+        'tp_why' => "@PLACEHOLDER='e.g. scale reset, not @DEFAULT settings'",
+        'cl_why' => "@CHARLIMIT=' @DEFAULT=\"auto\" '",
+        'ph_why' => '@PLACEHOLDER="x @HIDDEN-SURVEY y"', 'prt_why' => "@PLACEHOLDER='@RICHTEXT'", 'pmc_why' => "@PLACEHOLDER='@MC-TASK-UUID'"];
+    // reason fields that stay: the forms of @HIDDEN that hide nothing on a form or a survey, a MyCap tag that only
+    // picks how a field is drawn, and the module's own tag names inside another tag's value
+    $KEPT = ['ha_why' => '@HIDDEN-APP', 'hp_why' => '@HIDDEN-PDF', 'mcf_why' => '@MC-FIELD-TEXT-BARCODE', 'bc_why' => '@BARCODE-APP',
+        'tu_why' => '@UVREQUIRED={"message":"Say why; this field is the @UVJUSTIFY reason of [r_tu], not a @UVWRITEONCE field."}'];
     $BADR = ['record_id' => f('visit_form'), 'r_rid' => f('visit_form', $R('record_id'), 'integer')];
-    foreach ($FILLED + $KEPT as $why => $tag) {
+    foreach ($FILLED + $INVALUE + $KEPT as $why => $tag) {
         $BADR['r_' . substr($why, 0, -4)] = f('visit_form', $R($why), 'integer');
-        $BADR[$why] = f('visit_form', $tag);
+        $BADR[$why] = f('visit_form', $tag, '', strpos($why, 'rt') === 0 ? 'notes' : 'text');
     }
+    // a Text field that searches an ontology keeps its own text (JUS-2); a dropdown's choices are no ontology
+    $BADR += ['r_on' => f('visit_form', $R('on_why'), 'integer'), 'on_why' => f('visit_form', '', '', 'text', 'BIOPORTAL:ICD10'),
+        'r_fh' => f('visit_form', $R('fh_why'), 'integer'), 'fh_why' => f('visit_form', '', '', 'text', ' FHIR:condition'),
+        'r_dd' => f('visit_form', $R('dd_why'), 'integer'), 'dd_why' => f('visit_form', '', '', 'dropdown', 'a:1, Scale reset | b, Other')];
     $BADR += [
         // each the other's reason; and a chain: ca's reason cb is itself paired with cc
         'ma' => f('visit_form', $R('mb'), 'integer'), 'mb' => f('visit_form', $R('ma'), 'integer'),
@@ -410,23 +427,31 @@ namespace {
     };
     check('the record ID field is no reason field (got ' . $berr('r_rid') . ')', $berr('r_rid') === '@UVJUSTIFY on "r_rid": "reason" names "[record_id]", the record ID field'
         . ' — it is never blank, so it would release every broken value; name a field the person fills in.');
-    foreach ($FILLED as $why => $tag) {
+    foreach ($FILLED + $INVALUE as $why => $tag) {
         $f = 'r_' . substr($why, 0, -4);
         // the last tag the annotation holds is the one refused (tv_why: the real @DEFAULT after the placeholder)
         $name = strtoupper(preg_replace('/^.*@([A-Z-]+).*$/si', '$1', $tag));
         $head = '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why . ']", ';
+        $has = 'which has @' . $name . (isset($INVALUE[$why]) ? ' (inside another tag\'s value, where REDCap may still read it)' : '');
         if (strpos($name, 'READONLY') === 0) {
-            $want = $head . 'which has @' . $name . ' — the person cannot write a reason there; name a field the person fills in.';
+            $want = $head . $has . ' — the person cannot write a reason there; name a field the person fills in.';
         } elseif (strpos($name, 'HIDDEN') === 0) {
             $where = ['HIDDEN' => 'on every page', 'HIDDEN-FORM' => 'on the data entry form', 'HIDDEN-SURVEY' => 'on the survey'][$name];
-            $want = $head . 'which has @' . $name . ' — the field is hidden ' . $where . ', so the person cannot write a reason there; name a field the person fills in.';
+            $want = $head . $has . ' — the field is hidden ' . $where . ', so the person cannot write a reason there; name a field the person fills in.';
         } elseif ($name === 'UVWRITEONCE') {
             $want = $head . 'which carries @UVWRITEONCE — a saved reason could not be cleared when the value changes for another reason; name a field the person can clear.';
+        } elseif ($name === 'RICHTEXT') {
+            $want = $head . $has . ' — the rich text editor keeps its own copy of the text and saves markup for an empty box, which would count as a reason; name a plain Text or Notes field.';
         } else {
-            $want = $head . 'which has @' . $name . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.';
+            $want = $head . $has . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.';
         }
         check('a reason field with ' . $tag . ' is refused (got ' . $berr($f) . ')', $berr($f) === $want);
     }
+    foreach (['r_on' => 'on_why', 'r_fh' => 'fh_why'] as $f => $why) {
+        check('a reason field that searches an ontology is refused (got ' . $berr($f) . ')', $berr($f) === '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why
+            . ']", which searches an ontology — its search box keeps its own text and writes its pick into the field after the save was judged; name a plain Text or Notes field.');
+    }
+    check('a dropdown whose first choice holds a colon is no ontology (got ' . $berr('r_dd') . ')', justifyOn($bp, 'r_dd') !== null && $berr('r_dd') === '');
     foreach ($KEPT as $why => $tag) {
         $f = 'r_' . substr($why, 0, -4);
         check('a reason field with ' . $tag . ' is kept (got ' . $berr($f) . ')', justifyOn($bp, $f) !== null && $berr($f) === '');
@@ -440,10 +465,12 @@ namespace {
     // the audit: a broken value with a refused reason field stays open, whatever the field holds
     $brow = ['record_id' => '2', 'r_rid' => '99', 'ma' => '99', 'mb' => '99', 'ca' => '99', 'cb' => '99', 'cc' => 'scale reads high',
         'la' => '99', 'lb' => '99', 'r_ok' => '99', 'ok_why' => 'scale reads high'];
-    foreach ($FILLED + $KEPT as $why => $tag) { $brow['r_' . substr($why, 0, -4)] = '99'; $brow[$why] = 'auto'; }
+    foreach ($FILLED + $INVALUE + $KEPT as $why => $tag) { $brow['r_' . substr($why, 0, -4)] = '99'; $brow[$why] = 'auto'; }
+    // the markup the rich text editor saves for an empty box, and an ontology pick
+    $brow = array_merge($brow, ['rt_why' => '<p>&nbsp;</p>', 'r_on' => '99', 'on_why' => 'A00', 'r_fh' => '99', 'fh_why' => 'A00']);
     $m = save($BADR, ['2' => [351 => $brow]], 'visit_form');
     $open = [];
-    foreach (array_merge(['r_rid', 'ma', 'mb', 'ca', 'la', 'lb'], array_map(function ($w) { return 'r_' . substr($w, 0, -4); }, array_keys($FILLED))) as $f) {
+    foreach (array_merge(['r_rid', 'ma', 'mb', 'ca', 'la', 'lb', 'r_on', 'r_fh'], array_map(function ($w) { return 'r_' . substr($w, 0, -4); }, array_keys($FILLED + $INVALUE))) as $f) {
         if (audit($m, $f) !== ['invalid-id-saved:range:hard-high']) $open[$f] = audit($m, $f);
     }
     check('a refused reason field releases nothing in the audit (got ' . json_encode($open) . ')', $open === []);
