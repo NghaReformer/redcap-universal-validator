@@ -1084,7 +1084,8 @@ class UniversalValidator extends AbstractExternalModule
             $col = $this->findCollision($project_id, $field, $with, $scope, $cand, $record, $event_id, null, false,
                                         empty($rule['caseSensitive']), null, $also);
             if ($col === false) {
-                $out['unconfigurable'][] = ['fields' => [$field], 'why' => 'the saved values could not be read to compare with'];
+                $out['unconfigurable'][] = ['fields' => [$field],
+                    'why' => $this->liveReadSkipped ? self::AUDIT_READ_SKIPPED_WHY : 'the saved values could not be read to compare with'];
             } elseif ($col !== null) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'unique', 'type' => 'unique', 'reason' => 'duplicate-value'];
             }
@@ -11223,7 +11224,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave',
         'returnBarred', 'valueHistoryOverride', 'roleBookOverride', 'auditPid', 'uniqueAuditPlan', 'uniqueAuditReads',
-        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveStaffLookup', 'liveReadSkipped'];
+        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveReadSkipped'];
 
     /** Every SCAN_MEMOS property back to its declared default. */
     private function resetScanMemos()
@@ -11526,12 +11527,20 @@ class UniversalValidator extends AbstractExternalModule
      * entry as the field the value was found in, and the record being checked
      * is still left out entirely: its own fields are compared by @UVASSERT.
      *
-     * $mayFullRead (a survey's read budget) is asked before every read of the
-     * whole field: one that confirms a narrowed miss, and one made because the
-     * value could not be narrowed at all. A narrowed miss is never final: the
-     * filter cannot see a saved value with spaces around it, which the
-     * comparison here trims. A saved Missing Data Code in the tagged field,
-     * or in an "also" field, is no duplicate (the scan skips them too).
+     * $mayFullRead (a survey's read budget) is asked once, before any read
+     * but that of the lookup index: the read of the field in the data table,
+     * and where that cannot be read the narrowed and the full export. A
+     * narrowed miss is never final: the filter cannot see a saved value with
+     * spaces around it, which the comparison here trims. A saved Missing
+     * Data Code in the tagged field, or in an "also" field, is no duplicate
+     * (the scan skips them too).
+     *
+     * NO READ OF A WHOLE FIELD ABOVE LIVE_WHOLE_READ_ROWS (UNQ-3). Every
+     * caller is inside somebody's request: a person at a form, a survey
+     * respondent, or the save that the audit follows. Where the lookup index
+     * cannot answer for a field that large, the answer is false with
+     * liveReadSkipped set: "could not check" live, "not checked" in the
+     * audit, and the cron builds the index.
      */
     private function findCollision($pid, $field, array $with, $scope, array $values, $excludeRecord, $event_id, $groupId = null, $narrow = false, $fold = true, ?callable $mayFullRead = null, array $also = [])
     {
@@ -11609,15 +11618,23 @@ class UniversalValidator extends AbstractExternalModule
         };
         // Signed-in callers and the save audit start there. A survey asks the
         // lookup index first, outside the read budget: it reads the records
-        // it names, not the field. Without it a survey keeps its order: the
-        // narrowed read below settles a hit without spending the budget, and
-        // the budget pays for the table read of a miss.
+        // it names, not the field. Where the index cannot answer, the budget
+        // is asked before any other read is made for a survey (UNQ-5): the
+        // narrowed read below ran first, 600 filtered exports a minute for
+        // anyone with the link, and it now runs only where the data table
+        // cannot be read at all.
         $t = $fromTable($mayFullRead === null ? 'any' : 'index');
         if ($t[0]) return $t[1];
-        // A signed-in person's live lookup of a field too large to read whole
-        // (wholeFieldRecords): not settled, and the exports below, which cost
-        // more than the read left out, are not made either.
+        // A field too large to read whole inside a request (wholeFieldRecords):
+        // not settled, and the exports below, which cost more than the read
+        // left out, are not made either.
         if ($this->liveReadSkipped) return false;
+        if ($mayFullRead !== null) {
+            if (!call_user_func($mayFullRead)) return false;
+            $t = $fromTable('table');
+            if ($t[0]) return $t[1];
+            if ($this->liveReadSkipped) return false;
+        }
 
         // Live-endpoint amplification guard (F4): the no-auth path would otherwise
         // export the WHOLE project on every call. Narrow the read to candidate
@@ -11648,11 +11665,6 @@ class UniversalValidator extends AbstractExternalModule
                     // filterLogic unsupported/malformed here — fall back below.
                 }
             }
-        }
-        if ($mayFullRead !== null) {
-            if (!call_user_func($mayFullRead)) return false;
-            $t = $fromTable('table');
-            if ($t[0]) return $t[1];
         }
         $shared = $this->sharedCollisionRead($params);
         if ($shared !== null) {
@@ -11783,6 +11795,7 @@ class UniversalValidator extends AbstractExternalModule
             if (Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) !== $k) return false;
             return !($codes && self::isMissingCode(Logic::lookupTrim($v), $codes));
         };
+        $this->liveReadSkipped = false;
         $recs = $via === 'table' ? null : $this->indexedRecords($pid, $fields, $marks, $value, $eventId, $accept);
         if ($recs === null && $via !== 'index') $recs = $this->wholeFieldRecords($pid, $fields, $eventId, $accept);
         if ($recs === null || $excludeRecord === null || $excludeRecord === '') return $recs;
@@ -11811,6 +11824,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($codes && self::isMissingCode($t, $codes)) return false;
             return Logic::lookupKey($t, $fold, $mark) === $key;
         };
+        $this->liveReadSkipped = false;
         $recs = $via === 'table' ? null : $this->indexedRecords($pid, [$field], [$field => $mark], $value, $event, $accept);
         if ($recs === null && $via !== 'index') $recs = $this->wholeFieldRecords($pid, [$field], $event, $accept);
         if ($recs === null || $skip === null || $skip === '') return $recs;
@@ -11926,32 +11940,34 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * Rows of the searched fields above which a signed-in person's live
-     * lookup does not read the whole field when the value index cannot
-     * answer: the read takes seconds at this size and tens of seconds at
-     * 400,000 rows, and nobody at a form waits for it. The lookup answers
-     * "could not check" at once; the cron builds the index, and the save
-     * audit and the Validation scan read in full as before.
+     * Rows of the searched fields above which no lookup reads the whole
+     * field when the value index cannot answer (UNQ-3): the read takes
+     * seconds at this size and 33 to 39 s at 400,000 rows, inside the request
+     * of a person at a form, of a survey respondent, or of the save the audit
+     * follows. The live lookup answers "could not check" at once and the
+     * audit logs the field as not checked; the cron builds the index
+     * (uvLookupIndexCron), and the Validation scan reads in full as before.
+     * With the index turned off there is no other way to answer, so such a
+     * field is checked by the scan only.
      */
     const LIVE_WHOLE_READ_ROWS = 50000;
     /** What such a lookup tells the person. */
     const LIVE_READ_SKIPPED_WHY = 'the lookup for this field is still being prepared';
-    /** @var bool this request answers a signed-in person's live lookup (LiveLookups) */
-    private $liveStaffLookup = false;
-    /** @var bool that lookup left a whole-field read out (wholeFieldRecords) */
+    /** What the save audit logs for a field it left unchecked for that reason. */
+    const AUDIT_READ_SKIPPED_WHY = 'the field holds more saved values than a save may read, and its value index is not built yet (the module\'s cron builds it) - field not checked';
+    /** @var bool the last lookup left a whole-field read out (wholeFieldRecords) */
     private $liveReadSkipped = false;
 
     /**
      * FieldValues::recordsWhere(), which reads every row of $fields; null,
-     * with liveReadSkipped set, when a signed-in person's live lookup would
-     * read more than LIVE_WHOLE_READ_ROWS rows. With the index turned off the
-     * read is made whatever its size: the whole-field read is then the only
-     * way the lookup has.
+     * with liveReadSkipped set, when that is more than LIVE_WHOLE_READ_ROWS
+     * rows. One bounded count through the (project_id, field_name) index
+     * decides (FieldValues::moreRowsThan). A count that cannot be made is a
+     * table that cannot be read, which recordsWhere answers with null too.
      */
     private function wholeFieldRecords($pid, array $fields, $eventId, callable $accept)
     {
-        if ($this->liveStaffLookup && $this->lookupIndex() !== null
-                && $this->fieldValues()->moreRowsThan($pid, $fields, self::LIVE_WHOLE_READ_ROWS) === true) {
+        if ($this->fieldValues()->moreRowsThan($pid, $fields, self::LIVE_WHOLE_READ_ROWS) === true) {
             $this->liveReadSkipped = true;
             return null;
         }

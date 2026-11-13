@@ -877,7 +877,10 @@ namespace {
         return ($c['records'] ?? null) === ['2'] && ($c['fields'] ?? null) !== ['record_id']; }));
     check('record of another group: unique-check refuses', ($call(mod(), 'unique-check', 'res_uniq', ['res_uniq' => 'U-1'], [], '2', 7)['error'] ?? null) === 'record not available');
     check('a record of an unreadable group name: refused', ($call(mod(), 'unique-check', 'res_uniq', ['res_uniq' => 'U-1'], [], '1', 99)['error'] ?? null) === 'record not available');
-    check('a record not saved yet: answered', isset($call(mod(), 'unique-check', 'res_uniq', ['res_uniq' => 'U-1'], [], 'NEW-1', 7)['used']));
+    // Not refused. This suite has no data table, so for a user in a group a
+    // miss on REDCap's export is "could not check" (UNQ-2 of 2026-11-13).
+    $nr = $call(mod(), 'unique-check', 'res_uniq', ['res_uniq' => 'U-1'], [], 'NEW-1', 7);
+    check('a record not saved yet: not refused', !isset($nr['error']) && (isset($nr['used']) || !empty($nr['unknown'])));
     check('a caller in no group: never refused', isset($call(mod(), 'unique-check', 'res_uniq', ['res_uniq' => 'U-1'], [], '2', null)['used']));
 
     // S8: an unauthenticated miss costs a whole-field read, within a budget.

@@ -2887,8 +2887,9 @@ namespace {
     // could not count a cookieless caller). CLI has no active session, so the
     // endpoint takes the per-project tier. Pre-seed the budget to the cap -> the
     // next anon check is throttled.
-    // An exact rule. Its narrowed misses are confirmed by a full read, which a
-    // survey counts in a budget of its own (counted further down).
+    // An exact rule. This suite has no data table and no lookup index, so a
+    // survey lookup asks its read budget (a counter of its own, tier 2) and
+    // then reads through REDCap (UNQ-5 of 2026-11-13: the budget comes first).
     $f5Dict = [
         'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'if'],
         'tok' => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '',
@@ -2910,13 +2911,12 @@ namespace {
         isset($r['error']) && strpos($r['error'], 'too many') !== false);
     // a fresh project: the anon caller is answered, and the check is recorded in the budget
     $m = newModule([], $f5Dict, $f5Data, 149);
-    // "TK-1" is saved, so the narrowed read settles it and no confirming read
-    // adds statements of its own to the counts below.
+    // "TK-1" is saved, so the narrowed read settles it.
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('F5: a fresh sessionless caller is answered (not throttled)', isset($r['used']));
     check('F5: the sessionless check is recorded in the per-project budget',
-        (int) array_sum($m->rateBuckets) === 1);
+        ($m->rateBuckets['149|' . $anonSlot] ?? 0) === 1);
     // M16: ONE STATEMENT, NO READ BEFORE IT. The lost-update window was the read
     // - N concurrent requests read the same array, each appended one entry, and
     // the last write won, so the tier could not count the flood it was written
@@ -2927,7 +2927,8 @@ namespace {
         if (strpos($sql, 'INSERT') === 0) $inserts++;
         if (strpos($sql, 'SELECT') === 0) $reads++;
     }
-    check('M16: the throttle increments with one statement', $inserts === 1);
+    // Two counters here, one statement each: the throttle and the read budget.
+    check('M16: the throttle increments with one statement', $inserts === 2);
     check('M16: and reads nothing from the bucket before writing it', $reads === 0);
     // P2: the increment answers through LAST_INSERT_ID() and the prune answers
     // to nobody, so neither row count is ever read - and ModuleDb::exec() bought
@@ -2939,7 +2940,7 @@ namespace {
         if (strpos($sql, 'DELETE') === 0 && strpos($sql, 'uv_rate_bucket') !== false) $prunes++;
         if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) $answers++;
     }
-    check('P2 (control): the request did prune, and did read its answer', $prunes === 1 && $answers === 1);
+    check('P2 (control): the request did prune, and did read its answers', $prunes === 1 && $answers === 2);
     check('P2: the throttle fetches no row count for either write', $counts === 0);
     // The old array is not consulted any more, so a stale system setting from
     // before the upgrade cannot throttle anybody.
@@ -2949,8 +2950,8 @@ namespace {
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('M16: the retired timestamp array no longer throttles anyone', isset($r['used']));
 
-    // A survey's narrowed read finds "TK-1" for "tk-1" through lower(): no
-    // read of the whole field, so no read budget spent.
+    // A survey's narrowed read finds "TK-1" for "tk-1" through lower(): one
+    // filtered read, made after the read budget was asked (UNQ-5).
     $foldDict = $f5Dict;
     $foldDict['tok']['field_annotation'] = '@UVUNIQUE={"surveys":true}';
     $m = newModule([], $foldDict, $f5Data, 149);
@@ -2960,8 +2961,8 @@ namespace {
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     $fullSlot = ((int) floor(time() / 60)) * \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS + 2;
     check('lookup case: a survey finds "tk-1" used when "TK-1" is saved', $r === ['used' => true, 'record' => null]);
-    check('lookup case: ...from the narrowed read alone, with no read budget spent',
-        count(\REDCap::$getDataCalls) === 1 && ($m->rateBuckets['149|' . $fullSlot] ?? 0) === 0);
+    check('lookup case: ...from the narrowed read alone, counted in the read budget',
+        count(\REDCap::$getDataCalls) === 1 && ($m->rateBuckets['149|' . $fullSlot] ?? 0) === 1);
     // A value the filter cannot carry (a quote) is read in full, and every such
     // read spends the budget: an unauthenticated caller cannot export the
     // project on every request by typing a quote.
@@ -2978,8 +2979,9 @@ namespace {
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('survey budget: spent, the answer is "not known", never "free"', $r === ['unknown' => true, 'record' => null]);
     check('survey budget: ...and nothing was read', \REDCap::$getDataCalls === []);
-    // A narrowed miss on a survey asks the budget before its confirming full
-    // read: free budget, the read is counted; spent, the answer is "not known".
+    // A survey asks the budget before any read: free budget, the lookup is
+    // counted once for both its reads; spent, the answer is "not known" and
+    // not even the narrowed read is made (it was, 600 times a minute, UNQ-5).
     $m = newModule([], $foldDict, $f5Data, 149);
     \REDCap::$getDataCalls = [];
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-2']],
@@ -2993,15 +2995,21 @@ namespace {
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-2']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('survey budget: spent, a narrowed miss is "not known", never "free"', $r === ['unknown' => true, 'record' => null]);
-    check('survey budget: ...after the narrowed read alone',
-        count(\REDCap::$getDataCalls) === 1 && isset(\REDCap::$getDataCalls[0]['filterLogic']));
+    check('survey budget: ...with no read at all, the narrowed one included',
+        \REDCap::$getDataCalls === []);
+    $m = newModule([], $foldDict, $f5Data, 149);
+    $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
+    \REDCap::$getDataCalls = [];
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('survey budget: spent, a saved value is "not known" too, with no filtered read',
+        $r === ['unknown' => true, 'record' => null] && \REDCap::$getDataCalls === []);
     // A Data Access Group rule narrows too since its group is read on its own
-    // (UNQ-1): a narrowed hit needs no full read, and a narrowed miss with the
-    // budget spent is "not known".
+    // (UNQ-1): a narrowed hit needs no full read, and with the budget spent
+    // hit and miss alike are "not known".
     $dagDict = $foldDict;
     $dagDict['tok']['field_annotation'] = '@UVUNIQUE={"surveys":true,"scope":"dag"}';
     $m = newModule([], $dagDict, $f5Data, 149);
-    $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('survey budget: a group rule\'s narrowed hit is answered', $r === ['used' => true, 'record' => null]);
@@ -3049,11 +3057,13 @@ namespace {
 
     $m = newModule([], $f5Dict, $f5Data, 149);
     $m->queryThrows = true;
-    // A saved value: the narrowed read answers it, with no read budget to consult.
+    // The throttle lets the caller through. The read budget is kept in the
+    // same table and fails closed, so the answer is "not known": no read is
+    // made for an unauthenticated caller that nothing counts.
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('F6: a missing counter table does not refuse the caller (the tier fails open)',
-        isset($r['used']));
+        $r === ['unknown' => true, 'record' => null]);
     $warn = array_values(array_filter($m->logCalls, function ($l) {
         return $l[0] === 'uv-throttle-storage-unavailable';
     }));
@@ -3101,7 +3111,8 @@ namespace {
         count(array_filter($m->logCalls, function ($l) {
             return $l[0] === 'uv-throttle-storage-unavailable';
         })) === 1);
-    check('F6: and the caller is still answered', isset($r['used']));
+    check('F6: and the caller is not refused ("not known": the read budget cannot be counted either)',
+        $r === ['unknown' => true, 'record' => null]);
 
     // THE INSTALLER IS WHAT MAKES THE TIER REACHABLE AT ALL. Its own assertions
     // live in hosting_php.php; this one only fixes the seam, so that moving the
@@ -3151,7 +3162,7 @@ namespace {
         check('F7: a caller WITH a session is still answered', isset($r['used']));
         check('F7: and tier 1 counted it', count($_SESSION['uvalidate_unique_hits']) === 1);
         check('F7: and tier 2 counted it too, which it never used to',
-            (int) array_sum($m->rateBuckets) === 1);
+            ($m->rateBuckets['149|' . $slotOf(false)] ?? 0) === 1);
         // UNQ-8: a session made for this request has no history, and making
         // one costs nothing, so its checks count in the sessionless bucket.
         check('F7: a fresh session is charged to the SESSIONLESS bucket',

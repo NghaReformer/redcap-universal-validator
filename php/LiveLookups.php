@@ -120,9 +120,8 @@ trait LiveLookups
             // this caller"; a survey hash is caller-supplied and proves nothing.
             $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
-            // A signed-in person at a form: a field too large to read whole
-            // answers "could not check" at once (wholeFieldRecords).
-            $this->liveStaffLookup = $isAuthenticated && !$isSurvey;
+            // A field too large to read whole answers "could not check" at
+            // once (wholeFieldRecords).
             $this->liveReadSkipped = false;
             // One wording for every refusal of a caller REDCap did not sign
             // in: "not a checkable field" for a field with no rule beside "not
@@ -319,8 +318,6 @@ trait LiveLookups
             return ['used' => true, 'record' => $recOut] + ($fieldOut !== null ? ['field' => $fieldOut] : []);
         } catch (\Throwable $e) {
             return ['error' => 'unique check failed']; // client fails open; no detail leaks
-        } finally {
-            $this->liveStaffLookup = false;
         }
     }
 
@@ -359,9 +356,8 @@ trait LiveLookups
         try {
             $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
-            // A signed-in person at a form: a field too large to read whole
-            // answers "could not check" at once (wholeFieldRecords).
-            $this->liveStaffLookup = $isAuthenticated && !$isSurvey;
+            // A field too large to read whole answers "could not check" at
+            // once (wholeFieldRecords).
             $this->liveReadSkipped = false;
             $refused = $isAuthenticated ? 'not a checkable field' : 'not enabled on surveys';   // one wording, as unique-check (UNQ-9)
             $field = (isset($payload['field']) && is_string($payload['field'])) ? strtolower(trim($payload['field'])) : '';
@@ -629,7 +625,8 @@ trait LiveLookups
             if (!$pid) return false;
             $db = new Scan\ModuleDb($this);
             $bucket = ((int) floor(time() / 60)) * self::RATE_TIERS + 2;
-            $db->exec('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
+            // execNoCount(): the answer is LAST_INSERT_ID(), as in surveyRateLimited.
+            $db->execNoCount('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
                 (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
                 ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
                 [(int) $pid, $bucket]);

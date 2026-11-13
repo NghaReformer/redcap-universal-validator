@@ -364,12 +364,27 @@ namespace {
             $m = mk($DAG);
             $r = ask($m, 'spec', ['spec' => 'Y1'], '3', 'reg', 351, 'coord', null);
             check('a field at the limit is read as before', ($r['used'] ?? null) === true && count($GLOBALS['__TABLE_READS']) === 1);
-            // The save audit is not a person waiting: it reads in full.
+            // The save audit runs inside the save request: it does not read
+            // such a field either, and logs it as not checked (UNQ-3 of
+            // 2026-11-13: 33 to 39 s at 400,000 values, on every save).
             $GLOBALS['__FIELD_ROWS'] = UniversalValidator::LIVE_WHOLE_READ_ROWS + 1;
             $m = mk($DAG);
+            $GLOBALS['__COUNT_READS'] = [];
             $m->redcap_save_record(149, '3', 'reg', 351, null, null, null, 1);
-            check('large field: the save audit still reads the field and logs the duplicate',
-                $GLOBALS['__COUNT_READS'] === [] && count($GLOBALS['__TABLE_READS']) >= 1 && count(logged($m, 'invalid-id-saved')) === 1);
+            $unc = json_encode(logged($m, 'uvalidate-unconfigurable'));
+            check('large field: the save audit reads neither the field nor the project',
+                count($GLOBALS['__COUNT_READS']) === 1 && $GLOBALS['__TABLE_READS'] === [] && \REDCap::$calls['full'] === 0
+                && \REDCap::$calls['filtered'] === 0);
+            check('large field: ...and logs the field as not checked, never as passed or as a duplicate (got ' . $unc . ')',
+                logged($m, 'invalid-id-saved') === [] && strpos($unc, 'field not checked') !== false
+                && strpos($unc, 'value index is not built yet') !== false);
+            // With the index turned off there is no other way to answer: the
+            // bound holds all the same.
+            $m = mk($DAG);
+            $m->systemSettings['lookup-index-system-off'] = '1';
+            $r = ask($m, 'spec', ['spec' => 'Y1'], '3', 'reg', 351, 'coord', null);
+            check('large field, index turned off: "could not check", the field is not read (got ' . json_encode($r) . ')',
+                ($r['unknown'] ?? null) === true && !array_key_exists('used', $r) && $GLOBALS['__TABLE_READS'] === []);
         }
         unset($GLOBALS['__FIELD_ROWS']);
     }
@@ -765,6 +780,58 @@ namespace {
     \REDCap::$repeating = null;
     $GLOBALS['__CONFINE'] = null;
     \REDCap::$groups = [];
+
+    // ---- 7) a survey lookup asks its read budget before any read (UNQ-5 of 2026-11-13) -
+    // With the lookup index unable to answer, 600 requests a minute each made
+    // a filtered export before the budget of 60 was asked. Now the budget is
+    // asked first and the field is read from the data table.
+    \REDCap::$rights = [];
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'tok' => uvf('reg', '@UVUNIQUE={"surveys":true,"blockSave":"hard"}')];
+    $SV = [];
+    for ($i = 1; $i <= 5; $i++) $SV[(string) $i] = [351 => ['record_id' => (string) $i, 'tok' => 'T' . $i]];
+    $sask = function ($m, $value) {
+        $GLOBALS['__TEST_USER'] = null;
+        return $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => $value]],
+            149, null, 'reg', 351, 1, 'HASH', null, null, '', '', null, null);
+    };
+    $readSlot = '149|' . (((int) floor(time() / 60)) * UniversalValidator::RATE_TIERS + 2);
+    $_SESSION = [];
+    if ($TABLE && !$INDEX) {
+        \ExternalModules\AbstractExternalModule::$rateBuckets = [];
+        $m = mk($SV, null);
+        $r = $sask($m, 't2');
+        check('survey: a saved value is "already used" (got ' . json_encode($r) . ')', $r === ['used' => true, 'record' => null]);
+        check('survey: ...from the data table, with no filtered export',
+            \REDCap::$calls['filtered'] === 0 && \REDCap::$calls['full'] === 0 && count($GLOBALS['__TABLE_READS']) === 1);
+        check('survey: ...and the read budget was asked for it',
+            (\ExternalModules\AbstractExternalModule::$rateBuckets[$readSlot] ?? 0) === 1);
+        \ExternalModules\AbstractExternalModule::$rateBuckets = [$readSlot => UniversalValidator::THROTTLE_SURVEY_FULL_READS];
+        foreach (['t2', 'NOPE'] as $v) {
+            $m = mk($SV, null);
+            $r = $sask($m, $v);
+            check('survey, budget spent: ' . $v . ' is "not known", and nothing is read (got ' . json_encode($r) . ')',
+                $r === ['unknown' => true, 'record' => null] && \REDCap::$calls === ['full' => 0, 'filtered' => 0, 'record' => 0]
+                && $GLOBALS['__TABLE_READS'] === []);
+        }
+        // a field too large to read whole: a survey does not read it either
+        \ExternalModules\AbstractExternalModule::$rateBuckets = [];
+        $GLOBALS['__FIELD_ROWS'] = UniversalValidator::LIVE_WHOLE_READ_ROWS + 1;
+        $m = mk($SV, null);
+        $r = $sask($m, 't2');
+        check('survey, large field: "not known", the field is not read and nothing is exported (got ' . json_encode($r) . ')',
+            $r === ['unknown' => true, 'record' => null] && $GLOBALS['__TABLE_READS'] === []
+            && \REDCap::$calls === ['full' => 0, 'filtered' => 0, 'record' => 0]);
+        unset($GLOBALS['__FIELD_ROWS']);
+    }
+    if ($INDEX) {
+        // The index answers outside the budget: it reads the records it names.
+        \ExternalModules\AbstractExternalModule::$rateBuckets = [$readSlot => UniversalValidator::THROTTLE_SURVEY_FULL_READS];
+        $r = $sask(mk($SV, null), 't2');
+        check('survey, index built: answered with the budget spent', $r === ['used' => true, 'record' => null]);
+        $r = $sask(mk($SV, null), 'NOPE');
+        check('survey, index built: a miss too', $r === ['used' => false, 'record' => null]);
+    }
+    \ExternalModules\AbstractExternalModule::$rateBuckets = [];
 
     echo "unique_scope_php: $n checks, $fail failure(s)" . ($TABLE ? ($INDEX ? ' through the lookup index' : '') : ' without the data table') . "\n";
     if ($TABLE && !$INDEX) {
