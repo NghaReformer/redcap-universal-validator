@@ -185,7 +185,7 @@ function form(spec, held) {
     arms: ['1', '2', '3'].map((c) => { const r = el('r_arm___radio', c); r.type = 'radio'; r.checked = h.r_arm === c; return r; }),
   };
   f.comp.setAttribute('id', 'rc-ac-input_r_site');
-  f.armMirror.type = 'hidden';
+  f.armMirror.type = 'text';
   f.list = [f.spec, f.site, f.comp, f.date, f.dose, f.from, f.armMirror].concat(f.arms);
   f.targets = [f.site, f.date, f.dose, f.from, f.armMirror];
   f.events = () => f.targets.concat(f.arms).reduce((a, e) => a + e._events.length, 0);

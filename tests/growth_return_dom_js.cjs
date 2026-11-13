@@ -558,7 +558,7 @@ function select(name, codes) {
   return s;
 }
 function radioGroup(name, codes) {
-  const mirror = el(name, ''); mirror.type = 'hidden';
+  const mirror = el(name, ''); mirror.type = 'text';
   const buttons = codes.map((c) => { const r = el(name + '___radio', c); r.type = 'radio'; return r; });
   return [mirror].concat(buttons);
 }

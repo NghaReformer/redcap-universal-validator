@@ -254,7 +254,7 @@ function r17chk(field, code) {
 // ---- 2) radio cascade: branches switch the visible set live -----------------
 {
   const country = makeEl('select'); country.name = 'country'; country.value = '';
-  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'text'; mirror.value = '';
   const radios = ['101', '102', '201'].map((v) => {
     const r = makeEl('input'); r.name = 'site___radio'; r.type = 'radio'; r.value = v; return r;
   });
@@ -323,7 +323,7 @@ function r17chk(field, code) {
 // ---- 4) branch conflict: filter NOT applied, shown, never blocks ------------
 {
   const a = makeEl('input'); a.name = 'a'; a.value = '1';
-  const mirror = makeEl('input'); mirror.name = 'pick'; mirror.type = 'hidden'; mirror.value = '2';
+  const mirror = makeEl('input'); mirror.name = 'pick'; mirror.type = 'text'; mirror.value = '2';
   const r1 = makeEl('input'); r1.name = 'pick___radio'; r1.type = 'radio'; r1.value = '1';
   const r2 = makeEl('input'); r2.name = 'pick___radio'; r2.type = 'radio'; r2.value = '2'; r2.checked = true;
   const env = boot([a, mirror, r1, r2], {
@@ -342,7 +342,7 @@ function r17chk(field, code) {
 
 // ---- 5) "show" without choicesAll -> visible config error, no filtering -----
 {
-  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'text'; mirror.value = '';
   const r1 = makeEl('input'); r1.name = 'site___radio'; r1.type = 'radio'; r1.value = '1';
   const env = boot([mirror, r1], {
     singleFields: [], pooledFields: [],
@@ -371,7 +371,7 @@ function r17chk(field, code) {
 
 // ---- 7) a value outside choicesAll (missing-data code) is never flagged -----
 {
-  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '-99';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'text'; mirror.value = '-99';
   const r1 = makeEl('input'); r1.name = 'site___radio'; r1.type = 'radio'; r1.value = '1';
   const env = boot([mirror, r1], {
     singleFields: [], pooledFields: [],
@@ -408,7 +408,7 @@ function r17chk(field, code) {
 // non-blank (required satisfied), and vice-versa.
 {
   const country = makeEl('input'); country.name = 'country'; country.value = '1';
-  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'text'; mirror.value = '';
   const r1 = makeEl('input'); r1.name = 'site___radio'; r1.type = 'radio'; r1.value = '101';
   const r2 = makeEl('input'); r2.name = 'site___radio'; r2.type = 'radio'; r2.value = '201';
   const env = boot([country, mirror, r1, r2], {
@@ -676,7 +676,7 @@ function r17chk(field, code) {
 // (c) @READONLY radios: the mirror input stays enabled, the options do not.
 {
   const country = makeEl('input'); country.name = 'country'; country.value = '1';
-  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '201';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'text'; mirror.value = '201';
   const radios = ['101', '201'].map((v) => { const r = makeEl('input'); r.name = 'site___radio'; r.type = 'radio'; r.value = v; r.disabled = true; return r; });
   const env = boot([country, mirror, ...radios], { singleFields: [], pooledFields: [],
     rules: [{ type: 'choices', fields: ['site'], choicesShow: ['101'], choicesAll: ['101', '201'],
@@ -758,7 +758,7 @@ function withButtons(labels) {
 }
 {
   const country = makeEl('select'); country.name = 'country'; country.value = '1';
-  const mirror = makeEl('input'); mirror.name = 'region'; mirror.type = 'hidden'; mirror.value = '';
+  const mirror = makeEl('input'); mirror.name = 'region'; mirror.type = 'text'; mirror.value = '';
   const codes = ['101', '102', '201', '202'];
   const radios = codes.map((v) => {
     const r = makeEl('input'); r.name = 'region___radio'; r.type = 'radio'; r.value = v; r.id = 'opt-region_' + v; return r;
@@ -815,7 +815,7 @@ function withButtons(labels) {
   // CHO-4 on a plain form: a row something else hid stays hidden after the
   // filter shows its choices again.
   const country = makeEl('select'); country.name = 'country'; country.value = '1';
-  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'text'; mirror.value = '';
   const radios = ['1', '2', '3'].map((v) => {
     const r = makeEl('input'); r.name = 'site___radio'; r.type = 'radio'; r.value = v; return r;
   });
@@ -835,7 +835,7 @@ function withButtons(labels) {
     const codes = [];
     for (let i = 1; i <= count; i++) codes.push(String(i));
     const country = makeEl('select'); country.name = 'country';
-    const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden';
+    const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'text';
     const radios = codes.map((v) => {
       const r = makeEl('input'); r.name = 'site___radio'; r.type = 'radio'; r.value = v; return r;
     });
@@ -899,7 +899,7 @@ function withButtons(labels) {
 // ---- CHO-9: "Cannot save yet" focuses an option a person can reach -----------
 {
   const country = makeEl('input'); country.name = 'country'; country.value = '2';
-  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '201';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'text'; mirror.value = '201';
   const radios = ['101', '201'].map((v) => {
     const r = makeEl('input'); r.name = 'site___radio'; r.type = 'radio'; r.value = v; return r;
   });
@@ -930,7 +930,7 @@ function withButtons(labels) {
   // Every mode's guard shares the target: a blank required radio focuses the
   // first option on show, skipping one the choices filter hides.
   const country = makeEl('input'); country.name = 'country'; country.value = '1';
-  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'text'; mirror.value = '';
   const r1 = makeEl('input'); r1.name = 'site___radio'; r1.type = 'radio'; r1.value = '201';
   const r2 = makeEl('input'); r2.name = 'site___radio'; r2.type = 'radio'; r2.value = '101';
   const env = boot([country, mirror, r1, r2], { singleFields: [], pooledFields: [],
@@ -963,6 +963,287 @@ function withButtons(labels) {
     && !/ID-check/.test(cfg.innerHTML));
   check('CHO-10: no page-level notice for it', !env.allEls.some((e) => e.id === 'uvalidate-config-errors'));
   check('CHO-10: the select is described by the region', /uvalidate-msg-dd-cfg/.test(dd.getAttribute('aria-describedby') || ''));
+}
+
+// ---- review of 2026-11-13 (its own CHO-1 to CHO-11) --------------------------
+// REDCap's autocomplete dropdown, as REDCap builds it (enableDropdownAutocomplete):
+// a jQuery UI autocomplete on the text box rc-ac-input_<field>, whose source
+// is a list of {value: label, code: code} made ONCE from the options the
+// select holds at that moment. The same array serves REDCap's blur handler,
+// which turns typed text into a code (the select takes it and fires change),
+// and blanks the box and the select when the text matches no item. jQuery UI
+// filters whatever array the source option names when it is asked.
+// separateList models a build whose blur handler reads a copy of the list.
+function redcapAutocomplete(select, ac, opts) {
+  opts = opts || {};
+  const w = { built: false, list: null, source: null, closes: 0 };
+  const fireBoth = (el, name) => {
+    (el._jqHandlers && el._jqHandlers[name] || []).forEach((fn) => fn.call(el, {}));
+    el.fire(name);
+  };
+  w.jq = function (el) {
+    return {
+      on(events, fn) {
+        events.split(' ').forEach((event) => {
+          const name = event.split('.')[0];
+          (el._jqHandlers || (el._jqHandlers = {}))[name] = (el._jqHandlers[name] || []).concat(fn);
+        });
+        return this;
+      },
+      autocomplete(method, key, value) {
+        if (el !== ac || !w.built) throw new Error('cannot call methods on autocomplete prior to initialization');
+        if (method === 'close') { w.closes++; return this; }
+        if (method === 'option' && key === 'source') {
+          if (arguments.length < 3) return w.source;
+          w.source = value;
+          return this;
+        }
+        return this;
+      },
+    };
+  };
+  w.jq.fn = { on: true, autocomplete: true };
+  w.build = () => {
+    const list = [];
+    const visit = (parent) => parent.children.forEach((o) => {
+      if (o.tagName === 'OPTGROUP') { visit(o); return; }
+      if (o.value !== '') list.push({ value: o.text, code: o.value });
+    });
+    visit(select);
+    w.list = opts.separateList ? list.slice() : list;
+    w.source = list;
+    w.built = true;
+  };
+  // the codes the open menu offers for the typed text, after every listener
+  // of autocompleteresponse had its say
+  w.offers = (term) => {
+    const ui = { content: w.source.filter((i) => i.value.toLowerCase().indexOf(term.toLowerCase()) >= 0)
+      .map((i) => Object.assign({}, i, { label: i.value })) };
+    (ac._jqHandlers && ac._jqHandlers.autocompleteresponse || []).forEach((fn) => fn({}, ui));
+    return ui.content.map((i) => i.code).join(',');
+  };
+  // text typed in full, then Tab: REDCap's blur handler
+  w.typeAndLeave = (text) => {
+    ac.value = text;
+    const hit = w.list.find((i) => i.value === text);
+    if (hit) {
+      const there = select.children.some((o) => o.value === hit.code || (o.children || []).some((c) => c.value === hit.code));
+      // a select set to a code it has no option for holds nothing
+      select.value = there ? hit.code : '';
+      select.selectedIndex = there ? 1 : -1;
+    } else { ac.value = ''; select.value = ''; select.selectedIndex = 0; }
+    fireBoth(select, 'change');
+    fireBoth(ac, 'change');
+  };
+  w.fireBoth = fireBoth;
+  return w;
+}
+function acFixture(value, opts) {
+  const site = makeEl('select'); site.name = 'site'; site.value = value;
+  ['', '1BAM', '2ADI', '7KET'].forEach((code) => { const o = option(code); o.text = code === '' ? '' : code + ' Site'; site.appendChild(o); });
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_site'; ac.type = 'text'; ac.value = value ? value + ' Site' : '';
+  const region = makeEl('select'); region.name = 'region'; region.value = '1';
+  const widget = redcapAutocomplete(site, ac, opts);
+  const rules = [{ type: 'choices', fields: ['site'], branches: [
+    { when: "[region]='1'", choicesShow: ['1BAM'], choicesAll: ['1BAM', '2ADI', '7KET'], blockSave: 'hard' },
+    { when: "[region]='2'", choicesShow: ['2ADI'], choicesAll: ['1BAM', '2ADI', '7KET'], blockSave: 'hard' },
+  ] }];
+  const setRegion = (v) => { region.value = v; widget.fireBoth(region, 'change'); };
+  return { site, ac, region, widget, rules, setRegion, codes: () => widget.source.map((i) => i.code).join(',') };
+}
+// CHO-1: the widget is built AFTER the engine hid options, so its list holds
+// only what was on show then. A choice the rule releases later must reach it.
+{
+  const f = acFixture('');
+  boot([f.site, f.ac, f.region], { rules: f.rules }, (win) => { win.jQuery = f.widget.jq; });
+  check('R1113 CHO-1: the engine hid the other regions before the widget was built', selectValues(f.site).join(',') === ',1BAM');
+  f.widget.build();
+  const list = f.widget.source;
+  check('R1113 CHO-1: REDCap built its list from what was on show', f.codes() === '1BAM');
+  f.setRegion('2');
+  check('R1113 CHO-1: the select follows the new region', selectValues(f.site).join(',') === ',2ADI');
+  check('R1113 CHO-1: the widget list follows it (got ' + f.codes() + ')', f.codes() === '2ADI');
+  check('R1113 CHO-1: the list is REDCap\'s own array, refilled in place', f.widget.source === list && f.widget.list === list);
+  check('R1113 CHO-1: the released choice is offered when typed', f.widget.offers('adi') === '2ADI');
+  check('R1113 CHO-1: a new item has REDCap\'s shape', JSON.stringify(list[0]) === JSON.stringify({ value: '2ADI Site', code: '2ADI' }));
+  f.widget.typeAndLeave('2ADI Site');
+  check('R1113 CHO-1: the released choice typed in full is taken', f.site.value === '2ADI' && f.ac.value === '2ADI Site');
+  f.setRegion('');
+  check('R1113 CHO-1: no region: the list holds every choice in its order', f.codes() === '1BAM,2ADI,7KET');
+  f.setRegion('1');
+  check('R1113 CHO-1: a stale answer stays in the list, so leaving the box keeps it', f.codes() === '1BAM,2ADI' && f.site.value === '2ADI');
+  check('R1113 CHO-1: ...and is not offered as a fresh suggestion', f.widget.offers('site') === '1BAM');
+  f.widget.typeAndLeave('2ADI Site');
+  check('R1113 CHO-1: leaving the box on the stale answer keeps it', f.site.value === '2ADI' && f.ac.value === '2ADI Site');
+}
+// CHO-1: the widget is built BEFORE the engine binds, with every choice.
+{
+  const f = acFixture('');
+  f.widget.build();
+  const first = f.widget.source[0];
+  boot([f.site, f.ac, f.region], { rules: f.rules }, (win) => { win.jQuery = f.widget.jq; });
+  check('R1113 CHO-1: a list built first loses the hidden choices (got ' + f.codes() + ')', f.codes() === '1BAM');
+  check('R1113 CHO-1: an item REDCap made is kept as it is', f.widget.source[0] === first);
+  // CHO-3: a hidden choice typed in full is text that matches no choice
+  f.widget.typeAndLeave('7KET Site');
+  check('R1113 CHO-3: a hidden choice typed in full leaves the box and the select blank', f.ac.value === '' && f.site.value === '');
+  f.setRegion('2');
+  f.setRegion('1');
+  check('R1113 CHO-1: back and forth, the list is right again', f.codes() === '1BAM' && f.widget.source[0] === first);
+}
+// CHO-1: a widget whose source is not REDCap's list is left alone.
+{
+  const f = acFixture('');
+  f.widget.build();
+  const foreign = [{ label: 'One', value: '1BAM' }, { label: 'Two', value: '2ADI' }];
+  f.widget.source = foreign;
+  boot([f.site, f.ac, f.region], { rules: f.rules }, (win) => { win.jQuery = f.widget.jq; });
+  f.setRegion('2');
+  check('R1113 CHO-1: a source without codes is not rewritten', f.widget.source === foreign && foreign.length === 2 && foreign[0].label === 'One');
+}
+// CHO-3: REDCap's blur handler reads a list the engine cannot refill, takes a
+// hidden choice's label, and empties the select. The box must not keep it.
+{
+  const f = acFixture('1BAM', { separateList: true });
+  f.widget.build();
+  const env = boot([f.site, f.ac, f.region], { rules: f.rules }, (win) => { win.jQuery = f.widget.jq; });
+  f.widget.typeAndLeave('7KET Site');
+  check('R1113 CHO-3: the box does not keep an answer the select does not hold (box "' + f.ac.value + '")',
+    f.ac.value === '' && f.site.value === '');
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('R1113 CHO-3: a blank field does not hold the save', ev._prevented === false);
+  // text typed so far, with the cursor still in the box, is never taken out
+  f.ac.value = '7KET Site'; f.site.value = '';
+  env.doc.activeElement = f.ac;
+  f.setRegion('1');
+  check('R1113 CHO-3: text still being typed is left alone', f.ac.value === '7KET Site');
+  env.doc.activeElement = null;
+}
+// CHO-4: suggestions that carry no code are matched through an index, and a
+// label that is another choice's code names the choice it labels.
+{
+  const site = makeEl('select'); site.name = 'site'; site.value = '';
+  const labels = { '': '', 1: '2', 2: 'Two' };
+  let reads = 0;
+  const N = 300;
+  const all = ['1', '2'];
+  for (let i = 3; i <= N; i++) { all.push(String(i)); labels[i] = 'Label ' + i; }
+  [''].concat(all).forEach((code) => {
+    const o = option(code);
+    Object.defineProperty(o, 'text', { get() { reads++; return labels[code]; } });
+    site.appendChild(o);
+  });
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_site'; ac.type = 'text';
+  const ctl = makeEl('input'); ctl.name = 'ctl'; ctl.value = '1';
+  function jq(el) { return {
+    on(events, fn) { events.split(' ').forEach((event) => { const name = event.split('.')[0]; (el._jqHandlers || (el._jqHandlers = {}))[name] = (el._jqHandlers[name] || []).concat(fn); }); return this; },
+    autocomplete() { return this; },
+  }; }
+  jq.fn = { on: true, autocomplete: true };
+  boot([site, ac, ctl], { rules: [{ type: 'choices', fields: ['site'], choicesHide: ['2'], choicesAll: all, when: "[ctl]='1'" }] },
+    (win) => { win.jQuery = jq; });
+  const respond = (content) => { const ui = { content }; ac._jqHandlers.autocompleteresponse.forEach((fn) => fn({}, ui)); return ui.content; };
+  const left = respond([{ value: '2', label: '2' }, { value: 'Two', label: 'Two' }]);
+  check('R1113 CHO-4: a label that is another choice\'s code names its own choice (left ' + JSON.stringify(left) + ')',
+    left.length === 1 && left[0].label === '2');
+  check('R1113 CHO-4: a code with another label is still read as a code', respond([{ value: '2', label: 'Second' }, { value: '1', label: 'First' }]).map((i) => i.value).join(',') === '1');
+  reads = 0;
+  const many = respond(all.map((c) => ({ value: labels[c], label: labels[c] })));
+  check('R1113 CHO-4: ' + N + ' label-only suggestions: only the hidden one goes', many.length === N - 1);
+  check('R1113 CHO-4: ...and the options are not walked once per suggestion (' + reads + ' label reads)', reads <= 2 * (N + 1));
+}
+// CHO-5: one change of the controlling field does not look every checkbox
+// option up in the document again.
+{
+  const pilot = makeEl('input'); pilot.name = 'pilot'; pilot.value = '0';
+  const codes = []; for (let i = 1; i <= 60; i++) codes.push('c' + i);
+  const opts = codes.map((code) => r17chk('reach', code));
+  const env = boot([pilot, ...opts.flatMap((o) => [o.hidden, o.visible])], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['reach'], choicesShow: ['c1', 'c2'], choicesAll: codes, when: "[pilot]='1'", blockSave: 'hard' }] });
+  opts[5].set(true);
+  let lookups = 0;
+  const byName = env.doc.getElementsByName, byId = env.doc.getElementById;
+  env.doc.getElementsByName = function (x) { lookups++; return byName.call(this, x); };
+  env.doc.getElementById = function (x) { lookups++; return byId.call(this, x); };
+  pilot.value = '1'; pilot.fire('change');
+  const shown = opts.filter((o) => o.rowShown()).map((o) => o.code).join(',');
+  check('R1113 CHO-5: the filter still draws (shown ' + shown + ')', shown === 'c1,c2,c6');
+  check('R1113 CHO-5: the ticked hidden option is flagged', opts[5].visible.getAttribute('aria-invalid') === 'true');
+  check('R1113 CHO-5: 60 options redrawn with ' + lookups + ' document lookups', lookups <= 12);
+  // an option REDCap draws again is found again
+  const row = opts[1].hidden.parentNode;
+  const again = r17chk('reach', 'c2');
+  [opts[1].hidden, opts[1].visible].forEach((old) => { row.removeChild(old); env.allEls.splice(env.allEls.indexOf(old), 1); });
+  [again.hidden, again.visible].forEach((el) => { row.appendChild(el); env.allEls.push(el); });
+  pilot.value = '0'; pilot.fire('change');
+  again.set(true);
+  pilot.value = '9'; pilot.fire('change');
+  pilot.value = '1'; pilot.fire('change');
+  check('R1113 CHO-5: an option drawn again is read from its new elements', again.rowShown() && opts[0].rowShown() && !opts[2].rowShown());
+}
+// CHO-2: a checkbox mirror REDCap draws as a text input hidden by a style
+// (as it does a radio's) is read by its name, like one of type "hidden".
+{
+  const pilot = makeEl('input'); pilot.name = 'pilot'; pilot.value = '1';
+  const opts = ['1', '2'].map((code) => { const o = r17chk('reach', code); o.hidden.type = 'text'; return o; });
+  opts[0].hidden.value = '1'; opts[0].visible.checked = true;
+  const env = boot([pilot, ...opts.flatMap((o) => [o.hidden, o.visible])], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['reach'], choicesHide: ['1'], choicesAll: ['1', '2'], when: "[pilot]='1'", blockSave: 'hard' }] });
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('R1113 CHO-2: a ticked option behind a text mirror is seen', opts[0].rowShown() && ev._prevented === true);
+}
+// CHO-2: on REDCap 17 the input that holds a radio's answer is type "text".
+// A click on the controlling radio must redraw the filter at once, with no
+// timer and no other event to help.
+{
+  const mirror = makeEl('input'); mirror.name = 'country'; mirror.type = 'text'; mirror.value = '1';
+  const cr = ['1', '2'].map((v) => { const r = makeEl('input'); r.name = 'country___radio'; r.type = 'radio'; r.value = v; return r; });
+  const site = makeEl('select'); site.name = 'site'; site.value = '';
+  ['', '101', '201'].forEach((v) => site.appendChild(option(v)));
+  const note = makeEl('input'); note.name = 'note'; note.type = 'text'; note.value = 'x';
+  boot([mirror, ...cr, site, note], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['site'], branches: [
+      { when: "[country]='1'", choicesShow: ['101'], choicesAll: ['101', '201'], blockSave: 'hard' },
+      { when: "[country]='2' and [note]<>''", choicesShow: ['201'], choicesAll: ['101', '201'], blockSave: 'hard' },
+    ] }] });
+  check('R1113 CHO-2: branch 1 at boot', selectValues(site).join(',') === ',101');
+  mirror.value = '2'; cr[1].checked = true; cr[1].fire('click');   // REDCap writes the mirror, the radio fires
+  check('R1113 CHO-2: a radio click behind a text mirror redraws at once (got ' + selectValues(site).join(',') + ')',
+    selectValues(site).join(',') === ',201');
+}
+// CHO-6: an option's `disabled` belongs to REDCap and to other scripts.
+{
+  const site = makeEl('select'); site.name = 'site'; site.value = '';
+  ['', '1', '2', '3', '4'].forEach((v) => site.appendChild(option(v)));
+  site.children[4].disabled = true;      // disabled when the page opens
+  const ctl = makeEl('input'); ctl.name = 'ctl'; ctl.value = '1';
+  boot([site, ctl], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['site'], choicesHide: ['2'], choicesAll: ['1', '2', '3', '4'], when: "[ctl]='1'" }] });
+  const o3 = site.children.find((o) => o.value === '3'), o4 = site.children.find((o) => o.value === '4');
+  o3.disabled = true;                    // another script disables one later
+  o4.disabled = false;                   // ...and enables the other
+  ctl.value = '0'; ctl.fire('change');
+  ctl.value = '1'; ctl.fire('change');
+  check('R1113 CHO-6: an option disabled after load stays disabled', o3.disabled === true);
+  check('R1113 CHO-6: an option enabled after load stays enabled', o4.disabled === false);
+}
+// CHO-11: a Missing Data Code the filter hides is not judged, so the option
+// that holds it is not drawn as a stale answer either.
+{
+  const mk = (missing) => {
+    const pick = makeEl('select'); pick.name = 'pick'; pick.value = 'NA';
+    ['', '1', 'NA'].forEach((v) => pick.appendChild(option(v)));
+    const env = boot([pick], { singleFields: [], pooledFields: [], missingCodes: missing,
+      rules: [{ type: 'choices', fields: ['pick'], choicesHide: ['NA'], choicesAll: ['1', 'NA'], blockSave: 'hard' }] });
+    const o = pick.children.find((c) => c.value === 'NA');
+    return { pick, o, env };
+  };
+  const a = mk(['NA']);
+  check('R1113 CHO-11: the option holding the code is kept', !!a.o && a.pick.value === 'NA');
+  check('R1113 CHO-11: ...and is not marked or greyed as stale', a.o.getAttribute('data-uv-stale') === null && !a.o.style.color);
+  check('R1113 CHO-11: ...and the field is not flagged', a.pick.getAttribute('aria-invalid') === null);
+  const b = mk(['UNK']);
+  check('R1113 CHO-11 control: where NA is not a code the option is marked stale', b.o.getAttribute('data-uv-stale') === '1' && b.o.style.color === '#8a8a8a');
 }
 
 console.log((fail === 0 ? 'OK' : 'FAILED') + ' — choices_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
