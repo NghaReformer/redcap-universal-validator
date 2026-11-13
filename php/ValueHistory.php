@@ -21,14 +21,38 @@ use INSPIRE\UniversalValidator\Scan\SourceFence;
  * with one arm: a record deleted and made again under the same name starts a
  * new history. In a project with more than one arm (where a record can be
  * deleted from one arm only), that row and any DELETE that names an arm make
- * the history "unknown". So does a DELETE of this event's own data, or one
- * that names no event: the reader cannot tell what it removed. A DELETE of
- * another event's data is no part of this event's history when its
- * description says it removed one form or one event ("Delete all record data
- * for single form", "... single event", "Delete all data on event"); a DELETE
- * of another event described
+ * the history "unknown". So does a DELETE that names no event: the reader
+ * cannot tell what it removed. A DELETE of another event's data is no part
+ * of this event's history when its description says it removed one form or
+ * one event ("Delete all record data for single form", "... single event",
+ * "Delete all data on event"); a DELETE of another event described
  * any other way may have removed the whole record, so it makes the history
  * "unknown" too.
+ *
+ * A DELETE OF PART OF THIS EVENT (one form, or the event itself, by the same
+ * descriptions) is read as a blank save, by the row's user, of what it
+ * removed, when the row says what that was (deleteScope). The instance is
+ * the "[instance = N]" line that heads data_values, or the first when it has
+ * none. The fields of a deleted form are the field lines of data_values, or,
+ * when it has none, the field_name list of the DELETE statements in sql_log
+ * that name this event. A form's DELETE that names its instance and no field
+ * makes that one instance "unknown" ("delete") and leaves the others read. A
+ * deleted event empties every kept field of the instance its row names; one
+ * with no instance line may have removed every instance, so it makes the
+ * history "unknown", and so does any DELETE of this event described another
+ * way. One odd row costs the fields and the instance it touches, not the
+ * record's whole history.
+ *
+ * REDCAP'S OWN LINES. data_values may hold a line that is no field of the
+ * project: "__GROUPID__ = '12'", the record's Data Access Group
+ * (SYSTEM_LINES). It is read past. A typed Text or Notes value can end with
+ * the same text, so the value written just before such a line reads as not
+ * plain when a person can type it.
+ *
+ * LINE BREAKS. A Notes value keeps the line breaks the browser sent (CR LF).
+ * The reader splits data_values at LF or CR LF and joins a value's lines
+ * with LF, and Logic::writeOnceVerdict folds CR LF and CR to LF on both
+ * sides before it compares, so a value of several lines is the value saved.
  *
  * ERASED DATA. "Erase all data" (and deleting every record when a project
  * moves to production) writes one DELETE row for the whole project, with the
@@ -57,8 +81,17 @@ use INSPIRE\UniversalValidator\Scan\SourceFence;
  * record id field itself; a row whose only record id line comes after one
  * may hold a typed copy of it, and its history is "unknown" ("startrow").
  *
- * A ROW WITH NO EVENT that names a kept field makes the history "unknown"
- * too: it may hold the first save, and it cannot be placed.
+ * A ROW WITH NO EVENT that names a kept field makes the history of that
+ * field "unknown" ("noevent"): it may hold the first save, and it cannot be
+ * placed. The fields it does not name are read.
+ *
+ * THE INDEX. Both queries name the project and the record (pk = ?), so
+ * MySQL reads them through REDCap's index on pk (KEY pk (pk(191))), a few
+ * rows per record. They are sorted by "log_event_id + 0": sorted by the bare
+ * column with a LIMIT, MySQL may walk the whole table backwards along its
+ * primary key looking for rows of the record, and a record with fewer rows
+ * than the LIMIT makes it read every row of the log. sql_log is read for
+ * DELETE rows only.
  *
  * A HISTORY READ IN PART IS NO HISTORY. The first save of a value is the
  * oldest row, so a record and event whose log runs past MAX_ROWS_PER_RECORD
@@ -81,6 +114,8 @@ final class ValueHistory
     const PAGE = 500;
     /** Histories (one record and event each) kept in memory; a scan asks record by record. */
     const RECORDS_KEPT = 16;
+    /** REDCap's own lines in data_values that are no field of the project (REDCAP'S OWN LINES). Add a name here to read past it. */
+    const SYSTEM_LINES = ['__GROUPID__'];
 
     /** @var ScanDb */
     private $db;
@@ -111,8 +146,12 @@ final class ValueHistory
     private $saves = [];
     /** history key => true, in the order the histories were first read */
     private $kept = [];
-    /** history key => why it is "unknown": read (the log could not be read), delete, noevent, start, startrow */
+    /** history key => why it is "unknown": read (the log could not be read), delete, start, startrow */
     private $why = [];
+    /** history key => instance => why that one instance is "unknown" (delete) */
+    private $voidInstance = [];
+    /** history key => field => why that one field is "unknown" (noevent) */
+    private $voidField = [];
 
     private function __construct(ScanDb $db, $pid, $table, array $fields, \DateTimeZone $logZone, \DateTimeZone $clockZone, array $opts)
     {
@@ -156,10 +195,11 @@ final class ValueHistory
      *   start or its last whole-record DELETE; "capped" when it runs past
      *   MAX_ROWS_PER_RECORD rows; "none" when the log holds no row for them;
      *   "unknown" when the log could not be read, holds a DELETE the reader
-     *   cannot place or a row with no event that names a kept field, or the
-     *   field was not named when the reader was made, or the log does not
-     *   hold the record's start, or holds it only after a typed value. "why"
-     *   says which: read, delete, noevent, unnamed, start or startrow.
+     *   cannot place (for the whole history or for this instance) or a row
+     *   with no event that names this field, or the field was not named when
+     *   the reader was made, or the log does not hold the record's start, or
+     *   holds it only after a typed value. "why" says which: read, delete,
+     *   noevent, unnamed, start or startrow.
      *   saves is empty unless the state is "read". value is null for a value
      *   the log does not say plainly (parseRow); at is ts as 'Y-m-d H:i:s' in
      *   the clock zone, or null when ts is not a time.
@@ -177,6 +217,8 @@ final class ValueHistory
         if ($state === 'unknown') return ['state' => $state, 'saves' => [], 'why' => isset($this->why[$key]) ? $this->why[$key] : 'read'];
         if ($state !== 'read') return ['state' => $state, 'saves' => []];
         $instance = max(1, (int) $instance);
+        if (isset($this->voidInstance[$key][$instance])) return ['state' => 'unknown', 'saves' => [], 'why' => $this->voidInstance[$key][$instance]];
+        if (isset($this->voidField[$key][$field])) return ['state' => 'unknown', 'saves' => [], 'why' => $this->voidField[$key][$field]];
         $rows = isset($this->saves[$key][$instance][$field]) ? $this->saves[$key][$instance][$field] : [];
         $out = [];
         for ($i = count($rows) - 1; $i >= 0; $i--) {
@@ -209,7 +251,7 @@ final class ValueHistory
         if (count($this->kept) <= self::RECORDS_KEPT) return;
         reset($this->kept);
         $old = (string) key($this->kept);
-        unset($this->kept[$old], $this->state[$old], $this->saves[$old], $this->why[$old]);
+        unset($this->kept[$old], $this->state[$old], $this->saves[$old], $this->why[$old], $this->voidInstance[$old], $this->voidField[$old]);
     }
 
     /**
@@ -218,11 +260,13 @@ final class ValueHistory
      * line for the record id field (the record's start) included. That line
      * is matched at the start of data_values or after a line break, with the
      * field name's "_" escaped, so "prev_record_id" and "recordXid" do not
-     * match.
+     * match. The last column is sql_log, for a DELETE row only (THE INDEX
+     * says why the rows are sorted by an expression).
      */
     private function page($record, $eventId, $cursor, $limit)
     {
-        $sql = 'SELECT log_event_id, ts, event_id, data_values, CAST(pk AS BINARY) AS p, `user`, event, description FROM ' . $this->table
+        $sql = 'SELECT log_event_id, ts, event_id, data_values, CAST(pk AS BINARY) AS p, `user`, event, description,'
+             . ' IF(event = \'DELETE\', sql_log, NULL) AS s FROM ' . $this->table
              . ' WHERE project_id = ? AND pk = ? AND object_type = \'redcap_data\' AND event IN (\'INSERT\', \'UPDATE\', \'DELETE\')'
              . ' AND (event = \'DELETE\' OR event_id = ? OR event_id IS NULL'
              . ($this->idField !== null ? ' OR data_values LIKE ? ESCAPE \'!\' OR data_values LIKE ? ESCAPE \'!\'' : '') . ')';
@@ -240,7 +284,7 @@ final class ValueHistory
             $sql .= ' AND log_event_id < ?';
             $params[] = $cursor;
         }
-        return $this->db->select($sql . ' ORDER BY log_event_id DESC LIMIT ' . (int) $limit, $params);
+        return $this->db->select($sql . ' ORDER BY log_event_id + 0 DESC LIMIT ' . (int) $limit, $params);
     }
 
     /** Whether a DELETE row says the whole record was deleted. */
@@ -269,7 +313,7 @@ final class ValueHistory
             $rows = $this->db->select('SELECT log_event_id FROM ' . $this->table
                 . ' WHERE project_id = ? AND pk = ? AND CAST(pk AS BINARY) = ? AND object_type = \'redcap_data\' AND event = \'DELETE\' AND event_id IS NULL'
                 . ' AND (description IS NULL OR (description NOT LIKE \'Delete record%\' AND description NOT LIKE \'Delete all record data for single%\' AND description NOT LIKE \'Delete all data on event%\'))'
-                . ' ORDER BY log_event_id DESC LIMIT 1', [$this->pid, (string) $this->pid, (string) $this->pid]);
+                . ' ORDER BY log_event_id + 0 DESC LIMIT 1', [$this->pid, (string) $this->pid, (string) $this->pid]);
         } catch (\Throwable $e) {
             return $this->eraseFloor = false;
         }
@@ -282,10 +326,11 @@ final class ValueHistory
     /**
      * Read one row into $saves[$key]. Returns null to read on, or what ends
      * the read: "read" at a whole-record DELETE; "delete" at a DELETE of this
-     * event, of no event or of an arm, at one of another event described as
-     * neither one form nor one event, and at any whole-record DELETE in a
-     * project of several arms; "noevent" at a row with no event that names a
-     * kept field, which the reader cannot place. $started turns true at the
+     * event the reader cannot place (takePartDelete), of no event or of an
+     * arm, at one of another event described as neither one form nor one
+     * event, and at any whole-record DELETE in a project of several arms. A
+     * row with no event that names a kept field makes that field "unknown"
+     * (noevent) and the read goes on. $started turns true at the
      * record's start, and false at an INSERT whose record id line may have
      * been typed, unless a start was met (THE START OF A RECORD).
      */
@@ -299,6 +344,8 @@ final class ValueHistory
             $whole = self::wholeRecordDelete($row);
             // another event's form or event data: not this event's history
             if ($event !== null && $event !== $eventId && !$whole && self::partDelete($row)) return null;
+            // one form or the event itself, of this event: a blank save of what the row says it removed
+            if ($event === $eventId && !$whole && self::partDelete($row) && $this->takePartDelete($key, $eventId, $row)) return null;
             return !$this->multiArm && $whole ? 'read' : 'delete';
         }
         if ($verb === 'INSERT' && $this->idField !== null && $started !== true) {
@@ -307,7 +354,7 @@ final class ValueHistory
         }
         $parsed = self::parseRow(isset($row[3]) ? $row[3] : '', $this->order, $this->freeText, $this->idField);
         if ($event === null) {
-            foreach ($parsed as $values) foreach ($values as $f => $v) if (isset($this->fields[$f])) return 'noevent';
+            foreach ($parsed as $values) foreach ($values as $f => $v) if (isset($this->fields[$f])) $this->voidField[$key][$f] = 'noevent';
             return null;
         }
         if ($event !== $eventId) return null;
@@ -320,6 +367,105 @@ final class ValueHistory
             }
         }
         return null;
+    }
+
+    /**
+     * Read a DELETE of one form or of the event itself, at this event, as a
+     * blank save by the row's user of what it removed (A DELETE OF PART OF
+     * THIS EVENT). A form's DELETE that names its instance and no field
+     * makes that instance "unknown". False when the row does not say what it
+     * removed; the caller then ends the read.
+     */
+    private function takePartDelete($key, $eventId, array $row)
+    {
+        $scope = self::deleteScope($row, $eventId);
+        if ($scope === null) return false;
+        list($instance, $fields) = $scope;
+        if ($fields === false) {
+            $this->voidInstance[$key][$instance] = 'delete';
+            return true;
+        }
+        $ts = isset($row[1]) ? (string) $row[1] : '';
+        $user = isset($row[5]) && $row[5] !== null ? (string) $row[5] : '';
+        foreach ($this->fields as $f => $kept) {
+            $f = (string) $f;
+            if ($fields !== null && !isset($fields[$f])) continue;
+            $this->saves[$key][$instance][$f][] = [$ts, $user, ''];
+        }
+        return true;
+    }
+
+    /**
+     * What a DELETE row of one form or one event removed at $eventId, as
+     * [instance, fields]: fields is field => true for a form whose fields the
+     * row names, null for every field (the event itself), or false when the
+     * row names the instance and not the fields. Null when the row does not
+     * say: a deleted event with no "[instance = N]" line (it may have
+     * removed every instance), or a line of data_values that is no field
+     * line. The instance is the "[instance = N]" line, or 1. The fields are
+     * the field lines of data_values; when it has none, the field_name list
+     * of sql_log (sqlDeleteScope), whose instance must then agree with the
+     * line when both name one.
+     */
+    public static function deleteScope(array $row, $eventId)
+    {
+        $d = isset($row[7]) ? trim((string) $row[7]) : '';
+        $form = (bool) preg_match('/^delete all record data for single form/i', $d);
+        $text = isset($row[3]) && is_string($row[3]) ? $row[3] : '';
+        $instance = null;
+        $fields = [];
+        foreach ($text === '' ? [] : preg_split('/\r?\n/', $text) as $i => $line) {
+            if ($i === 0 && preg_match('/^\[instance = (\d+)\],?$/D', $line, $m)) {
+                $instance = max(1, (int) $m[1]);
+                continue;
+            }
+            if ($line === '' || self::systemLine($line)) continue;
+            if (preg_match('/^([a-z][a-z0-9_]*)(?:\([^)]*\) = (?:checked|unchecked)| = \'.*\'),?$/D', $line, $m)) {
+                $fields[$m[1]] = true;
+                continue;
+            }
+            return null;
+        }
+        if (!$form) return $instance === null ? null : [$instance, null];
+        if ($fields) return [$instance === null ? 1 : $instance, $fields];
+        $sql = self::sqlDeleteScope(isset($row[8]) ? $row[8] : null, $eventId);
+        if ($sql !== null && ($instance === null || $instance === $sql[0])) return $sql;
+        return [$instance === null ? 1 : $instance, false];
+    }
+
+    /**
+     * [instance, field => true] from the "DELETE FROM redcap_data..."
+     * statements of a row's sql_log, or null when there is none or one of
+     * them cannot be read: each must name $eventId (event_id = N), a list
+     * of quoted field names (field_name IN ('a', 'b')) and an instance
+     * ("instance IS NULL" is the first), and all must name the same
+     * instance. A record name is written into the statement with its quotes
+     * escaped, so it cannot hold a quoted list of its own.
+     */
+    private static function sqlDeleteScope($sql, $eventId)
+    {
+        if (!is_string($sql) || $sql === '') return null;
+        $instance = null;
+        $fields = [];
+        foreach (preg_split('/;\s*/', $sql) as $st) {
+            if (!preg_match('/^\s*DELETE\s+FROM\s+`?redcap_data\d*`?\s+WHERE\s/i', $st)) continue;
+            if (!preg_match('/\bevent_id\s*=\s*\'?(\d+)\'?/i', $st, $m) || (string) (int) $m[1] !== (string) $eventId) return null;
+            if (!preg_match('/\bfield_name\s+IN\s*\(\s*((?:\'[a-z][a-z0-9_]*\'\s*,\s*)*\'[a-z][a-z0-9_]*\')\s*\)/', $st, $m)) return null;
+            $names = $m[1];
+            if (preg_match('/\binstance\s+IS\s+NULL\b/i', $st)) $n = 1;
+            elseif (preg_match('/\binstance\s*=\s*\'?(\d+)\'?/i', $st, $m)) $n = max(1, (int) $m[1]);
+            else return null;
+            if ($instance !== null && $instance !== $n) return null;
+            $instance = $n;
+            foreach (explode(',', $names) as $name) $fields[trim($name, " \t\r\n'")] = true;
+        }
+        return $instance === null ? null : [$instance, $fields];
+    }
+
+    /** Whether a line of data_values is one of REDCap's own (SYSTEM_LINES), written whole. */
+    private static function systemLine($line)
+    {
+        return preg_match('/^(__[A-Z][A-Z0-9_]*__) = \'[^\']*\',?$/D', $line, $m) === 1 && in_array($m[1], self::SYSTEM_LINES, true);
     }
 
     /** Whether a row counts toward MAX_ROWS_PER_RECORD: a DELETE, a row of $eventId, or one with no event. */
@@ -339,6 +485,7 @@ final class ValueHistory
     {
         if ($this->idField === null || $started === true) return 'read';
         $this->saves[$key] = [];
+        unset($this->voidInstance[$key], $this->voidField[$key]);
         $this->why[$key] = $started === false ? 'startrow' : 'start';
         return 'unknown';
     }
@@ -349,8 +496,8 @@ final class ValueHistory
      * that ends the value (with "'," or at the row's end) comes before any
      * line of a Text or Notes field other than the record id field
      * ($freeText; every field when none was given). An "[instance = N]"
-     * first line, checkbox lines and lines of other fields that end their
-     * value may come before it. False when the row's only record id line
+     * first line, checkbox lines, REDCap's own lines (SYSTEM_LINES) and lines
+     * of other fields that end their value may come before it. False when the row's only record id line
      * comes after such a line, a line of no known shape or a value that runs
      * on, where a typed value may have written it; null when it has none.
      */
@@ -373,6 +520,7 @@ final class ValueHistory
             }
             if (!$plain) continue;
             if (preg_match('/^[a-z][a-z0-9_]*\([^)]*\) = (?:checked|unchecked),?$/D', $line)) continue;
+            if (self::systemLine($line)) continue;
             if ($ends && preg_match("/^([a-z][a-z0-9_]*) = '/", $line, $m) && $this->freeText && !isset($this->freeText[$m[1]])) continue;
             $plain = false;
         }
@@ -383,6 +531,7 @@ final class ValueHistory
     private function read($key, $record, $eventId)
     {
         $this->saves[$key] = [];
+        unset($this->voidInstance[$key], $this->voidField[$key]);
         if ($this->eraseFloor() === false) return 'unknown';
         $cursor = null;
         $rows = 0;
@@ -448,7 +597,10 @@ final class ValueHistory
      * with "'," (or the row's end), so a notes value that spans lines is read
      * whole. These map to null (the log does not say plainly what was saved):
      *  - a value that does not end with a quote, or a field written twice;
-     *  - every field of a row with a line of no known shape;
+     *  - every field of a row with a line of no known shape (one of REDCap's
+     *    own lines, SYSTEM_LINES, is a known shape and no field);
+     *  - a free-text value written just before one of REDCap's own lines,
+     *    since a typed value can end with that line's text;
      *  - the fields of a row from its first free-text value ($freeText,
      *    field => true: a field whose value a person can type) to its end,
      *    when a line after that value is out of the data dictionary's order
@@ -471,6 +623,7 @@ final class ValueHistory
         $instance = 1;
         $blocks = [];   // [field, lines, is a checkbox line, whether the last line ends the value]
         $stray = false;
+        $doubt = [];    // blocks written just before one of REDCap's own lines
         foreach (preg_split('/\r?\n/', $text) as $i => $line) {
             if ($i === 0 && preg_match('/^\[instance = (\d+)\],?$/D', $line, $m)) {
                 $instance = max(1, (int) $m[1]);
@@ -486,6 +639,8 @@ final class ValueHistory
                 $blocks[] = [$m[1], [$line], true, true];
             } elseif (preg_match("/^([a-z][a-z0-9_]*) = '/", $line, $m)) {
                 $blocks[] = [$m[1], [$line], false, substr($line, -2) === "',"];
+            } elseif (self::systemLine($line)) {
+                if ($last >= 0) $doubt[$last] = true;
             } elseif ($line !== '') {
                 $stray = true;
             }
@@ -508,6 +663,7 @@ final class ValueHistory
             if ($b[2]) continue;
             $v = ($stray || ($cut !== null && $k >= $cut)) ? null
                : (preg_match("/^[a-z][a-z0-9_]* = '(.*)',?$/sD", implode("\n", $b[1]), $m) ? $m[1] : null);
+            if (isset($doubt[$k]) && !($b[0] === $idField || ($freeText && !isset($freeText[$b[0]])))) $v = null;
             $out[$instance][$b[0]] = (isset($out[$instance]) && array_key_exists($b[0], $out[$instance])) ? null : $v;
         }
         return $out;

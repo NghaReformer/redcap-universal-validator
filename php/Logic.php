@@ -1537,14 +1537,18 @@ class Logic
      * whoever made it. A later save of another value by a user who holds a
      * named role ($holdsRole answers true) moves the lock to that value, and a
      * blank or a code saved by such a user releases it; a save by anyone else
-     * leaves the lock where it was.
+     * leaves the lock where it was. $holdsRole is given the user and the save
+     * itself, so the caller can answer from what it decided when the save was
+     * made (UniversalValidator::findingsWriteonce).
      *
      * $sinceTs (a log time, or null): saves before it only say which value
      * the field held then, and a value held then is locked from $sinceLabel.
      *
      * @return array verdict "ok"; "changed" or "cleared" (the current value is
-     *   another value, or blank / a code) with lockedAt (when the lock was set)
-     *   and changedAt (when the current value was saved); or "unknown" with
+     *   another value, or blank / a code) with lockedAt (when the lock was set),
+     *   changedAt (when the current value was saved), lockedBy (who saved the
+     *   locked value; null for a value held at $sinceTs) and changedBy (who
+     *   saved the current one); or "unknown" with
      *   why: "ambiguous" (a save the log does not say plainly), "gap" (the log's
      *   last save is not the current value, or it shows no save of a value the
      *   field holds), "roles" ($holdsRole could not answer, null, for a save
@@ -1552,7 +1556,9 @@ class Logic
      */
     public static function writeOnceVerdict(array $saves, $current, callable $holdsRole, callable $isMissing, $sinceTs = null, $sinceLabel = null)
     {
-        $norm = function ($v) { return trim((string) $v, " \t\r\n"); };
+        // A Notes value is stored with the browser's line breaks (CR LF) and
+        // the log reader joins its lines with LF, so both read with LF (WON-2).
+        $norm = function ($v) { return trim(str_replace(["\r\n", "\r"], "\n", (string) $v), " \t\r\n"); };
         $empty = function ($v) use ($norm, $isMissing) { $v = $norm($v); return $v === '' || $isMissing($v); };
         // A logged value is the saved one when it reads the same, or the same
         // once a quote or a backslash the log may have escaped is unescaped.
@@ -1563,8 +1569,10 @@ class Logic
         };
         $lock = null;
         $lockedAt = null;
+        $lockedBy = null;
         $last = null;
         $lastAt = null;
+        $lastBy = null;
         $i = 0;
         $n = count($saves);
         if ($sinceTs !== null) {
@@ -1585,19 +1593,22 @@ class Logic
             if ($v === null) return ['verdict' => 'unknown', 'why' => 'ambiguous'];
             $last = $v;
             $lastAt = $saves[$i]['at'];
+            $lastBy = (string) $saves[$i]['user'];
             if ($lock === null) {
                 if (!$empty($v)) {
                     $lock = $v;
                     $lockedAt = $saves[$i]['at'];
+                    $lockedBy = (string) $saves[$i]['user'];
                 }
                 continue;
             }
             if ($norm($v) === $norm($lock)) continue;   // both as the log writes them
-            $role = $holdsRole((string) $saves[$i]['user']);
+            $role = $holdsRole((string) $saves[$i]['user'], $saves[$i]);
             if ($role === null) return ['verdict' => 'unknown', 'why' => 'roles'];
             if ($role) {
                 $lock = $empty($v) ? null : $v;
                 $lockedAt = $lock === null ? null : $saves[$i]['at'];
+                $lockedBy = $lock === null ? null : (string) $saves[$i]['user'];
             }
         }
         if ($n === 0) return $empty($current) ? ['verdict' => 'ok'] : ['verdict' => 'unknown', 'why' => 'gap'];
@@ -1606,7 +1617,9 @@ class Logic
         // are compared as written: unescaping here would read a backslash
         // removed from "It\'s" as no change.
         if ($lock === null || $norm($lock) === $norm($last)) return ['verdict' => 'ok'];
-        return ['verdict' => $empty($current) ? 'cleared' : 'changed', 'lockedAt' => $lockedAt, 'changedAt' => $lastAt];
+        return ['verdict' => $empty($current) ? 'cleared' : 'changed', 'lockedAt' => $lockedAt, 'changedAt' => $lastAt,
+                'lockedBy' => $lockedBy, 'changedBy' => $lastBy];
+
     }
 
     /**

@@ -3801,7 +3801,7 @@ function QRID_selectOption(sel, code){
    either way. Otherwise REDCap hears an input and a change event, as from
    typing, and the calculations and branching logic that read the field run.
    Server twin: UniversalValidator::applyReturns. */
-function QRID_writeReturned(name, text, announce, exact, lost){
+function QRID_writeReturned(name, text, announce, exact, lost, still){
   /* A form the person may only read, or a locked one, shows the record as
      saved (config.formReadOnly, EXS-2): nothing is written into it. */
   if(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.formReadOnly === true) return false;
@@ -3847,8 +3847,11 @@ function QRID_writeReturned(name, text, announce, exact, lost){
       }
     } catch(e){}
   }
+  /* still: REDCap is not asked to work its calculations and branching out
+     again (the write-once lock putting back a value REDCap's own branching
+     erased, WON-4) */
   var w = typeof window !== "undefined" ? window : null;
-  if(w){
+  if(w && still !== true){
     try { if(typeof w.calculate === "function") w.calculate(name); } catch(e){}
     try { if(typeof w.doBranching === "function") w.doBranching(name); } catch(e){}
   }
@@ -8157,11 +8160,18 @@ function QRIDDeltaInit(QRID_CONFIG){
    because a disabled control is left out of the form and REDCap would save
    the field blank: a dropdown takes no clicks, and the date picker is kept
    from opening rather than disabled (jQuery UI's "disable" disables the
-   input). REDCap's Today and Now buttons and the radio "reset" link are
-   hidden, and so are the enhanced radio buttons' clicks. A dropdown whose
+   input). REDCap's Today and Now buttons, the radio "reset" link and the
+   slider's "reset" link are hidden, and so are the enhanced radio buttons'
+   clicks, in the field's own row and, for a field embedded in another's
+   row, in that row (WON-9). A dropdown whose
    saved code is no longer one of its choices gets that code back as an
    option, so the value is kept. A change made any other way (the keyboard,
-   a script) is undone, and the note says so. At save the value is compared
+   a script) is undone, and the note says so. A value emptied with no event
+   is REDCap's branching logic erasing a field it hides, after the person
+   said OK to its prompt: the lock keeps the value, and puts it back without
+   asking REDCap to work its branching out again, which would find the value
+   in the hidden field and ask once more at every turn of the poll (WON-4).
+   The field stays hidden and is saved as it was. At save the value is compared
    once more; one that cannot be put back holds the save. Roles that could
    not be read lock the field for everyone, and the note says so
    (writeonceRolesUnread).
@@ -8180,7 +8190,18 @@ function QRIDWriteOnceInit(QRID_CONFIG){
   /* REDCap's buttons and links that write this field: the field's name is
      their first argument (an embedded field in the same row has its own) */
   function writesField(onclick, fieldName){
-    return new RegExp("(?:radioResetVal|setToday|setNow\\w*)\\(\\s*['\"]" + fieldName + "['\"]").test(onclick);
+    return new RegExp("(?:radioResetVal|resetSlider|setToday|setNow\\w*)\\(\\s*['\"]" + fieldName + "['\"]").test(onclick);
+  }
+  /* The rows that hold the field's controls: its own, and the row its input
+     sits in when the field is embedded in another's (REDCap moves an embedded
+     field's controls into the host row). */
+  function rowsOf(fieldName, el){
+    var own = document.getElementById ? document.getElementById(fieldName + "-tr") : null;
+    var out = own ? [own] : [];
+    for(var n = el ? el.parentNode : null, hops = 0; n && hops < 40; n = n.parentNode, hops++){
+      if(typeof n.id === "string" && /-tr$/.test(n.id)){ if(n !== own) out.push(n); break; }
+    }
+    return out;
   }
   /* Whether an enhanced choice belongs to this field's radios: its label (or
      a label inside it) is for one of them, or its comps name the field. */
@@ -8197,11 +8218,11 @@ function QRIDWriteOnceInit(QRID_CONFIG){
   function lockControls(fieldName, el){
     var radios = document.getElementsByName ? document.getElementsByName(fieldName + "___radio") : [];
     var tag = (el.tagName || "").toLowerCase();
-    var row = document.getElementById ? document.getElementById(fieldName + "-tr") : null;
+    var rows = rowsOf(fieldName, el);
     try {
       var kinds = ["a", "button"];
-      for(var ki = 0; ki < kinds.length; ki++){
-        var links = row && row.getElementsByTagName ? row.getElementsByTagName(kinds[ki]) : [];
+      for(var wi = 0; wi < rows.length; wi++) for(var ki = 0; ki < kinds.length; ki++){
+        var links = rows[wi].getElementsByTagName ? rows[wi].getElementsByTagName(kinds[ki]) : [];
         for(var li = 0; li < links.length; li++){
           var oc = links[li].getAttribute ? (links[li].getAttribute("onclick") || "") : "";
           if(writesField(oc, fieldName)) links[li].style.display = "none";
@@ -8218,8 +8239,10 @@ function QRIDWriteOnceInit(QRID_CONFIG){
       }
       /* REDCap's enhanced radio buttons are labels that click the radio */
       try {
-        var enh = row && row.querySelectorAll ? row.querySelectorAll(".enhancedchoice, .enhancedchoice_wrapper") : [];
-        for(var ei = 0; ei < enh.length; ei++) if(enhancedOf(enh[ei], ids, fieldName)) enh[ei].style.pointerEvents = "none";
+        for(var ri = 0; ri < rows.length; ri++){
+          var enh = rows[ri].querySelectorAll ? rows[ri].querySelectorAll(".enhancedchoice, .enhancedchoice_wrapper") : [];
+          for(var ei = 0; ei < enh.length; ei++) if(enhancedOf(enh[ei], ids, fieldName)) enh[ei].style.pointerEvents = "none";
+        }
       } catch(e){}
     } else if(tag === "select"){
       if(el.setAttribute) el.setAttribute("aria-readonly", "true");
@@ -8302,11 +8325,16 @@ function QRIDWriteOnceInit(QRID_CONFIG){
         (QRID_CONFIG.writeonceRolesUnread === true ? " " + QRID_escapeHtml(UNREAD) : "") +
         (undone ? ' <span style="opacity:.8">' + QRID_escapeHtml("A change was undone.") + "</span>" : "");
     }
-    /* Put the saved value back; false when the page cannot (its option is gone). */
-    function restore(){
+    /* Put the saved value back; false when the page cannot (its option is
+       gone). announced: an event told of the change. A value emptied with no
+       event is put back still (WON-4). One REDCap's branching empties again
+       while an announced change is put back is emptied with no event, so the
+       watch on the field (the poll) puts it back still at its next turn. */
+    function restore(announced){
       lockControls(fieldName, el);
       if(el.value === saved) return true;
-      try { QRID_writeReturned(fieldName, saved, true, true); } catch(e){}
+      var still = announced !== true && el.value === "";
+      try { QRID_writeReturned(fieldName, saved, !still, true, null, still); } catch(e){}
       if(el.value !== saved) return false;
       undone = true;
       show();
@@ -8324,9 +8352,10 @@ function QRIDWriteOnceInit(QRID_CONFIG){
     QRID_registerBlocker(GITEM, fieldName, "off", "writeonce");
     lockControls(fieldName, el);
     if(el.addEventListener){
-      el.addEventListener("input", function(){ restore(); });
-      el.addEventListener("change", function(){ restore(); });
+      el.addEventListener("input", function(){ restore(true); });
+      el.addEventListener("change", function(){ restore(true); });
     }
+
     /* a change no event announces (jQuery, a script, the Today button) */
     var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
     if(selfWatch) selfWatch.onChange(function(){ restore(); });

@@ -56,6 +56,29 @@ namespace ExternalModules {
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
         public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
+        /** With $queryLogsOn, the entries log() took, as the framework's queryLogs() answers "select ... where a = ? and b = ?". */
+        public $queryLogsOn = false;
+        public $queryLogsAsked = [];
+        public function queryLogs($sql, $params = []) {
+            if (!$this->queryLogsOn) return null;
+            $this->queryLogsAsked[] = $sql;
+            preg_match('/^select (.*?) where (.*)$/', $sql, $q);
+            $cols = array_map('trim', explode(',', $q[1]));
+            $conds = array_map(function ($c) { return trim(str_replace('= ?', '', $c)); }, explode(' and ', $q[2]));
+            $rows = [];
+            foreach ($this->logCalls as $i => $c) {
+                $entry = ['message' => $c[0], 'log_id' => $i + 1, 'project_id' => $this->projectIdReturn] + $c[1];
+                foreach ($conds as $k => $col) if (!isset($entry[$col]) || (string) $entry[$col] !== (string) $params[$k]) continue 2;
+                $row = [];
+                foreach ($cols as $col) $row[$col] = isset($entry[$col]) ? (string) $entry[$col] : null;
+                $rows[] = $row;
+            }
+            return new class($rows) {
+                private $rows;
+                public function __construct($rows) { $this->rows = $rows; }
+                public function fetch_assoc() { return array_shift($this->rows); }
+            };
+        }
         public function initializeJavascriptModuleObject() { return '<script></script>'; }
         public function getJavascriptModuleObjectName() { return 'ExternalModules.TEST.UniversalValidator'; }
         public $queryLog = [];
@@ -105,11 +128,21 @@ namespace {
     }
     class Project {
         public static $codes = '';
+        /** The form that is a survey shown one section per page, or null. */
+        public static $bySection = null;
         public $project;
         public $longitudinal = false;
         public $eventInfo = [351 => ['unique_event_name' => 'event_1_arm_1', 'arm_num' => 1]];
         public $eventsForms = [351 => ['enrol_form', 'visit_form']];
-        public function __construct($pid) { $this->project = ['missing_data_codes' => self::$codes]; }
+        public $forms = [];
+        public $surveys = [];
+        public function __construct($pid) {
+            $this->project = ['missing_data_codes' => self::$codes];
+            if (self::$bySection !== null) {
+                $this->forms = [self::$bySection => ['survey_id' => 7]];
+                $this->surveys = [7 => ['form_name' => self::$bySection, 'question_by_section' => 1]];
+            }
+        }
         public function getRepeatingFormsEvents() { return []; }
         public function getUniqueEventNames() { return [351 => 'event_1_arm_1']; }
     }
@@ -306,9 +339,62 @@ namespace {
             in_array('baseline_wt', lockedOn(page($ms, 'form', '2', 'enrol_form')), true) === $locks);
     }
 
+    // A survey shown one section per page (WON-10): a page locks its own fields, and the saved
+    // code of a dropdown on another page is not sent to it.
+    $PDICT = [
+        'record_id' => f('enrol_form'),
+        'p1_date'   => f('enrol_form', '@UVWRITEONCE', 'date_ymd'),
+        'p1_site'   => f('enrol_form', '@UVWRITEONCE', '', 'dropdown'),
+        'p2_site'   => ['section_header' => 'Page two'] + f('enrol_form', '@UVWRITEONCE', '', 'dropdown'),
+        'p2_open'   => f('enrol_form', '@UVWRITEONCE'),
+    ];
+    $PDATA = ['2' => [351 => ['record_id' => '2', 'p1_date' => '2026-03-01', 'p1_site' => 'S1', 'p2_site' => 'S2-SECRET', 'p2_open' => '']]];
+    $surveyPageOf = function ($page) use ($PDICT, $PDATA) {
+        \Project::$bySection = 'enrol_form';
+        if ($page === null) unset($_GET['__page__']); else $_GET['__page__'] = $page;
+        $p = page(mod($PDICT, $PDATA), 'survey', '2', 'enrol_form');
+        unset($_GET['__page__']);
+        \Project::$bySection = null;
+        return $p;
+    };
+    $p1 = $surveyPageOf('1');
+    check('survey pages: page 1 locks its own fields only (got ' . json_encode(lockedOn($p1)) . ')', lockedOn($p1) === ['p1_date', 'p1_site']);
+    check('survey pages: ... and holds no saved code of a dropdown on page 2', strpos($p1['html'], 'S2-SECRET') === false && strpos($p1['html'], '"p1_site":"S1"') !== false);
+    $p2 = $surveyPageOf('2');
+    check('survey pages: page 2 locks its own (got ' . json_encode(lockedOn($p2)) . ')', lockedOn($p2) === ['p2_site']
+        && strpos($p2['html'], 'S2-SECRET') !== false && strpos($p2['html'], '"p1_site"') === false);
+    $pall = $surveyPageOf(null);
+    check('survey pages: a page that cannot be told locks every field, as before', lockedOn($pall) === ['p1_date', 'p1_site', 'p2_site']);
+    \Project::$bySection = 'enrol_form';
+    $_GET['__page__'] = '2';
+    $pf = page(mod($PDICT, $PDATA), 'form', '2', 'enrol_form');
+    unset($_GET['__page__']);
+    \Project::$bySection = null;
+    check('survey pages: the data entry form is one page whatever __page__ says', lockedOn($pf) === ['p1_date', 'p1_site', 'p2_site']);
+
+    // A tag name inside another tag's value is text, and REDCap's language tags are refused (WON-11).
+    $TDICT = [
+        'record_id' => f('enrol_form'),
+        'q_set'     => f('enrol_form', '@UVWRITEONCE @PLACEHOLDER="see @SETVALUE note"'),
+        'q_calc'    => f('enrol_form', "@UVWRITEONCE @PLACEHOLDER='@CALCTEXT @CALCDATE @RICHTEXT @PREFILL @DOWNLOAD-COUNT @LANGUAGE-CURRENT-FORM'"),
+        'q_real'    => f('enrol_form', '@UVWRITEONCE @PLACEHOLDER="x" @SETVALUE="y"'),
+        'q_langf'   => f('enrol_form', '@UVWRITEONCE @LANGUAGE-CURRENT-FORM'),
+        'q_langs'   => f('enrol_form', '@language-current-survey @UVWRITEONCE'),
+        'q_lang'    => f('enrol_form', '@UVWRITEONCE @LANGUAGE-CURRENT-FORMAT'),
+    ];
+    $pt = page(mod($TDICT, ['2' => [351 => ['record_id' => '2', 'q_set' => 'a', 'q_calc' => 'a', 'q_real' => 'a', 'q_langf' => 'en', 'q_langs' => 'en', 'q_lang' => 'x']]]), 'form', '2', 'enrol_form');
+    check('refusals: a tag name inside another tag\'s quoted text refuses nothing (got ' . errOf($pt, 'q_set') . ' / ' . errOf($pt, 'q_calc') . ')',
+        errOf($pt, 'q_set') === '' && errOf($pt, 'q_calc') === '' && in_array('q_set', lockedOn($pt), true) && in_array('q_calc', lockedOn($pt), true));
+    check('refusals: ... while the tag itself, after such a value, still does', strpos(errOf($pt, 'q_real'), 'cannot lock a field with @SETVALUE') !== false);
+    check('refusals: @LANGUAGE-CURRENT-FORM and -SURVEY are refused, naming the tag (got ' . errOf($pt, 'q_langf') . ')',
+        strpos(errOf($pt, 'q_langf'), 'cannot lock a field with @LANGUAGE-CURRENT-FORM — REDCap writes the language of the page into it') !== false
+        && strpos(errOf($pt, 'q_langs'), 'cannot lock a field with @LANGUAGE-CURRENT-SURVEY') !== false);
+    check('refusals: a tag that only starts like one of them is not', errOf($pt, 'q_lang') === '');
+
     // ============================================================================
     // The audit
     // ============================================================================
+
     // consent_date: saved, then changed by nurse (no role)       -> changed
     // arm: saved 1, changed to 2 by dm (Data manager)            -> the lock moved, ok
     // site: UNK (a code, no lock), then 2                        -> locked at 2, ok
@@ -354,8 +440,126 @@ namespace {
     $mh->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
     check('audit: the lock times are kept when the log keeps no value', (woBy($mh)['consent_date']['locked_at'] ?? null) === '2026-10-01 09:00');
 
+    // Who saved the locked value and who saved over it (WON-1), named as the log mode names people.
+    check('audit: the entry names who saved the locked value and who saved over it (got ' . json_encode($by['consent_date'] ?? null) . ')',
+        ($by['consent_date']['locked_by'] ?? null) === 'nurse' && ($by['consent_date']['changed_by'] ?? null) === 'nurse');
+    check('audit: a value locked by "since" has no one who locked it', !isset($by['baseline_wt']['locked_by']) && ($by['baseline_wt']['changed_by'] ?? null) === 'nurse');
+    check('audit: where the log keeps no record id, the two names are keyed hashes',
+        preg_match('/^[0-9a-f]{64}$/', woBy($mh)['consent_date']['changed_by'] ?? '') === 1 && (woBy($mh)['consent_date']['changed_by'] ?? '') === (woBy($mh)['consent_date']['locked_by'] ?? null)
+        && strpos(json_encode(woBy($mh)), 'nurse') === false);
+    $STALE = [[1, '2', 351, '20261001090000', "record_id = '2',\nconsent_date = '2026-03-01'", 'ann', 'INSERT'], [2, '2', 351, '20261001090500', "consent_date = '2026-04-01'", 'nurse']];
+    $m = mod($DICT, ['2' => [351 => array_merge($ROW, ['consent_date' => '2026-04-01'])]], 'nurse', history($STALE, $FIELDS));
+    $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('audit: a page opened before the first save, saved over the locked value: found at that save, naming both (WON-1) (got ' . json_encode(woBy($m)['consent_date'] ?? null) . ')',
+        (woBy($m)['consent_date']['reason'] ?? null) === 'changed' && (woBy($m)['consent_date']['locked_by'] ?? null) === 'ann'
+        && (woBy($m)['consent_date']['changed_by'] ?? null) === 'nurse' && (woBy($m)['consent_date']['changed_at'] ?? null) === '2026-10-01 09:05');
+    $res = $m->scanProject(PID);
+    check('scan: ... and the scan reports it, with no name', count(array_filter($res['violations'], function ($v) { return $v['field'] === 'consent_date' && $v['reason'] === 'changed'; })) === 1
+        && strpos(json_encode($res['violations']), 'changedBy') === false && strpos(json_encode($res['violations']), '"ann"') === false);
+    // ... and the person who saved is told on the next page
+    @session_start();
+    $_SESSION = [];
+    $top = function ($m) { ob_start(); $m->redcap_every_page_top(PID); return (string) ob_get_clean(); };
+    $m = mod($DICT, ['2' => [351 => array_merge($ROW, ['consent_date' => '2026-04-01', 'notes_w' => ''])]], 'nurse',
+        history(array_merge($STALE, [[3, '2', 351, '20261001090600', "notes_w = 'a note'", 'ann'], [4, '2', 351, '20261001090700', "notes_w = ''", 'nurse']]), $FIELDS));
+    $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    $html = $top($m);
+    check('after save: the next page says a locked value was changed and one was cleared, naming the record and the fields (got ' . $html . ')',
+        session_status() === PHP_SESSION_ACTIVE && strpos($html, 'id="uv-after-save-notice"') !== false && strpos($html, 'Record <b>2</b>') !== false
+        && strpos($html, '<code>consent_date</code>): this field is locked, and the value now saved is not the one it was locked with.') !== false
+        && strpos($html, '<code>notes_w</code>): this field is locked, and its value has been cleared.') !== false);
+    check('after save: neither value is in the notice, and it is shown once', strpos($html, '2026-04-01') === false && strpos($html, '2026-03-01') === false && $top($m) === '');
+    $m = mod($DICT, ['2' => [351 => array_merge($ROW, ['consent_date' => '2026-04-01'])]], 'nurse', history($STALE, $FIELDS));
+    $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, 'hash', null, 1);
+    check('after save: a survey respondent\'s save keeps nothing for the next page', $top($m) === '' && (woBy($m)['consent_date']['reason'] ?? null) === 'changed');
+    $_SESSION = [];
+
+    // A change is judged by the roles its maker held when the audit first saw it (WON-6).
+    $roleNotes = function ($m) { return findings($m, 'uvalidate-writeonce-role'); };
+    $NODM = ['roles' => $ROLES['roles'], 'users' => []];
+    $NURSEDM = ['roles' => $ROLES['roles'], 'users' => ['nurse' => ['data manager', 'u-3dm']]];
+    $again = function ($from, $roles, $mode = 'raw') use ($DICT, $NOW, $LOG, $FIELDS) {
+        $m = mod($DICT, $NOW, 'nurse', history($LOG, $FIELDS), $roles);
+        $m->projectSettings['log-values'] = $mode;
+        $m->queryLogsOn = true;
+        if ($from !== null) {
+            // the same installation: its key for the log's hashes, and the role entries it kept
+            $m->systemSettings = $from->systemSettings;
+            $m->logCalls = array_values(array_filter($from->logCalls, function ($c) { return $c[0] === 'uvalidate-writeonce-role'; }));
+        }
+        return $m;
+    };
+    $m1 = $again(null, null);
+    $m1->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    $kept = [];
+    foreach ($roleNotes($m1) as $e) $kept[$e['field'] . '@' . $e['saved_ts']] = $e;
+    check('roles kept: the audit keeps, for each save that departs from a lock that names roles, whether its maker held one (got ' . json_encode(array_keys($kept)) . ')',
+        array_keys($kept) === ['arm@20261003101500', 'pain@20261003101500'] && $kept['arm@20261003101500']['held'] === '1'
+        && $kept['arm@20261003101500']['saved_by'] === 'dm' && $kept['arm@20261003101500']['record'] === '2' && $kept['arm@20261003101500']['event_id'] === '351'
+        && $kept['arm@20261003101500']['instance'] === '1' && !isset($kept['arm@20261003101500']['value']));
+    check('roles kept: a rule that names no role keeps nothing', !preg_grep('/^(consent_date|notes_w|baseline_wt)@/', array_keys($kept)));
+    $m1->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('roles kept: the next save of the form keeps nothing more', count($roleNotes($m1)) === 2);
+    // the data manager leaves the role: the correction stays approved, in the next audit and in the scan
+    $m2 = $again($m1, $NODM);
+    $m2->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('roles kept: a correction made while its maker held the role stays approved when they leave it (got ' . json_encode(array_keys(woBy($m2))) . ')',
+        !isset(woBy($m2)['arm']) && !isset(woBy($m2)['pain']) && !problems($m2, 'arm') && count($roleNotes($m2)) === 2);
+    $sv = [];
+    foreach ($again($m1, $NODM)->scanProject(PID)['violations'] as $v) if ($v['type'] === 'writeonce') $sv[] = $v['field'];
+    check('roles kept: ... and the scan reads the same entries, naming the project in its query (got ' . json_encode($sv) . ')', !in_array('arm', $sv, true) && !in_array('pain', $sv, true));
+    $ms = $again($m1, $NODM);
+    $ms->scanProject(PID);
+    check('roles kept: the scan keeps nothing itself', count($roleNotes($ms)) === 2
+        && (bool) preg_grep('/^select fingerprint where message = \? and project_id = \? and record = \?$/', $ms->queryLogsAsked));
+    $ms0 = $again(null, null);
+    $ms0->scanProject(PID);
+    check('roles kept: ... also when it judged by the roles of today', $roleNotes($ms0) === []);
+    // REDCap compares user names without letter case, and so does the entry
+    $UP = $LOG;
+    $UP[1][5] = 'DM';
+    $mu = mod($DICT, $NOW, 'nurse', history($UP, $FIELDS), $NODM);
+    $mu->queryLogsOn = true;
+    $mu->systemSettings = $m1->systemSettings;
+    $mu->logCalls = array_values(array_filter($m1->logCalls, function ($c) { return $c[0] === 'uvalidate-writeonce-role'; }));
+    $mu->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('roles kept: the entry is found whatever letter case the log writes the user name in', !isset(woBy($mu)['arm']) && count($roleNotes($mu)) === 2);
+    $m3 = $again(null, $NODM);
+    $m3->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('roles kept: with nothing kept, the roles of today decide, as before', (woBy($m3)['arm']['reason'] ?? null) === 'changed' && $roleNotes($m3)[0]['held'] === '0');
+    // ... and a change made without a role stays a finding when its maker is given one
+    $m4 = $again($m3, $ROLES);
+    $m4->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('roles kept: a change made without a role stays a finding when its maker is given the role later', (woBy($m4)['arm']['reason'] ?? null) === 'changed');
+    // the log modes
+    $mn = $again(null, null, 'none');
+    $mn->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    $e = $roleNotes($mn)[0] ?? [];
+    check('roles kept: where the log keeps no record id, the record and the user are keyed hashes (got ' . json_encode($e) . ')',
+        !isset($e['record']) && preg_match('/^[0-9a-f]{64}$/', $e['record_hmac'] ?? '') === 1 && preg_match('/^[0-9a-f]{64}$/', $e['saved_by'] ?? '') === 1);
+    $mn2 = $again($mn, $NODM, 'none');
+    $mn2->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('roles kept: ... and are found again by the hash', !isset(woBy($mn2)['arm']) && count($roleNotes($mn2)) === 2);
+    $mo = $again(null, null, 'off');
+    $mo->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('roles kept: a log that is off keeps nothing', $roleNotes($mo) === []);
+    $mq = mod($DICT, $NOW, 'nurse', history($LOG, $FIELDS));
+    $mq->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('roles kept: nothing is kept where the entries cannot be read back', $roleNotes($mq) === [] && !isset(woBy($mq)['arm']));
+    // an entry of each kind for one save (the rule's roles edited between two audits): today's roles decide
+    $m5 = $again($m1, $NODM);
+    $m5->logCalls = [];
+    $m5->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    $mb = $again($m1, $NODM);
+    foreach ($m5->logCalls as $c) if ($c[0] === 'uvalidate-writeonce-role') $mb->logCalls[] = $c;
+    $before = count($roleNotes($mb));
+    $mb->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('roles kept: an entry of each kind for one save reads as none kept, and no third is written (got ' . json_encode([array_keys(woBy($mb)), $before, count($roleNotes($mb))]) . ')',
+        (woBy($mb)['arm']['reason'] ?? null) === 'changed' && $before === 5 && count($roleNotes($mb)) === 5);
+
     // rule problems, never a pass
-    $AMB = [[1, '2', 351, '20261001090000', "consent_date = '2026-03-01',\nconsent_date = '2026-03-02'", 'nurse', 'INSERT']];
+    $AMB =
+ [[1, '2', 351, '20261001090000', "consent_date = '2026-03-01',\nconsent_date = '2026-03-02'", 'nurse', 'INSERT']];
     $m = mod($DICT, $NOW, 'nurse', history($AMB, $FIELDS));
     $m->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
     check('audit: a save the log does not spell out is a rule problem (got ' . json_encode(problems($m, 'consent_date')) . ')',

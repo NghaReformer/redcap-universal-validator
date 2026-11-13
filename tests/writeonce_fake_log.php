@@ -19,7 +19,10 @@ use INSPIRE\UniversalValidator\Scan\ScanDb;
  * event (deletes, rows with no event and rows matching either LIKE pattern
  * of the record id field's line included, read with the ESCAPE character
  * '!'), after the erase floor, newest first; $fail and $failOn make a
- * read fail. With $looseEvent it returns the rows of every event, as a
+ * read fail. A row's eleventh item is its sql_log, which the paged read
+ * returns for a DELETE row only, as the reader asks. Both reads must be
+ * sorted by "log_event_id + 0" (ValueHistory, THE INDEX); one sorted by the
+ * bare column is refused. With $looseEvent it returns the rows of every event, as a
  * server that ignored the event filter would: the reader checks each row's
  * event again.
  */
@@ -39,7 +42,7 @@ final class FakeHistoryLog implements ScanDb
         if ($this->fail || ($this->failOn && $this->queries === $this->failOn)) throw new \RuntimeException('down');
         if (strpos($sql, 'FROM redcap_projects') !== false) return [[$this->table]];
         if (strpos($sql, 'FROM ' . $this->table . ' ') === false) throw new \RuntimeException('wrong table');
-        preg_match('/LIMIT (\d+)$/', $sql, $m);
+        if (!preg_match('/ ORDER BY log_event_id \+ 0 DESC LIMIT (\d+)$/', $sql, $m)) throw new \RuntimeException('not sorted by log_event_id + 0');
         $limit = (int) $m[1];
         if (strpos($sql, "AND pk = ? AND CAST(pk AS BINARY) = ? AND object_type = 'redcap_data' AND event = 'DELETE' AND event_id IS NULL"
                 . " AND (description IS NULL OR (description NOT LIKE 'Delete record%' AND description NOT LIKE 'Delete all record data for single%' AND description NOT LIKE 'Delete all data on event%'))") !== false) {
@@ -57,6 +60,8 @@ final class FakeHistoryLog implements ScanDb
             return array_slice($out, 0, $limit);
         }
         if (strpos($sql, "(event = 'DELETE' OR event_id = ? OR event_id IS NULL") === false) throw new \RuntimeException('no event filter');
+        if (strpos($sql, "IF(event = 'DELETE', sql_log, NULL)") === false) throw new \RuntimeException('sql_log not read for DELETE rows only');
+        if (strpos($sql, ' WHERE project_id = ? AND pk = ? AND ') === false) throw new \RuntimeException('the record is not named first');
         $i = 0;
         $pid = $params[$i++];
         $pk = $params[$i++];
@@ -76,7 +81,9 @@ final class FakeHistoryLog implements ScanDb
             $match = strtoupper($r[7]) === 'DELETE' || $r[3] === null || (int) $r[3] === (int) $event;
             foreach ($likes as $re) $match = $match || preg_match($re, (string) $r[5]);
             if (!$this->looseEvent && !$match) continue;
-            $out[] = [(string) $r[0], $r[4], $r[3], $r[5], $r[2], $r[8], $r[7], $this->descr($r)];
+            $out[] = [(string) $r[0], $r[4], $r[3], $r[5], $r[2], $r[8], $r[7], $this->descr($r),
+                      strtoupper($r[7]) === 'DELETE' && isset($r[10]) ? $r[10] : null];
+
         }
         usort($out, function ($a, $b) { return (int) $b[0] - (int) $a[0]; });
         return array_slice($out, 0, $limit);

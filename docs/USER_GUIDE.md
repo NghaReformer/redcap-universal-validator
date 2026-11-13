@@ -1110,7 +1110,8 @@ limits (`@UVDELTA`): Text fields with no, integer or number validation
 (including comma decimals), calc fields and sliders, compared with a field of
 any of those kinds. Write-once locks (`@UVWRITEONCE`): Text and Notes fields,
 dropdown, radio, yes/no, true/false, slider and SQL fields, but not a field
-with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT` or
+with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL`, `@DOWNLOAD-COUNT`,
+`@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY` or
 `@RICHTEXT`, nor a field with an ontology search of any service (BioPortal,
 FHIR or another). A reason (`@UVJUSTIFY`) may stand for the rules of
 any field another tag checks, and the reason field itself is a Text, Notes,
@@ -1339,11 +1340,20 @@ locks it on forms and surveys. `@UVWRITEONCE={"roles":["Data manager"]}` lets
 members of that role still change or clear it, and the lock moves to the new
 value. `"since":"2026-11-01"` locks the value held at 00:00 that day in the
 project's time zone, for a project that already holds data. A blank and a
-missing data code lock nothing. The lock is the browser's only: a change made
-through the Data Import Tool or the API is found afterwards, from REDCap's log,
+missing data code lock nothing. The lock is the browser's only, put on when
+the page is built: a change made through the Data Import Tool, the API or the
+Mobile App, from a page opened before the value was first saved (a second tab
+or a second person), by a survey's Start Over, or by deleting a form's data,
+an event or a repeating instance is not stopped. It is found afterwards, from
+REDCap's log,
 by the audit of the next save of the form that holds the field
-(`type: writeonce`, reason `changed` or `cleared`) and by the scan. Roles are read when the audit or the scan runs, so
-a change counts as the role's only while its maker holds the role; expired
+(`type: writeonce`, reason `changed` or `cleared`, with who saved the locked
+value and who saved over it) and by the scan, and the person whose save went
+over a locked value is told on the next page. The value is not written back.
+The audit of a save notes whether its maker held one of the roles then, and
+later audits and scans read that note; a save with no note (an import, or one
+made while the module's log is off) is judged by the roles its maker holds
+when it is read. Expired
 rights and a suspended account hold no role, and an administrator who is not a
 user of the project is locked out too. When the roles cannot be read, the page
 locks the field for everyone and says so; when the saved value cannot be

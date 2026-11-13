@@ -1392,8 +1392,8 @@ and flags a change larger than its limit:
 
 ## Values entered once — the `@UVWRITEONCE` tag
 
-Some answers are entered once and then left alone, such as a consent date, a
-randomisation arm or a baseline weight. REDCap's `@READONLY` stops everyone,
+Some answers are entered once and then left alone, such as a consent date, an
+enrolment site or a baseline weight. REDCap's `@READONLY` stops everyone,
 including the first entry. `@UVWRITEONCE` leaves the field open until its
 first save of a value and locks it from then on:
 
@@ -1406,6 +1406,12 @@ first save of a value and locks it from then on:
 - **Locked by the first save.** The first save of a value that is not blank and
   not a missing data code locks the field, whoever makes it. A blank or a code
   locks nothing, so a field marked "unknown" can still be filled in later.
+  The lock does not wait for the form to be complete: a save REDCap accepts
+  with a required field still missing locks what it wrote, a typing mistake
+  included. A Notes value of several lines is one value, whatever line breaks
+  the browser sent. A field the randomisation module fills is not a tested
+  use: if REDCap logs the allocation in a row of its own that is not a data
+  save, the check finds no first save and reports a rule problem.
 - **Roles.** `roles` names the user roles whose members may still change or
   clear the value, by the name the User Rights page shows or by the unique
   role name, up to 20. Letter case does not matter ("STRASSE" matches
@@ -1420,11 +1426,16 @@ first save of a value and locks it from then on:
   the lock. A user whose rights in the project have expired, or whose account
   is suspended, holds no role. An administrator who is not a user of the
   project holds none either, so the lock stops them as it stops everyone else.
-  Roles are read when the audit or the scan runs, not as they were at the
-  save, because REDCap's log names who saved but not the role they held, and
-  it records a change of role only as free text this check does not read. So
-  a change counts as the role's while its maker holds the role, and as a
-  violation once they leave it. REDCap logs a field only when its value
+  REDCap's log names who saved but not the role they held. So the audit of a
+  save writes down, for each save of a locked field it judges, whether its
+  maker held one of the roles then, and every later audit and scan reads that
+  note: a correction a data manager made stays theirs after they leave the
+  role, and a role granted later excuses nothing. The note is a keyed
+  fingerprint in the module's log, with no value and no user name in it. A
+  save no audit judged (an import, an API call, a save made before this
+  version, or any save while the module's log is off) has no note, and is
+  judged by the roles its maker holds when the audit or the scan runs. The
+  scan reads the notes and writes none. REDCap logs a field only when its value
   changes, so a member who wants to keep a value that someone outside the
   roles saved saves the field twice: another value, then that one.
 - **`since`.** A date written YYYY-MM-DD, which starts at 00:00 in the
@@ -1434,20 +1445,30 @@ first save of a value and locks it from then on:
 - **Field types.** Text and Notes fields (dates included), dropdown, radio,
   yes/no, true/false, slider and SQL fields. Not a calc or a checkbox field,
   nor a field with `@CALCTEXT`, `@CALCDATE`, `@SETVALUE`, `@PREFILL` or
-  `@DOWNLOAD-COUNT`, whose value REDCap writes again by itself, nor a field with `@RICHTEXT` or an
+  `@DOWNLOAD-COUNT`, whose value REDCap writes again by itself, nor one with
+  `@LANGUAGE-CURRENT-FORM` or `@LANGUAGE-CURRENT-SURVEY`, into which REDCap
+  writes the language of the page, nor a field with `@RICHTEXT` or an
   ontology search (BioPortal, FHIR or any other service), whose widget keeps
-  its own copy of the text, nor a field another rule returns a value to.
+  its own copy of the text, nor a field another rule returns a value to. One
+  of those tag names inside another tag's quoted text, as in
+  `@PLACEHOLDER="see @SETVALUE note"`, is text and refuses nothing.
 - **On the page.** For everyone outside the roles the field keeps the value it
   opened with, with a short note under it. A text box is read-only, the radio
   buttons are disabled and their "reset" link hidden, the enhanced radio
-  buttons take no clicks, the slider is disabled, and the date picker is kept
+  buttons take no clicks, the slider is disabled and its "reset" link hidden,
+  and the date picker is kept
   from opening, with its button and REDCap's Today and Now buttons hidden.
   Nothing the form posts is disabled, since REDCap would then save the field
   blank: a dropdown or SQL field takes no clicks instead, and one whose saved
   code is no longer one of its choices gets that code back as an option. A
   change made with the keyboard or a script is undone, and the note says so.
   The lock touches only the field's own controls: a field embedded in its row
-  keeps its own buttons. A survey respondent holds no role. When the user
+  keeps its own buttons, and a locked field embedded in another field's row
+  has its links and buttons hidden there. A locked field that branching logic
+  hides keeps its value: when REDCap asks to erase the hidden field's value
+  and the person says OK, the lock puts the value back, the field stays
+  hidden, and the save writes it unchanged. On a survey shown one section
+  per page, each page locks the fields it shows. A survey respondent holds no role. When the user
   roles cannot be read the field is locked for everyone, and the note says the
   role could not be checked. When the saved value cannot be read the field is
   not locked; staff see a note saying so, and the audit still checks a change.
@@ -1470,11 +1491,24 @@ first save of a value and locks it from then on:
   first answer is locked as soon as it is saved, so after Save & Stay, or Next
   on a multi-page survey, going back finds it locked. The roles and `since`
   never reach the page.
-- **The browser only.** The Data Import Tool and the API are not stopped. What
-  they change is found afterwards from REDCap's log, by the audit of the next
-  save of the form that holds the field and by the Validation scan.
+- **The browser only.** The lock is put on when the page is built, and REDCap
+  gives a module no way to refuse a save once it is posted. So these are not
+  stopped: the Data Import Tool, the API and the REDCap Mobile App; a page
+  opened before the value was first saved (a second tab, or a second person
+  on the same record) and saved after it; a page opened before the `since`
+  day and saved on it; a browser that did not run the module's script; a
+  survey's Start Over; and the deletion of a form's data, of an event or of a
+  repeating instance. Each is found afterwards from REDCap's log, by the
+  audit of the next save of the form that holds the field and by the
+  Validation scan. The module does not write the locked value back: the lock
+  is worked out from the log, and a value put back on a wrong reading of it
+  would replace real data. The person whose save went over a locked value
+  is told on the next page REDCap shows them.
 - **Audited.** The post-save audit logs `type: writeonce` with reason `changed`
-  or `cleared`, plus `locked_at` and `changed_at`. The scan counts the findings
+  or `cleared`, plus `locked_at` and `changed_at`, and `locked_by` and
+  `changed_by`, the users who saved the locked value and the one over it
+  (keyed fingerprints of the names when the log keeps no record id; `locked_by`
+  is absent when the value was locked by `since`). The scan counts the findings
   as "Changed after it was locked" or "Cleared after it was locked" and names
   when the value was locked. Each record and event is read on its own, back to
   the row REDCap writes when it makes the record, which names the record id
@@ -1484,10 +1518,18 @@ first save of a value and locks it from then on:
   erase of all the project's records (Erase all data, or deleting every record
   when the project moves to production): every history starts after the
   newest one. A deletion of one form or one event at another event changes
-  nothing. The check reports a rule problem, never a pass, for each of the
+  nothing. A deletion of one form's data at this event, or of this event, is
+  read as a clearing of the fields it removed on the instance it names, by the
+  person who deleted: a locked field among them is "Cleared after it was
+  locked", and the other forms and instances of the event are read as before.
+  The Data Access Group line REDCap writes among a save's values is read
+  past. The check reports a rule problem, never a pass, for each of the
   following. A log that holds more rows
-  of the record and event than are read (5,000); a deletion of this event's
-  data or of one arm, a deletion at another event that the log does not
+  of the record and event than are read (5,000); a deletion of one form at
+  this event whose row names the instance but not the fields (for that
+  instance only); a deletion of this event whose row names no instance, a
+  deletion of this event's data the log describes in no way the check knows,
+  a deletion of one arm, a deletion at another event that the log does not
   describe as one form or one event, and in a project of several arms every
   deletion of the record, since the check cannot tell what it removed; a
   record whose log does not show it being made (one renamed while its saves
@@ -1495,7 +1537,7 @@ first save of a value and locks it from then on:
   renaming the record id field after records exist does this to every record,
   since the rows that made them name the field by its old name); a
   record whose creating row has its record id line after a Text or Notes
-  value; a save the log names no event for; a save the log
+  value; a save the log names no event for (for the fields it names); a save the log
   does not spell out; a value the log never shows saved; and roles that cannot
   be read when a change needs them. The log lists a save's fields in the data
   dictionary's order. A Notes value typed to look like the log line of another

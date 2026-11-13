@@ -426,7 +426,8 @@
       "needs": [],
       "dialog": false,
       "js": {"factories": {"writeonce": "QRIDWriteOnceInit"}},
-      "findingKeys": {"lockedAt": {"log": "locked_at", "scan": "asOf"}, "changedAt": {"log": "changed_at"}},
+      "findingKeys": {"lockedAt": {"log": "locked_at", "scan": "asOf"}, "changedAt": {"log": "changed_at"},
+                      "lockedBy": {"log": "locked_by"}, "changedBy": {"log": "changed_by"}},
       "lock": {"returnWhy": "@UVWRITEONCE cannot lock \"[{field}]\": the rule on \"{by}\" returns a value to it, which is written again on every save."},
       "scan": {"issueLabels": {"changed": "Changed after it was locked", "cleared": "Cleared after it was locked", "*": "Changed after it was locked"}}
     },

@@ -57,7 +57,11 @@ namespace ExternalModules {
          * entry whose fingerprint the log holds is not written again.
          */
         public function queryLogs($sql, $params) {
-            if (!preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+            // the roles kept for one record's write-once saves (WON-6): the project is named, so a scan run by the cron job reads them
+            if (preg_match('/^select fingerprint where message = \? and project_id = \? and (record|record_hmac) = \?$/', $sql, $mm)) {
+                if ((int) $params[1] !== 149) return new LogRows([]);
+                $params = [$params[0], $params[2]];
+            } elseif (!preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
                 throw new \Exception('unexpected log query: ' . $sql);
             }
             $rows = [];
@@ -444,11 +448,21 @@ namespace {
         'uw_consent:changed 2026-10-23 09:00 > 2026-10-23 09:20', 'uw_notes:cleared 2026-10-23 09:00 > 2026-10-23 09:20'], hits($d2));
     check('D2: the two findings left are the ones C3 logged, so the save writes no entry (PRF-9)', hits($m) === [], hits($m));
     $got = scan($D, $ROLE_IN);
-    check('D3: the scan agrees', $got === ['uw_consent:changed 2026-10-23 09:00', 'uw_notes:cleared 2026-10-23 09:00'], $got);
+    // WON-6: the import of the site was judged by C3's save, made out of the role, and the module log
+    // keeps that; the role given since does not clear it. (D2's $d2 judges over an empty module log,
+    // where the roles of today decide.)
+    check('D3: the scan reads the roles kept by the saves: the import of the site, judged out of the role, stays a finding', $got === [
+        'uw_consent:changed 2026-10-23 09:00', 'uw_notes:cleared 2026-10-23 09:00', 'uw_site:changed 2026-10-23 09:05'], $got);
     $p = $opened('d4', $D, $ROLE_OUT);
     check('D4: out of the role, the arm is locked at its new value', lockedOn($p) === ['uw_arm', 'uw_consent', 'uw_pain', 'uw_site', 'uw_yn'], lockedOn($p));
     $got = scan($D, $ROLE_OUT);
-    check('D4: the scan reads the roles as they are now, so the arm and the site count as changes again', $got === [
+    check('D4: out of the role again, the arm changed while in the role stays approved (WON-6)', $got === [
+        'uw_consent:changed 2026-10-23 09:00', 'uw_notes:cleared 2026-10-23 09:00', 'uw_site:changed 2026-10-23 09:05'], $got);
+    $kept = \ExternalModules\AbstractExternalModule::$stored;
+    \ExternalModules\AbstractExternalModule::$stored = [];
+    $got = scan($D, $ROLE_OUT);
+    \ExternalModules\AbstractExternalModule::$stored = $kept;
+    check('D4: ... while over a module log that kept nothing (log-values "off"), the roles of today decide: the arm counts as a change', $got === [
         'uw_arm:changed 2026-10-23 09:00', 'uw_consent:changed 2026-10-23 09:00', 'uw_notes:cleared 2026-10-23 09:00', 'uw_site:changed 2026-10-23 09:05'], $got);
 
     // ---- Section E: the Data Import Tool on a whole repeating event (review L14) -------------------
@@ -464,7 +478,8 @@ namespace {
     logSave('20261023095000', ['uw_consent' => '2026-10-09'], 'tester', 'XE-3', 382, 2);
     $got = scanAt($D, $ROLE_OUT, $prob);
     check('E2: the scan finds the import at instance 1; instance 2, first saved by the import, is locked by it', $got === [
-        'XE-3@380#1 uw_arm:changed 2026-10-23 09:00', 'XE-3@380#1 uw_consent:changed 2026-10-23 09:00', 'XE-3@380#1 uw_notes:cleared 2026-10-23 09:00',
+        'XE-3@380#1 uw_consent:changed 2026-10-23 09:00', 'XE-3@380#1 uw_notes:cleared 2026-10-23 09:00',
+
         'XE-3@380#1 uw_site:changed 2026-10-23 09:05', 'XE-3@382#1 uw_consent:changed 2026-10-23 09:40'] && $prob === [], [$got, $prob]);
     check('E3: instance 2 opens locked at the imported date', lockedOn(page(mod($D, $ROLE_OUT), 'XE-3', 382, 2)) === ['uw_consent']);
     $m = save($D, $ROLE_OUT, 'XE-3', 382, 1);
@@ -490,20 +505,29 @@ namespace {
     $m = save($D, $ROLE_OUT, 'XE-4');
     check('G4: Submit saves the second page: no finding and no rule problem', hits($m) === [] && problems($m) === [], [hits($m), problems($m)]);
 
-    // ---- Section H: a deletion of the form's data, which the check cannot place -------------------
+    // ---- Section H: a deletion of the form's data, read as a clearing of the fields its row names (WON-3) ----
     logSave('20261023101000', ['uw_consent' => '', 'uw_arm' => '', 'uw_free' => ''], 'tester', 'XE-4', 380, 1, 'DELETE', 'Delete all record data for single form');
     $D['XE-4'][380] = [];
     check('H1: after the deletion the form opens with nothing locked', lockedOn(page(mod($D, $ROLE_OUT), 'XE-4')) === []);
     $D['XE-4'][380] = ['uw_consent' => '2026-10-06'];
     logSave('20261023101500', ['uw_consent' => '2026-10-06', 'uv_writeonce_test_complete' => '0'], 'tester', 'XE-4');
     $m = save($D, $ROLE_OUT, 'XE-4');
-    $why = implode(' ', array_map(function ($p) { return (string) ($p['why'] ?? ''); }, problems($m)));
-    check('H2: the next save logs no finding, and a rule problem for the consent date that names the deletion', hits($m) === []
-        && strpos($why, 'the project log holds a deletion this check cannot place (part of the record, or one arm of it) — field not checked') !== false, [hits($m), problems($m)]);
+    // The DELETE row names the fields it removed, so it reads as a clearing of each by the person who
+    // deleted the form, who holds no role: the lock stays, and the next value is a change.
+    check('H2: the next save logs the consent date as changed and the arm as cleared, both locked at the survey\'s save, and no rule problem',
+        hits($m) === ['uw_arm:cleared 2026-10-23 10:00 > 2026-10-23 10:10', 'uw_consent:changed 2026-10-23 10:00 > 2026-10-23 10:15'] && problems($m) === [], [hits($m), problems($m)]);
     $got = scanAt($D, $ROLE_OUT, $prob);
-    check('H3: the scan lists XE-4\'s consent date as not checked, never as a pass or a finding',
-        !array_filter($got, function ($g) { return strpos($g, 'XE-4') === 0; })
-        && (bool) array_filter($prob, function ($u) { return in_array('uw_consent', $u['fields'], true) && strpos((string) ($u['why'] ?? ''), 'deletion') !== false; }), [$got, $prob]);
+    check('H3: the scan lists the same two findings for XE-4, and no rule problem',
+        array_values(array_filter($got, function ($g) { return strpos($g, 'XE-4') === 0; })) === ['XE-4@380#1 uw_arm:cleared 2026-10-23 10:00', 'XE-4@380#1 uw_consent:changed 2026-10-23 10:00']
+        && !array_filter($prob, function ($u) { return in_array('uw_consent', $u['fields'], true) || in_array('uw_arm', $u['fields'], true); }), [$got, $prob]);
+    // deleted by a person who holds the role, the lock is released and the next value is a first value
+    // Deleted by a person who holds the role (judged over an empty module log, so that the roles kept by
+    // the save above do not decide): the arm's lock is released; the consent date names no role.
+    $kept = \ExternalModules\AbstractExternalModule::$stored;
+    $m = firstSave($D, $ROLE_IN, 'XE-4');
+    check('H2: ... while a form deleted by a person who holds the role releases the arm\'s lock; the consent date names no role, so it stays a finding',
+        hits($m) === ['uw_consent:changed 2026-10-23 10:00 > 2026-10-23 10:15'] && problems($m) === [], [hits($m), problems($m)]);
+    \ExternalModules\AbstractExternalModule::$stored = $kept;
     $all = refusals(\ExternalModules\AbstractExternalModule::$stored);
     $want = array_merge($at(380), $at(382));
     sort($want);
@@ -674,7 +698,8 @@ namespace {
         check("I5b ($shape): the import after it is a change, locked at the save after the move", hits($m) === ['uw_consent:changed 2026-10-23 10:57 > 2026-10-23 10:58'], hits($m));
     }
     // I6: one instance of the repeating event deleted (XE-3, unscheduled_arm_1 instance 2). A description that
-    // says one event leaves the visit's history as it was; one with more after it cannot be placed.
+    // says one event or one form leaves the visit's history as it was, and the other instances of the
+    // repeating event too (WON-3); one with more after it cannot be placed.
     $inst = function ($descr) use (&$LOG, $KEEP, $D, $ROLE_OUT, &$prob) {
         $LOG = $KEEP;
         logSave('20261023110000', [], 'tester', 'XE-3', 382, 2, 'DELETE', $descr);
@@ -685,9 +710,10 @@ namespace {
     // H4's three wordings are the ones passed over at another event
     foreach (['Delete all record data for single event', 'Delete all record data for single form', 'Delete all data on event'] as $descr) {
         $got = $inst($descr);
-        check("H4, I6: an instance deleted at the repeating event, described as \"$descr\": the visit's findings stand, the repeating event is not checked",
+        check("H4, I6: an instance deleted at the repeating event, described as \"$descr\": the visit's findings stand, and so does the first instance's",
             $got === ['XE-3@380#1 uw_arm:changed 2026-10-23 09:00', 'XE-3@380#1 uw_consent:changed 2026-10-23 09:00',
-            'XE-3@380#1 uw_notes:cleared 2026-10-23 09:00', 'XE-3@380#1 uw_site:changed 2026-10-23 09:05'] && strpos($why($prob, 'uw_consent'), 'deletion') !== false, [$got, $prob]);
+            'XE-3@380#1 uw_notes:cleared 2026-10-23 09:00', 'XE-3@380#1 uw_site:changed 2026-10-23 09:05', 'XE-3@382#1 uw_consent:changed 2026-10-23 09:40'] && $prob === [], [$got, $prob]);
+
     }
     $got = $inst('Delete all record data for single event (instance 2)');
     check('I6: ... described with more after it (an instance number, say): every event of the record is not checked',
