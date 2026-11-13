@@ -26,8 +26,8 @@ use INSPIRE\UniversalValidator\Scan\SourceFence;
  * checked, after a save and in a scan alike: REDCap writes a save's log row
  * before it calls redcap_save_record, so a value the log does not show has a
  * gap in its history. A line that appears twice in one row, a value that
- * spans lines, and every field of a row with a line of no known shape are
- * ambiguous and never a stamp (parseDataValues).
+ * spans lines, and the fields of a row from the one read last before a line
+ * of no known shape are ambiguous and never a stamp (parseDataValues).
  *
  * PHP 7.4.
  */
@@ -43,6 +43,13 @@ final class ValueStamps
      * project holds a few records' log at a time, not the whole log.
      */
     const RECORDS_KEPT = 16;
+    /**
+     * A data_values line REDCap writes about the record, not about a field:
+     * a name in capitals between double underscores, which no field can have
+     * (a field name is lower case and starts with a letter). "__GROUPID__"
+     * is the record's data access group, logged with a save made in one.
+     */
+    const SYSTEM_LINE = "/^__[A-Z][A-Z0-9_]*__ = '.*',?$/D";
 
     /** @var ScanDb */
     private $db;
@@ -192,11 +199,20 @@ final class ValueStamps
      * data_values as instance => field => value. A field logged twice in one
      * row maps to null (ambiguous), and so does a value that spans lines (a
      * notes field): its later lines belong to it and are never read as
-     * entries, up to the line that ends with ',. A checkbox line and a blank
-     * line are skipped. Any other line means a value was split where this
-     * parse did not expect (a line of a notes value that ends with ',), so
-     * every field of the row maps to null rather than to a value read from
-     * the wrong place.
+     * entries, up to the line that ends with ',. A checkbox line, a blank
+     * line and a line REDCap writes about the record itself (SYSTEM_LINE:
+     * "__GROUPID__ = '12'" on a save made with a data access group) are
+     * skipped: none of them is a field, and none says a value was split.
+     *
+     * Any other line (a stray line) means a value was split where this parse
+     * did not expect: a line of a notes value that ends with ', closed the
+     * value early. The split value began no later than the entry read last
+     * before the stray line, so that entry and every entry after it map to
+     * null rather than to a value read from the wrong place. The entries
+     * before it keep their values (WIN-6): REDCap wrote them before the
+     * notes value began. An entry before the stray line that does not end
+     * with a comma, as every entry but a row's last does, is the split
+     * value's first line when it comes earlier, and the cut is made there.
      *
      * A notes value written to look like entries on every line is still read
      * as entries: data_values does not mark where a value ends. Doing that
@@ -208,7 +224,9 @@ final class ValueStamps
         if (!is_string($text) || $text === '') return $out;
         $instance = 1;
         $open = false;   // inside a value that spans lines
-        $stray = false;  // a line of no known shape
+        $entries = [];   // the fields in the order their lines were read
+        $bare = null;    // the first entry whose line does not end with a comma
+        $cut = null;     // the first entry a stray line makes ambiguous
         foreach (preg_split('/\r?\n/', $text) as $i => $line) {
             if ($open) {
                 if (preg_match("/',$/D", $line)) $open = false;
@@ -218,20 +236,30 @@ final class ValueStamps
                 $instance = max(1, (int) $m[1]);
                 continue;
             }
-            if (preg_match("/^([a-z][a-z0-9_]*) = '(.*)',?$/D", $line, $m)) {
+            if (preg_match("/^([a-z][a-z0-9_]*) = '(.*)'(,?)$/D", $line, $m)) {
                 $out[$instance][$m[1]] = (isset($out[$instance]) && array_key_exists($m[1], $out[$instance])) ? null : $m[2];
+                if ($m[3] === '' && $bare === null) $bare = count($entries);
+                $entries[] = $m[1];
                 continue;
             }
             if (preg_match("/^([a-z][a-z0-9_]*) = '/", $line, $m)) {
                 $out[$instance][$m[1]] = null;
+                $entries[] = $m[1];
                 $open = true;
                 continue;
             }
-            if ($line === '' || preg_match('/^[a-z][a-z0-9_]*\([^)]*\) = (?:checked|unchecked),?$/D', $line)) continue;
-            $stray = true;
+            if ($line === '' || preg_match('/^[a-z][a-z0-9_]*\([^)]*\) = (?:checked|unchecked),?$/D', $line)
+                    || preg_match(self::SYSTEM_LINE, $line)) {
+                continue;
+            }
+            if ($cut === null) {
+                $cut = max(0, count($entries) - 1);
+                if ($bare !== null && $bare < $cut) $cut = $bare;
+            }
         }
-        if ($stray) {
-            foreach ($out as $inst => $fields) foreach ($fields as $f => $v) $out[$inst][$f] = null;
+        if ($cut !== null) {
+            // One instance per row, so a field name is one entry of it.
+            foreach (array_slice($entries, $cut) as $f) $out[$instance][$f] = null;
         }
         return $out;
     }

@@ -85,6 +85,42 @@ check('parse: an instance line past the first is a stray line, so the row is amb
 check('parse: a notes line ending in a quote hides where a value ends: the row is ambiguous',
     ValueStamps::parseDataValues("notes = 'He said 'hi'\nw_past = '2026-10-09'\nend',\nwt = '1'")
     === [1 => ['notes' => null, 'w_past' => null, 'wt' => null]]);
+// WIN-1: the line REDCap logs for a save made in a data access group is not a
+// field and not a stray line. It voided every stamp of the row.
+check('parse: the data access group line is skipped (WIN-1)',
+    ValueStamps::parseDataValues("record_id = '5',\nappt_date = '2026-11-20',\n__GROUPID__ = '12'")
+    === [1 => ['record_id' => '5', 'appt_date' => '2026-11-20']]);
+check('parse: ... first in the row, blank, or under an instance line',
+    ValueStamps::parseDataValues("__GROUPID__ = '',\nappt_date = '2026-11-20'") === [1 => ['appt_date' => '2026-11-20']]
+    && ValueStamps::parseDataValues("[instance = 2],\n__GROUPID__ = '12',\nappt_date = '2026-11-20'") === [2 => ['appt_date' => '2026-11-20']]);
+check('parse: ... and so is any line named in capitals between double underscores',
+    ValueStamps::parseDataValues("appt_date = '2026-11-20',\n__LOCKED_2__ = 'x'") === [1 => ['appt_date' => '2026-11-20']]);
+check('parse: a lower-case or half-shaped name is still a stray line',
+    ValueStamps::parseDataValues("appt_date = '2026-11-20',\n__groupid__ = '12'") === [1 => ['appt_date' => null]]
+    && ValueStamps::parseDataValues("appt_date = '2026-11-20',\n__GROUPID = '12'") === [1 => ['appt_date' => null]]
+    && ValueStamps::parseDataValues("appt_date = '2026-11-20',\n__GROUPID__ = 12") === [1 => ['appt_date' => null]]);
+check('parse: a system line inside a value that spans lines belongs to the value',
+    ValueStamps::parseDataValues("notes = 'a\n__GROUPID__ = '12'\nb',\nappt_date = '2026-11-20'")
+    === [1 => ['notes' => null, 'appt_date' => '2026-11-20']]);
+// WIN-6: a notes line that ends with ', closes the value early and leaves a
+// stray line. The fields REDCap wrote before the notes field keep their stamps.
+check('parse: the fields before a split notes value keep their values (WIN-6)',
+    ValueStamps::parseDataValues("appt_date = '2026-11-20',\nnotes = 'he said 'no',\nand left'")
+    === [1 => ['appt_date' => '2026-11-20', 'notes' => null]]);
+check('parse: ... the split value and every field after it do not',
+    ValueStamps::parseDataValues("appt_date = '2026-11-20',\nnotes = 'he said 'no',\nand left',\nw_past = '2026-10-09',\nwt = '1'")
+    === [1 => ['appt_date' => '2026-11-20', 'notes' => null, 'w_past' => null, 'wt' => null]]);
+check('parse: ... also when the value began as one that spans lines',
+    ValueStamps::parseDataValues("appt_date = '2026-11-20',\nnotes = 'first\nhe said 'no',\nand left',\nwt = '1'")
+    === [1 => ['appt_date' => '2026-11-20', 'notes' => null, 'wt' => null]]);
+check('parse: ... and a checkbox or system line between does not move the cut',
+    ValueStamps::parseDataValues("appt_date = '2026-11-20',\nnotes = 'x',\nsym(2) = checked,\n__GROUPID__ = '1',\nstray")
+    === [1 => ['appt_date' => '2026-11-20', 'notes' => null]]);
+check('parse: an earlier entry with no comma is where the split began',
+    ValueStamps::parseDataValues("appt_date = '2026-11-20',\nnotes = 'he said 'hi'\nw_past = '2026-10-09',\nend',\nwt = '1'")
+    === [1 => ['appt_date' => '2026-11-20', 'notes' => null, 'w_past' => null, 'wt' => null]]);
+check('parse: a stray line before any entry leaves no value',
+    ValueStamps::parseDataValues("stray\nappt_date = '2026-11-20'") === [1 => ['appt_date' => null]]);
 check('parse: a blank line is not a stray line', ValueStamps::parseDataValues("visit = '2026-10-01',\n\nwt = '1'")
     === [1 => ['visit' => '2026-10-01', 'wt' => '1']]);
 check('parse: nothing', ValueStamps::parseDataValues('') === [] && ValueStamps::parseDataValues(null) === []);
@@ -126,6 +162,17 @@ $db->rows = [$row(1, '1', 351, '20261001090000', "visit = '2026-10-01'"),
 $s = ValueStamps::forProject($db, 149, $utc, $utc);
 check('an ambiguous newest row is never a stamp, even over an older one that matches',
     $s->savedAt('1', 351, 1, 'visit', '2026-10-01') === ['state' => 'changed', 'at' => null]);
+
+// ---- a save made in a data access group (WIN-1), a split notes value (WIN-6) ------
+$db = new FakeLog();
+$db->rows = [$row(1, '5', 351, '20261101090000', "record_id = '5',\nappt_date = '2026-11-20',\n__GROUPID__ = '12'"),
+             $row(2, '6', 351, '20261102090000', "appt_date = '2026-11-21',\nnotes = 'he said 'no',\nand left',\nwt = '4'")];
+$s = ValueStamps::forProject($db, 149, $utc, $utc);
+check('a save logged with its data access group is a stamp (WIN-1)',
+    $s->savedAt('5', 351, 1, 'appt_date', '2026-11-20') === ['state' => 'logged', 'at' => '2026-11-01 09:00:00']);
+check('a field logged before a split notes value is a stamp (WIN-6)',
+    $s->savedAt('6', 351, 1, 'appt_date', '2026-11-21') === ['state' => 'logged', 'at' => '2026-11-02 09:00:00']);
+check('... a field logged after it is not', $s->savedAt('6', 351, 1, 'wt', '4') === ['state' => 'changed', 'at' => null]);
 
 // ---- time zones ------------------------------------------------------------------
 $db = new FakeLog();
