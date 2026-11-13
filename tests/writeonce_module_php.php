@@ -506,6 +506,18 @@ namespace {
     $ms->scanProject(PID);
     check('roles kept: the scan keeps nothing itself', count($roleNotes($ms)) === 2
         && (bool) preg_grep('/^select fingerprint where message = \? and project_id = \? and record = \?$/', $ms->queryLogsAsked));
+    $ms0 = $again(null, null);
+    $ms0->scanProject(PID);
+    check('roles kept: ... also when it judged by the roles of today', $roleNotes($ms0) === []);
+    // REDCap compares user names without letter case, and so does the entry
+    $UP = $LOG;
+    $UP[1][5] = 'DM';
+    $mu = mod($DICT, $NOW, 'nurse', history($UP, $FIELDS), $NODM);
+    $mu->queryLogsOn = true;
+    $mu->systemSettings = $m1->systemSettings;
+    $mu->logCalls = array_values(array_filter($m1->logCalls, function ($c) { return $c[0] === 'uvalidate-writeonce-role'; }));
+    $mu->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
+    check('roles kept: the entry is found whatever letter case the log writes the user name in', !isset(woBy($mu)['arm']) && count($roleNotes($mu)) === 2);
     $m3 = $again(null, $NODM);
     $m3->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
     check('roles kept: with nothing kept, the roles of today decide, as before', (woBy($m3)['arm']['reason'] ?? null) === 'changed' && $roleNotes($m3)[0]['held'] === '0');

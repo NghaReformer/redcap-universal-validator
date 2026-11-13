@@ -4440,15 +4440,10 @@ class UniversalValidator extends AbstractExternalModule
      * REDCap is drawing are locked here (surveyPageFields): a field of
      * another page is not on this one, and the saved code of a dropdown
      * there (writeonceSaved) is not sent to it (WON-10).
-     *
-     * The fields left open for this viewer (a blank or a code, no role) are
-     * kept for the page too (writeonceOpenFields, WON-1): the page asks again
-     * whether one of them was locked since it was built.
      */
     private function pageWriteonce(array $rules, $pid, $context, $record, $instrument, $event_id, $repeat_instance)
     {
         $out = [];
-        $this->writeonceOpenFields = [];
         $onPage = false;   // the fields of this survey page, null for every field; false until asked
         $codes = null;
         $user = null;
@@ -4501,11 +4496,7 @@ class UniversalValidator extends AbstractExternalModule
                 if (is_array($onPage) && !isset($onPage[$f])) continue;   // on another page of the survey
                 if ((isset($resolution[$f]) ? $resolution[$f] : 'ok') !== 'ok') continue;
                 $v = isset($values[$f]) ? $values[$f] : '';
-                if (is_array($v)) continue;
-                if (trim((string) $v, " \t\r\n") === '' || self::isMissingCode($v, $codes)) {
-                    $this->writeonceOpenFields[(string) $f] = true;
-                    continue;
-                }
+                if (is_array($v) || trim((string) $v, " \t\r\n") === '' || self::isMissingCode($v, $codes)) continue;
                 $locked[] = $f;
             }
             if (!$locked) continue;
@@ -4875,8 +4866,6 @@ class UniversalValidator extends AbstractExternalModule
     private $clockOverride = null;
     /** Tests set a log reader here (ValueStamps or an object with savedAt()). */
     private $valueStampsOverride = null;
-    /** The write-once fields the page being built leaves open for its viewer (pageWriteonce): field => true. */
-    private $writeonceOpenFields = [];
     /** Tests set the @UVWRITEONCE log reader here (ValueHistory, an object with saves() and logTimeOf(), or false). */
 
     private $valueHistoryOverride = null;
@@ -11412,11 +11401,10 @@ class UniversalValidator extends AbstractExternalModule
      * (missingLogged), which is said of the server, not of a project, and the
      * clock of the scan record being judged and whether it changed since
      * planning (judgedClock, judgedSettled), which durableEvaluateRecord()
-     * sets and clears around that one record, and the write-once fields the
-     * page being built leaves open (writeonceOpenFields).
+     * sets and clears around that one record.
 
      */
-    const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave', 'writeonceOpenFields',
+    const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave',
         'returnBarred', 'valueHistoryOverride', 'roleBookOverride', 'auditPid', 'uniqueAuditPlan', 'uniqueAuditReads',
         'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveStaffLookup', 'liveReadSkipped'];
 
