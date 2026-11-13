@@ -239,6 +239,40 @@ The module's database user needs a plain `CREATE` grant to make them and
 `CREATE ROUTINE` do not suffice; the scan page's health check says so by name
 if the grant is missing.
 
+### REDCap internals this module reads
+
+Wherever REDCap has a documented method the module uses it: `REDCap::getData`,
+`getDataDictionary`, `getRecordIdField`, `getEventNames`, `getGroupNames`,
+`getUserRights`, `getInstrumentEventMappings`, `getRepeatingFormsEvents` and
+`saveData`, and the framework's `query`, `log`, `queryLogs` and settings
+methods. What follows has no documented method, or none that is fast enough
+on a large project, so the module reads it directly. Every statement is a
+`SELECT` with bound values; the module writes to no `redcap_` table. A REDCap
+upgrade that renames one of these is what would break the feature named
+beside it, and each read fails towards "not checked", never towards a wrong
+answer.
+
+| What is read | Used by | Why not a method |
+|---|---|---|
+| `redcap_metadata` (`misc`, counted for one project) | Every form and survey page | One indexed count says whether any field carries a module tag, so a project with no rule skips the dictionary read. |
+| `redcap_projects` (`data_table`, `log_event_table`) | Validation scan, value index, live lookups, `@UVWRITEONCE`, `@UVWINDOW` | `REDCap::getDataTable()` and `REDCap::getLogEventTable()` are asked first where the REDCap has them. The column is read only when they give no usable answer. The name is checked against `redcap_data[0-9]*` or `redcap_log_event[0-9]*` before it is used. |
+| `redcap_data` and its numbered siblings | Validation scan, `@UVUNIQUE`, `@UVEXISTS`, value index | `REDCap::getData` loads whole records. A duplicate check over 400,000 records needs one indexed read of one field. |
+| `redcap_record_list`, `redcap_record_counts` | Validation scan | The list and count of records, a page at a time. |
+| `redcap_log_event` and its numbered siblings (`data_values`, `pk`, `ts`, `user`, `event`, `description`) | Validation scan (what changed since a run began), `@UVWRITEONCE` (the first saved value), `@UVWINDOW` rules against today (when a value was saved) | REDCap has no method for "what was this field's earlier value", "when was it saved" or "which records changed after this log entry". The module parses `data_values` in the format REDCap writes (`field = 'value'`, one per line). |
+| `redcap_user_rights`, `redcap_user_roles`, `redcap_user_information` | `@UVWRITEONCE` roles | Which role a user holds in the project, by role name. |
+| `redcap_data_access_groups` | Validation scan | The group a scan is confined to. |
+| `redcap_locking_data`, `redcap_locking_records` | Returned values (`@UVRANGE`, `@UVEXISTS` outputs) | The page does not fill returned fields on a locked form or record. |
+| `new \Project($pid)`, `$GLOBALS['Proj']` | Events, forms and repeating instruments of the project | The project object REDCap itself builds for the request; read, never changed. |
+| `$GLOBALS['super_user']` | Scan page | Whether the viewer is an administrator, where the framework's user object does not say. |
+
+Two more things an administrator may want to know. The value index writes its
+own tables with `INSERT ... ON DUPLICATE KEY UPDATE ... VALUES()`, which MySQL
+8.0.20 marks as deprecated and still runs; the replacement syntax does not
+exist in MariaDB or MySQL 5.7, which REDCap also supports. And the returned
+values of `@UVRANGE` and `@UVEXISTS` are written with `REDCap::saveData` from
+inside the `redcap_save_record` hook; the module marks its own save so that it
+does not run again for it.
+
 ### A schema change blocks the request that makes it
 
 The module installs or upgrades its schema inside the request that asked for
