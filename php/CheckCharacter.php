@@ -1482,16 +1482,85 @@ class CheckCharacter
      * \9, or a character-class range that starts or ends at \d, \w or \s
      * ([\d-z]). PCRE runs the first three and refuses the last two; a browser
      * refuses the first two and reads the others as other characters, so the
-     * value would validate in one runtime and not the other. Twin of
-     * QRID_pcreVerbOrRef (js).
+     * value would validate in one runtime and not the other.
+     *
+     * Also what both engines run and read differently (review 2026-11-13,
+     * VAL-5): a back-reference \1 to \7, which matches nothing in a browser
+     * when its group took no part and fails in PCRE ((A)?\1B on "B"), and is
+     * an octal character to one engine where it is a reference to the other;
+     * \x without two hex digits (the letter x to a browser, a control
+     * character to PCRE); \a and \e (those letters to a browser, a bell and
+     * an escape character to PCRE); and \c without a letter after it.
+     * Twin of QRID_pcreVerbOrRef (js).
      */
     public static function usesPcreVerbOrRef($pattern)
     {
         $p = (string) $pattern;
         if (strpos(preg_replace('/\\\\./s', '', $p), '(*') !== false) return true;   // escaped characters dropped
         $d = str_replace('\\\\', '', $p);                                          // escaped-backslash pairs dropped
-        if (preg_match('/\\\\k[\'{]|\\\\o\{|\\\\[89]/', $d)) return true;
+        if (preg_match('/\\\\k[\'{]|\\\\o\{|\\\\[1-9]|\\\\x(?![0-9A-Fa-f]{2})|\\\\[ae]|\\\\c(?![A-Za-z])/', $d)) return true;
         return self::shorthandRange($d);
+    }
+
+    /**
+     * Whether $pattern has a quantifier where JavaScript allows none (review
+     * 2026-11-13, VAL-4): a possessive one (a "+" after a quantifier, as in
+     * [0-9]{2}+ or A?+), one on a lookbehind ((?<=A)+), on "^", "$", \b or
+     * \B, after a lazy quantifier, or with nothing before it. PCRE runs most
+     * of these and a browser refuses the whole pattern, so the rule saved, the
+     * field went unchecked while it was typed, a hard block never held, and
+     * the check after the save still filed findings. Run after the
+     * empty-class gate, so a "]" always closes a class here.
+     * Twin of QRID_jsRefusedQuantifier (js).
+     */
+    public static function usesJsRefusedQuantifier($pattern)
+    {
+        $p = (string) $pattern;
+        $n = strlen($p);
+        $groups = [];            // one entry per open group: is it a lookbehind
+        $inClass = false;
+        // what stands before the current position: "none", "atom", "assert",
+        // "behind" (a lookbehind just closed), "quant" or "lazy"
+        $before = 'none';
+        for ($i = 0; $i < $n; $i++) {
+            $c = $p[$i];
+            if ($inClass) {
+                if ($c === '\\') $i++;
+                elseif ($c === ']') { $inClass = false; $before = 'atom'; }
+                continue;
+            }
+            if ($c === '\\') {
+                $e = $i + 1 < $n ? $p[$i + 1] : '';
+                $i++;
+                $before = ($e === 'b' || $e === 'B') ? 'assert' : 'atom';
+                continue;
+            }
+            if ($c === '[') { $inClass = true; continue; }
+            if ($c === '(') {
+                $look = false;
+                if (preg_match('/\G\(\?(<[=!]|[:=!]|<[A-Za-z_][A-Za-z0-9_]*>)/', $p, $m, 0, $i)) {
+                    $look = ($m[1] === '<=' || $m[1] === '<!');
+                    $i += strlen($m[0]) - 1;
+                }
+                $groups[] = $look;
+                $before = 'none';
+                continue;
+            }
+            if ($c === ')') {
+                $before = array_pop($groups) ? 'behind' : 'atom';
+                continue;
+            }
+            if ($c === '|') { $before = 'none'; continue; }
+            if ($c === '^' || $c === '$') { $before = 'assert'; continue; }
+            $q = ($c === '*' || $c === '+' || $c === '?') ? 1 : 0;
+            if (!$q && $c === '{' && preg_match('/\G\{[0-9]+(?:,[0-9]*)?\}/', $p, $m, 0, $i)) $q = strlen($m[0]);
+            if (!$q) { $before = 'atom'; continue; }       // a literal, a "." or a "{" that is not a quantifier
+            if ($before === 'quant' && $c === '?') { $before = 'lazy'; continue; }
+            if ($before !== 'atom') return true;
+            $before = 'quant';
+            $i += $q - 1;
+        }
+        return false;
     }
 
     /**
@@ -1622,7 +1691,8 @@ class CheckCharacter
             if (self::usesPcreVerbOrRef($pattern)) {
                 $why = 'the format pattern uses PCRE syntax that a browser cannot run or reads as other '
                     . 'characters: a verb such as (*ACCEPT), a named back-reference \\k\'name\' or \\k{name}, '
-                    . 'an octal \\o{...}, a reference \\8 or \\9, or a class range that starts or ends at \\d, '
+                    . 'an octal \\o{...}, a back-reference \\1 to \\9, \\x without two hex digits, \\a, \\e, \\c '
+                    . 'without a letter, or a class range that starts or ends at \\d, '
                     . '\\w or \\s, such as [\\d-z]. Use explicit character classes such as [A-Z] or [0-9] instead.';
                 return null;
             }
@@ -1656,6 +1726,16 @@ class CheckCharacter
                     . '[0-9]*[0-9]*, .*-.*-.*, or A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}) — rewrite it so no ambiguous '
                     . 'group repeats, no two unbounded quantifiers overlap, and no long run of bounded '
                     . 'quantifiers shares a character class (use a disjoint class or a fixed length).';
+                return null;
+            }
+            if (self::usesJsRefusedQuantifier($pattern)) {
+                // After the catastrophic gate, which already refuses a++ and
+                // a*+ and words them as what they are in a browser.
+                $why = 'the format pattern has a quantifier where JavaScript allows none: a possessive '
+                    . 'quantifier (a "+" after another quantifier, as in [0-9]{2}+ or A?+), a quantifier on a '
+                    . 'lookbehind such as (?<=A)+, on ^, $, \\b or \\B, after a lazy quantifier, or with nothing '
+                    . 'before it. PCRE runs these and a browser refuses the whole pattern, so the field would '
+                    . 'not be checked while it is typed. Remove the extra quantifier.';
                 return null;
             }
         }
@@ -1702,7 +1782,8 @@ class CheckCharacter
      * ranges; inside one its ranges join the class, a capital as the
      * complement ranges, so [^\D] and [\W-] keep their meaning. \b and \B
      * become lookarounds over the ASCII word characters ([\b] stays the
-     * backspace it is in both engines). Every other escape is copied as written.
+     * backspace it is in both engines). \uHHHH, which the browser reads and
+     * PCRE refuses, becomes \x{HHHH}. Every other escape is copied as written.
      */
     private static function asciiShorthands($body)
     {
@@ -1724,6 +1805,10 @@ class CheckCharacter
                     $out .= $e === 'b'
                         ? '(?:(?<=' . $w . ')(?!' . $w . ')|(?<!' . $w . ')(?=' . $w . '))'
                         : '(?:(?<=' . $w . ')(?=' . $w . ')|(?<!' . $w . ')(?!' . $w . '))';
+                } elseif ($e === 'u' && preg_match('/\G[0-9A-Fa-f]{4}/', $body, $m, 0, $i + 1)) {
+                    // JavaScript's \uHHHH, which PCRE does not have, is its \x{HHHH}
+                    $out .= '\\x{' . $m[0] . '}';
+                    $i += 4;
                 } else {
                     $out .= '\\' . $e;
                     // the character a \c names is part of the escape, whatever it is

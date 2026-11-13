@@ -1076,11 +1076,19 @@ check('H-1 a rule using them is still accepted when the shapes are disjoint',
 // A pooled parser only tries a format at its declared lengths, so alternates
 // with no length in common never compete and need no proof - an unanalysable
 // pattern is fine there...
+// (The unanalysable pattern was a backreference until the gate refused those
+// outright, review 2026-11-13 VAL-5; a quantifier past the reader's cap is one
+// the gate still admits.)
 check('H-1 pooled is not refused for an unanalysable pattern at a different length',
     $altErr([
         ['label' => 'GHIT',   'pattern' => 'FC[1-9]-[0-9]{4}', 'algorithm' => 'none', 'lengths' => [8]],
-        ['label' => 'MINTED', 'pattern' => '([A-Z])\1[1-9]-[0-9]{5}', 'algorithm' => $MOD, 'lengths' => [9]],
+        ['label' => 'MINTED', 'pattern' => '[A-Z]{2,300}[1-9]-[0-9]{5}', 'algorithm' => $MOD, 'lengths' => [9]],
     ]) === '');
+check('VAL-5: a backreference in an alternate is refused by the pattern gate',
+    strpos($altErr([
+        ['label' => 'GHIT',   'pattern' => 'FC[1-9]-[0-9]{4}', 'algorithm' => 'none', 'lengths' => [8]],
+        ['label' => 'MINTED', 'pattern' => '([A-Z])\1[1-9]-[0-9]{5}', 'algorithm' => $MOD, 'lengths' => [9]],
+    ]), 'MINTED: the format pattern uses PCRE syntax that a browser cannot run or reads as other characters') !== false);
 check('H-1 ... a pooled overlap at a shared length is refused by the probe',
     strpos($altErr([
         ['label' => 'GHIT',   'pattern' => '[0-9A-Z]{9}',      'algorithm' => 'none', 'lengths' => [9]],
@@ -1091,7 +1099,7 @@ check('H-1 ... a pooled overlap at a shared length is refused by the probe',
 check('H-1 pooled: an unanalysable pattern at a shared length is refused',
     strpos($altErr([
         ['label' => 'LEGACY', 'pattern' => '[0-9A-Z]{9}',          'algorithm' => 'none', 'lengths' => [9]],
-        ['label' => 'MINTED', 'pattern' => '([A-Z])\1[0-9A-Z]{7}', 'algorithm' => $MOD,   'lengths' => [9]],
+        ['label' => 'MINTED', 'pattern' => '[A-Z]{2,300}[0-9A-Z]{7}', 'algorithm' => $MOD, 'lengths' => [9]],
     ]), 'too complex to prove') !== false);
 // The reviewer's F2: a format-only family wholly inside a check-bearing one
 // would be dead - every legacy value owned, and failing, by the check.

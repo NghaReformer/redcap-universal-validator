@@ -1037,13 +1037,67 @@ function QRID_pcreOnly(p){
    \o{...}, a reference \8 or \9, or a character-class range that starts or ends
    at \d, \w or \s ([\d-z]). PCRE runs the first three and refuses the last
    two; this engine refuses the first two and reads the others as other
-   characters. Twin of CheckCharacter::usesPcreVerbOrRef (php). */
+   characters. Also what both engines run and read differently (review
+   2026-11-13, VAL-5): a back-reference \1 to \7, which matches nothing here
+   when its group took no part and fails in PCRE ((A)?\1B on "B"), and is an
+   octal character to one engine where it is a reference to the other; \x
+   without two hex digits (the letter x here, a control character to PCRE); \a
+   and \e (those letters here, a bell and an escape character to PCRE); and \c
+   without a letter after it. Twin of CheckCharacter::usesPcreVerbOrRef (php). */
 function QRID_pcreVerbOrRef(p){
   var src = String(p);
   if(src.replace(/\\[\s\S]/g, "").indexOf("(*") !== -1) return true;   /* escaped characters dropped */
   var d = src.replace(/\\\\/g, "");                                       /* escaped-backslash pairs dropped */
-  if(/\\k['{]|\\o\{|\\[89]/.test(d)) return true;
+  if(/\\k['{]|\\o\{|\\[1-9]|\\x(?![0-9A-Fa-f]{2})|\\[ae]|\\c(?![A-Za-z])/.test(d)) return true;
   return QRID_shorthandRange(d);
+}
+/* A quantifier where JavaScript allows none (review 2026-11-13, VAL-4): a
+   possessive one (a "+" after a quantifier, as in [0-9]{2}+ or A?+), one on a
+   lookbehind ((?<=A)+), on "^", "$", \b or \B, after a lazy quantifier, or
+   with nothing before it. PCRE runs most of these and new RegExp throws, so
+   the rule saved on the server, the field went unchecked while it was typed, a
+   hard block never held, and the check after the save still filed findings.
+   Run after the empty-class gate, so a "]" always closes a class here.
+   Twin of CheckCharacter::usesJsRefusedQuantifier (php). */
+function QRID_jsRefusedQuantifier(src){
+  var p = String(src), n = p.length, groups = [], inClass = false, m;
+  /* what stands before the current position: "none", "atom", "assert",
+     "behind" (a lookbehind just closed), "quant" or "lazy" */
+  var before = "none";
+  for(var i = 0; i < n; i++){
+    var c = p.charAt(i);
+    if(inClass){
+      if(c === "\\") i++;
+      else if(c === "]"){ inClass = false; before = "atom"; }
+      continue;
+    }
+    if(c === "\\"){
+      var e = p.charAt(i + 1);
+      i++;
+      before = (e === "b" || e === "B") ? "assert" : "atom";
+      continue;
+    }
+    if(c === "["){ inClass = true; continue; }
+    if(c === "("){
+      var look = false;
+      m = /^\(\?(<[=!]|[:=!]|<[A-Za-z_][A-Za-z0-9_]*>)/.exec(p.slice(i));
+      if(m){ look = (m[1] === "<=" || m[1] === "<!"); i += m[0].length - 1; }
+      groups.push(look);
+      before = "none";
+      continue;
+    }
+    if(c === ")"){ before = groups.pop() ? "behind" : "atom"; continue; }
+    if(c === "|"){ before = "none"; continue; }
+    if(c === "^" || c === "$"){ before = "assert"; continue; }
+    var q = (c === "*" || c === "+" || c === "?") ? 1 : 0;
+    if(!q && c === "{" && (m = /^\{[0-9]+(?:,[0-9]*)?\}/.exec(p.slice(i)))) q = m[0].length;
+    if(!q){ before = "atom"; continue; }                 /* a literal, a "." or a "{" that is not a quantifier */
+    if(before === "quant" && c === "?"){ before = "lazy"; continue; }
+    if(before !== "atom") return true;
+    before = "quant";
+    i += q - 1;
+  }
+  return false;
 }
 /* Whether a character class in d has a range that starts or ends at \d, \w or
    \s (or their capitals). A "-" first or last in the class, or escaped, is a
@@ -1435,7 +1489,8 @@ function QRID_gatePattern(raw, label){
   if(QRID_pcreVerbOrRef(src)){
     return { re: null, error: pre + "idPattern" + " uses PCRE syntax that a browser cannot run or reads as " +
       "other characters: a verb such as (*ACCEPT), a named back-reference \\k'name' or \\k{name}, an octal " +
-      "\\o{...}, a reference \\8 or \\9, or a class range that starts or ends at \\d, \\w or \\s, such as " +
+      "\\o{...}, a back-reference \\1 to \\9, \\x without two hex digits, \\a, \\e, \\c without a letter, or a " +
+      "class range that starts or ends at \\d, \\w or \\s, such as " +
       "[\\d-z]. Use explicit character classes such as [A-Z] or [0-9] instead." };
   }
   if(/\[\^?\]/.test(src.replace(/\\[\s\S]/g, ""))){
@@ -1463,6 +1518,14 @@ function QRID_gatePattern(raw, label){
       "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, .*-.*-.*, or " +
       "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}). Rewrite it so no ambiguous group repeats, no two " +
       "unbounded quantifiers overlap, and no long run of bounded quantifiers shares a character class." };
+  }
+  if(QRID_jsRefusedQuantifier(src)){
+    /* after the catastrophic gate, which already refuses a++ and a*+ */
+    return { re: null, error: pre + "idPattern" + " has a quantifier where JavaScript allows none: a possessive " +
+      "quantifier (a \"+\" after another quantifier, as in [0-9]{2}+ or A?+), a quantifier on a lookbehind " +
+      "such as (?<=A)+, on ^, $, \\b or \\B, after a lazy quantifier, or with nothing before it. PCRE runs " +
+      "these and a browser refuses the whole pattern, so the field would not be checked while it is typed. " +
+      "Remove the extra quantifier." };
   }
   try {
     var body = src.replace(/^\^/, "").replace(/\$$/, "");
