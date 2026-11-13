@@ -557,7 +557,7 @@ check('AST-1: a refused value does not hide the next tag', count($d) === 2 && $d
 // AST-3: the line is lexed and parsed once. Each word boundary used to parse
 // the prefix again from its start: 486 characters took 45 ms, and one
 // annotation of 120 such tags 4.7 s.
-$cond = substr(str_repeat('1=1 or ', 70), 0, 486);
+$cond = '[a]=1 or ' . substr(str_repeat('1=1 or ', 70), 0, 476);
 $cond = preg_replace('/ or *$/', '', $cond);
 $p = Logic::parsePrefix($cond);
 check('AST-3: a condition at the length cap is read whole', $p['length'] === strlen($cond) && !$p['continues'] && $p['extra'] === null);
@@ -567,9 +567,61 @@ $f = AnnotationRules::parseAllTags($ann);
 $took = microtime(true) - $t0;
 check('AST-3: 120 unquoted tags of 480 characters each parse in well under a second (' . round($took * 1000) . ' ms)',
     count($f) === 120 && !isset($f[0]['error']) && $f[119]['assert'] === $cond && $took < 1.0);
+// Nothing past the 500 characters a condition may hold is read as one: the
+// longest condition found ends inside them, and what follows goes on with "or".
+$p = Logic::parsePrefix(str_repeat('1=1 or ', 200) . '1=1');
+check('AST-3: a line longer than any condition is read up to the length cap only', $p['length'] > 400 && $p['length'] <= 500 && $p['continues']);
 $real = "[visit_date] >= [enrol_date] and [visit_date] <= [exit_date] and ([arm] = '1' or [arm] = '2') and [age] >= 18";
 $p = Logic::parsePrefix($real . ' and');
 check('AST-3: the longest complete condition before a dangling "and" is found', $p['length'] === strlen($real) && $p['continues']);
+// AST-8: what @UVASSERT accepted without a word.
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"1=0","blockSave":"hard"}');
+check('AST-8: an assert that names no field is refused (1=0 held every save)',
+    isset($f[0]['error']) && strpos($f[0]['error'], 'names no [field]') !== false);
+$f = AnnotationRules::parseAllTags("@UVASSERT=\"'a'<>'b' or 2>1\"");
+check('AST-8: so is one of literals only, whatever its shape', isset($f[0]['error']) && strpos($f[0]['error'], 'names no [field]') !== false);
+$f = AnnotationRules::parseAllTags('@UVASSERT="[a]>=1 or 1=0"');
+check('AST-8: a literal comparison beside a field is still accepted', !isset($f[0]['error']) && $f[0]['assert'] === '[a]>=1 or 1=0');
+$f = AnnotationRules::parseAllTags('@UVREQUIRED={"when":"1=1"}');
+check('AST-8: a "when" of literals is untouched', !isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]>=[b]","exact":true}');
+check('AST-8: "exact" on a test with no = or <> is refused', isset($f[0]['error']) && strpos($f[0]['error'], '"exact" makes = and <>') !== false);
+foreach (['[a]=[b]', '[a]<>[b]', '[a]!=[b]', '[a]>=[b] and not([c]=[d])'] as $cond1) {
+    $f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"' . $cond1 . '","exact":true}');
+    check('AST-8: "exact" is accepted with ' . $cond1, !isset($f[0]['error']) && $f[0]['exact'] === true);
+}
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]>=[b]","exact":false}');
+check('AST-8: "exact": false on an ordered test is the default, not an error', !isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]>=[b]","assert":"[a]<[b]"}');
+check('AST-8: "assert" written twice is refused (the last one won)', isset($f[0]['error']) && strpos($f[0]['error'], 'names "assert" twice') !== false);
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]>=[b]","message":"x","when":"[c]=1","message":"y"}');
+check('AST-8: a key repeated behind an escape is the same key', isset($f[0]['error']) && strpos($f[0]['error'], 'names "message" twice') !== false);
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]=\'assert\'","message":{"default":"a","fr":"b"},"references":{"message":{"field":"b"}}}', ['qualified' => true]);
+check('AST-8: a key name inside a value, or one level down, is not a repeat (got ' . json_encode($f[0]['error'] ?? null) . ')',
+    !isset($f[0]['error']) || strpos($f[0]['error'], 'twice') === false);
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]>=[b]","message":"a \"quoted\" word: \\\\","when":"[c]=1"}');
+check('AST-8: escaped quotes and a backslash in a text do not confuse the reader', !isset($f[0]['error']) && $f[0]['when'] === '[c]=1');
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]>=[b]","message":"' . str_repeat('x', 60000) . '"}');
+check('AST-8: a 60,000 character message is refused', isset($f[0]['error']) && strpos($f[0]['error'], '"message" is 60000 characters long; the most is 2000') !== false);
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]>=[b]","message":"' . str_repeat("\u{e9}", 2000) . '"}');
+check('AST-8: 2,000 characters are accepted, counted as characters', !isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]>=[b]","message":{"default":"ok","fr":"' . str_repeat('y', 2001) . '"}}');
+check('AST-8: each language of a message is held to the limit (got ' . json_encode(substr((string) ($f[0]['error'] ?? ''), 0, 80)) . ')',
+    isset($f[0]['error']) && strpos($f[0]['error'], 'language "fr"') !== false);
+check('AST-8: checkFragment gives the settings channel the same refusals',
+    count(AnnotationRules::checkFragment(['type' => 'constraint', 'assert' => '1=0', 'message' => str_repeat('x', 2001)])) === 2
+    && count(AnnotationRules::checkFragment(['type' => 'constraint', 'assert' => '[a]>[b]', 'exact' => true])) === 1);
+check('Logic::comparisonOps lists the operators of a condition',
+    Logic::comparisonOps(Logic::parse("[a]>=1 and not([b]!='x' or [c]<2)")['ast']) === ['>=' => true, '<>' => true, '<' => true]);
+// AST-4: a form's status is not a field of the dictionary, and the refusal says so.
+$errs = Logic::checkRefs(Logic::parse("[f_complete]='2'")['ast'], ['a' => 'text'], [], 'when');
+check('AST-4: [f_complete] is refused as a form status, not only as an unknown field (got ' . json_encode($errs) . ')',
+    count($errs) === 1 && strpos($errs[0], 'not a field in this project') !== false
+    && strpos($errs[0], 'the status of the form "f"') !== false && strpos($errs[0], 'cannot read a form status') !== false);
+$errs = Logic::checkRefs(Logic::parse("[typo]='2'")['ast'], ['a' => 'text'], [], 'when');
+check('AST-4: any other unknown field keeps the plain refusal', count($errs) === 1 && strpos($errs[0], 'form status') === false);
+$errs = Logic::checkRefs(Logic::parse("[is_complete]='2'")['ast'], ['is_complete' => 'yesno'], [], 'when');
+check('AST-4: a real field whose name ends in _complete is accepted', $errs === []);
 $p = Logic::parsePrefix("[a]='1' or ([b]='2' and");
 check('AST-3: an unfinished parenthesis leaves the condition before it', $p['length'] === 7 && $p['continues']);
 $p = Logic::parsePrefix("[a]='1' and [b]='2'xyz");

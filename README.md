@@ -397,7 +397,10 @@ enforced with the same message/confirm/block modes as everything else:
   constraint's. Confirm-a-value ("type it twice") takes `"exact":true`:
   `@UVASSERT={"assert":"[id]=[id_confirm]","exact":true}`. Then `=` and `<>` compare
   the two entries character for character, so `00123` does not confirm `123` and
-  `+237677123456` does not confirm `237677123456`.
+  `+237677123456` does not confirm `237677123456`. That holds on number fields
+  too: `100` does not confirm `1e2`, nor `12,5` `12,50`. `"exact"` needs an `=`
+  or `<>` in the `assert`; on a rule with only `<` `>` `<=` `>=` it is a
+  configuration error.
 - **Text is compared without regard to case** (2.1.0-rc.1), like every condition in
   the module: `@UVASSERT="[answer]='yes'"` accepts `Yes` and `YES`. Add
   `"caseSensitive":true` when case carries meaning, such as codes where `ab12` and

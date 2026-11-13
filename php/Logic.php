@@ -636,6 +636,22 @@ class Logic
     }
 
     /**
+     * The comparison operators a parsed condition uses, as op => true
+     * ("!=" is "<>"). A rule option that changes only some of them can then
+     * be refused where it changes nothing ("exact", AST-8).
+     */
+    public static function comparisonOps(array $ast)
+    {
+        if ($ast[0] === 'cmp') return [$ast[1] => true];
+        if ($ast[0] === 'not') return self::comparisonOps($ast[1]);
+        $out = [];
+        if ($ast[0] === 'and' || $ast[0] === 'or') {
+            foreach ($ast[1] as $c) $out += self::comparisonOps($c);
+        }
+        return $out;
+    }
+
+    /**
      * Whether the comparison $cmp is ordered (< > <= >=) and a plain [field]
      * operand holds one of $codes, so it has no answer (AST-10). A live
      * comparison on the page asks the same (QRID_whenCodeCompared).
@@ -674,7 +690,14 @@ class Logic
             $f = $ref[0];
             $code = $ref[1];
             if (!array_key_exists($f, $types)) {
-                $errors[] = $label . ' references "[' . $f . ']", which is not a field in this project.';
+                // [form_complete] is the status REDCap keeps for each form. It
+                // is in no data dictionary, so the plain refusal sent the
+                // designer looking for a typing mistake (AST-4).
+                $errors[] = $label . ' references "[' . $f . ']", which is not a field in this project.'
+                    . (substr($f, -9) === '_complete' && strlen($f) > 9
+                        ? ' If it is the status of the form "' . substr($f, 0, -9) . '" (its "Complete?" box), a condition cannot read a form status: '
+                            . 'compare a field of that form instead.'
+                        : '');
                 continue;
             }
             $type = (string) $types[$f];

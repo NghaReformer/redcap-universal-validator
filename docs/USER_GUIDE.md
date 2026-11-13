@@ -603,6 +603,9 @@ One condition may mix `and`, `or` and `not` with parentheses:
 | | arithmetic and piping |
 | | a character outside printable ASCII, such as `'Yaoundé'` (compare the code a choice stores) |
 | | a field compared with itself, such as `[dose]>[dose]` |
+| | a form's status, `[myform_complete]`: it is not a field of the data dictionary (the error says so) |
+| | in an `@UVASSERT` test, a condition that names no field, such as `1=0` |
+| | `<` `>` `<=` `>=` between a number field and text (`[age]>='abc'`), and a date that is not in the calendar (`[dob]>='2024-02-31'`) |
 
 On a survey shown one section per page, REDCap draws only the current page's
 fields, so a condition over a field of another page reads the answer saved when
@@ -681,7 +684,9 @@ two lines. Earlier releases stopped an unquoted condition at the first space.
   condition of that one rule. Accented letters are not folded. If the sides are in
   different domains — one numeric, one not, both filled in — `=` and `<>` still
   answer, but `<` `>` `<=` `>=` come back false either way round; ordering across
-  domains is not defined. An empty side has no answer at all, and what that means
+  domains is not defined. A `not` around such a comparison is false too, so
+  `not([age]>120)` and `[age]<=120` both report `12O` typed into a number field
+  (earlier releases let the `not` spelling pass). An empty side has no answer at all, and what that means
   depends on the question: in an `@UVASSERT` test a value nobody has entered
   cannot break a rule, so `[end]>=[start]` and `[start]<=[end]` both pass while
   `start` is blank; in a `when` condition it means the rule cannot be shown to

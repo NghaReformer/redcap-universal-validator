@@ -8465,6 +8465,13 @@ class UniversalValidator extends AbstractExternalModule
             return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — dates are compared as REDCap '
                 . 'stores them, so write it as Y-M-D, such as \'2026-03-01\'' . ($k === 'dates' ? '' : ' or \'2026-03-01 08:30\'') . '.';
         }
+        // Written the stored way, but no day of the calendar or no time of the
+        // day: '2024-02-31' was accepted and compared as text (AST-8).
+        if (strpos($k, 'dates') === 0 && (!checkdate((int) substr($v, 5, 2), (int) substr($v, 8, 2), (int) substr($v, 0, 4))
+                || (strlen($v) > 10 && ((int) substr($v, 11, 2) > 23 || (int) substr($v, 14, 2) > 59 || (int) substr($v, 17, 2) > 59)))) {
+            return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\', which is not a date in the calendar'
+                . ($k === 'dates' ? '' : ' with a time of the day') . '. For the end of a month, write its last day.';
+        }
         if (strpos($k, 'times') === 0 && !preg_match('/^\d{2}:\d{2}(?::\d{2})?$/D', $v)) {
             return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write the time as REDCap stores it, such as \'08:30\'.';
         }
@@ -8474,6 +8481,13 @@ class UniversalValidator extends AbstractExternalModule
         if ($mark($f) !== null && strpos($v, ',') !== false) {
             return $label . ' compares ' . $shown . ', which holds numbers, with \'' . $v . '\' — write numbers in ' . $label . ' with a '
                 . 'decimal point, such as \'' . str_replace(',', '.', $v) . '\'.';
+        }
+        // A number has no order against a text, so < > <= >= with one could
+        // never hold: [n]>='abc' on an integer field was accepted (AST-8).
+        // "assert" and "when" only: a "where" compares stored text.
+        if (!$sameMark && $mark($f) !== null && isset(Logic::ORDERED_OPS[$n[1]]) && !preg_match(Logic::NUM_RE, trim($v, " \t\r\n"))) {
+            return $label . ' compares ' . $shown . ', which holds numbers, with \'' . $v . '\', which is not a number written in digits, '
+                . 'so ' . $n[1] . ' could never hold. Write a number, such as 5 or 12.5.';
         }
         return null;
     }

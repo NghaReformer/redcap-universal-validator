@@ -925,6 +925,9 @@ that quotes `* 2`, where earlier releases checked `[dose] <= [max_dose]` alone.
 `=` compares numbers by value, so `00123` confirmed as `123`, `1002` as `1002.0` and
 `+237677123456` as `237677123456` would all pass. With it, `=` and `<>` compare the two
 entries character for character (spaces around them aside), letter case included.
+That holds on number fields too: `100` does not confirm `1e2`, and on a comma-decimal
+field `12,5` does not confirm `12,50`. A line break counts as one character whether it
+was saved as CR LF or LF, so a Notes value typed twice still matches.
 
 ### Level 3 — your own message
 
@@ -5010,7 +5013,11 @@ Semantics:
   in: `=` and `<>` still answer by string identity, but `<` `>` `<=` `>=` are false
   whichever way round you ask them. Ordering across domains produced cycles — with
   `'2'`, `'10'` and `'1e1'` every one of `a<=b`, `b<=c` and `a>c` was true — and a rule
-  built on that is unsatisfiable in a way no message can explain.
+  built on that is unsatisfiable in a way no message can explain. A `not` around such
+  a comparison is false as well: `not([age]>120)` reports `12O` in a number field
+  exactly as `[age]<=120` does.
+- **A line break is one character.** A Notes value compares the same whether its
+  lines end in CR LF (as REDCap may save them) or LF (as the browser holds them).
 - **An empty side has no answer, and the role decides what that means.** Empty is
   absence, not a rival domain, so there is nothing to order it against. In an
   `@UVASSERT` test a value nobody has entered cannot violate a constraint, so the
@@ -6413,12 +6420,15 @@ target the same field: different kinds compose, and the same kind branches by `w
 
 | Key               | Type    | Default        | Notes                                                   |
 | ----------------- | ------- | -------------- | ------------------------------------------------------- |
-| `assert`        | string  | *(required)* | The condition that must hold; a missing one is an error |
-| `message`       | string or map | generic line   | Your own wording — recommended                         |
+| `assert`        | string  | *(required)* | The condition that must hold; a missing one is an error, and so is one that names no field (`1=0`) |
+| `message`       | string or map | generic line   | Your own wording — recommended; at most 2,000 characters in each language |
 | `blockSave`     | string  | `off`        | `off`, `confirm`, `hard`                          |
 | `when`          | string  | *(none)*     | Enforce the constraint only while true                  |
 | `caseSensitive` | boolean | `false`      | Exact-case text in`assert` and `when`               |
-| `exact`         | boolean | `false`      | `=` and `<>` in `assert` compare character for character: `00123` is not `123` |
+| `exact`         | boolean | `false`      | `=` and `<>` in `assert` compare character for character: `00123` is not `123`, and on number fields `100` is not `1e2`. An error when `assert` has no `=` or `<>` |
+
+A key written twice in the JSON (`"assert"` twice, say) is a configuration error:
+only the last one would be read.
 
 ### `@UVREQUIRED`
 
