@@ -486,6 +486,39 @@ namespace INSPIRE\UniversalValidator\Scan {
         isset($vm[1]) && ($stated === null || $stated === $vm[1]));
     check('README.md sends the reader to CHANGELOG.md for the current build', strpos($readme, '](CHANGELOG.md)') !== false);
 
+    /* FRM-13: what the repository page shows. The name was 104 characters
+       with a dash, the description 2,826 characters naming 8 of the 11 tags,
+       the README promised a hosted API the module never calls, and its
+       licence paragraph said MIT for a module that ships GPL-3 tables. */
+    $cname = isset($config['name']) ? (string) $config['name'] : '';
+    $cdesc = isset($config['description']) ? (string) $config['description'] : '';
+    check('config.json: the name is short and has no dash or ampersand list (it is "' . $cname . '")',
+        $cname !== '' && strlen($cname) <= 60 && preg_match('/[\x{2013}\x{2014}&]/u', $cname) === 0);
+    $unnamed = [];
+    foreach ($config['action-tags'] as $t) {
+        if (preg_match('/' . preg_quote($t['tag'], '/') . '\b/', $cdesc) !== 1) $unnamed[] = $t['tag'];
+    }
+    check('config.json: the description names every action tag (not: ' . json_encode($unnamed) . ')',
+        count($config['action-tags']) >= 11 && $unnamed === []);
+    check('config.json: the description is under 1,500 characters and has no long dash (it is ' . strlen($cdesc) . ')',
+        strlen($cdesc) < 1500 && preg_match('/[\x{2013}\x{2014}]/u', $cdesc) === 0);
+    $outbound = [];
+    foreach (array_merge(glob($root . '/*.php'), glob($root . '/php/*.php'), glob($root . '/php/Scan/*.php'), glob($root . '/pages/*.php')) as $f) {
+        if (preg_match('/\b(curl_init|curl_exec|fsockopen|stream_socket_client|http_get)\s*\(|file_get_contents\s*\(\s*[\'"]https?:/i', (string) file_get_contents($f))) {
+            $outbound[] = basename($f);
+        }
+    }
+    check('README.md: says the module makes no outbound call, which its PHP bears out (' . json_encode($outbound) . ')',
+        strpos($readme, 'It makes no outbound call') !== false && $outbound === []
+        && stripos($readme, 'hosted API') === false && stripos($readme, 'paid server') === false);
+    $lic = substr($readme, (int) strpos($readme, "\n## License"));
+    check('README.md: the licence section says the WHO tables are GPL-3 and where that licence is',
+        strpos($readme, "\n## License") !== false && strpos($lic, 'MIT') !== false
+        && strpos($lic, 'GNU') !== false && strpos($lic, 'World Health Organization') !== false
+        && strpos($lic, 'data/references/who/LICENSE') !== false
+        && is_file($root . '/data/references/who/LICENSE')
+        && strpos((string) file_get_contents($root . '/data/references/who/LICENSE'), 'GNU GENERAL PUBLIC LICENSE') !== false);
+
     echo "docs_claims_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

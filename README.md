@@ -2134,13 +2134,25 @@ checklist in [`docs/TESTING.md`](docs/TESTING.md).
 
 ## Where this fits
 
-This is the free, open-source client of an open-core system: it catches typos in
-the form for anyone, and the paid server features (central ID minting, printable
-QR label sheets, pooled multi-site audit) live behind a hosted API the module can
-call. The module works fully on its own without any of that.
+The module is complete on its own. It makes no outbound call: every check runs
+in the browser or on the REDCap server, and nothing is sent anywhere else. It
+checks IDs and does not issue them, so it works with whatever issues yours
+(a label printer, a registry, a spreadsheet), as long as that uses one of the
+module's check-character algorithms or a pattern.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+The module's code is under the MIT licence, see [`LICENSE`](LICENSE).
+
+The WHO growth tables are not. The files in
+[`data/references/who/`](data/references/who/) and the copies of them the
+browser loads from `js/growth/` are the LMS tables of the WHO `anthro` and
+`anthroplus` R packages, copyright World Health Organization, under the GNU
+General Public License version 3 (`anthroplus`: version 3 or later). They stay
+under that licence, whose text is
+[`data/references/who/LICENSE`](data/references/who/LICENSE); the sources and
+commits are in [`data/references/who/README.md`](data/references/who/README.md).
+The module reads them as data. If you redistribute the module, keep those
+files, their README and that licence together.
 
 For complete, copyable region/site dropdown rules, see [the region/site annotation](docs/region-site-choices-example.txt). The [action-tag examples](docs/action_tag_validation_examples.md) cover single/pooled `alternates`, autocomplete choice filtering, cross-event references, and repeating-instrument matching.
