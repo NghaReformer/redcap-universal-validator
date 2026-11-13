@@ -239,6 +239,8 @@ namespace {
         'height'      => f('visit_form', '@UVDELTA={"vs":"[h_screen]","max":0,"direction":"down","unit":"cm"}', 'integer'),
         'free'        => f('visit_form', '@UVDELTA={"vs":"[w_screen]","max":1}', ''),
         'w_vs_free'   => f('visit_form', '@UVDELTA={"vs":"[w_free]","max":1}', 'number'),
+        // a number field that holds text all the same (an import, a validation added later)
+        'num_text'    => f('visit_form', '@UVDELTA={"vs":"[w_screen]","max":1}', 'number'),
         'msg_w'       => f('visit_form', '@UVDELTA={"vs":"[w_screen]","max":1,"message":"Re-weigh."}', 'number'),
         'bad_email'   => f('visit_form', '@UVDELTA={"vs":"[w_screen]","max":1}', 'email'),
         'bad_date'    => f('visit_form', '@UVDELTA={"vs":"[w_screen]","max":1}', 'date_ymd'),
@@ -254,7 +256,7 @@ namespace {
         'record_id' => '2', 'sex' => '1', 'dob' => '2000-01-01', 'w_screen' => '70.0', 'h_screen' => '150',
         'w_src_comma' => '70,0', 'w_free' => 'n/a', 'w_prev' => '60',
         'weight' => '76.5', 'w_same' => '63', 'w_comma' => '72,6', 'w_vs_comma' => '71.5', 'bmi' => '74', 'pain' => '230',
-        'height' => '149', 'free' => 'n/a', 'w_vs_free' => '5', 'msg_w' => '72',
+        'height' => '149', 'free' => 'n/a', 'w_vs_free' => '5', 'num_text' => 'n/a', 'msg_w' => '72',
         'bad_email' => 'x@y', 'bad_date' => '2026-01-01', 'bad_radio' => '5', 'bad_notes' => '5', 'bad_self' => '5',
         'bad_nofield' => '5', 'bad_vsradio' => '5', 'bad_vsdate' => '5', 'bad_short' => '5',
     ];
@@ -338,8 +340,19 @@ namespace {
         (deltaBy($mb)['weight']['reason'] ?? null) === 'up' && !problems($mb, 'weight'));
     $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
         'delta', ['weight' => '1' . str_repeat('0', 4096), 'w_screen' => '1'], [], null, PID, '2', 351, []);
-    check('a value too long to compare: a rule problem that says so (got ' . json_encode($res['unconfigurable']) . ')',
-        ($res['unconfigurable'][0]['why'] ?? '') === 'the value and its "vs" value are too long to compare — field skipped');
+    check('a value too long to compare: a finding that says so, not a rule problem (DLT-4) (got ' . json_encode($res['invalid']) . ')',
+        ($res['invalid'][0]['reason'] ?? null) === 'too-long' && !$res['unconfigurable']);
+    $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
+        'delta', ['weight' => '71', 'w_screen' => '1' . str_repeat('0', 4096)], [], null, PID, '2', 351, []);
+    check('an earlier value too long: the value typed is not at fault, a rule problem that says so (got ' . json_encode($res['unconfigurable']) . ')',
+        !$res['invalid'] && ($res['unconfigurable'][0]['why'] ?? '') === 'the value and its "vs" value are too long to compare — field skipped');
+    $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
+        'delta', ['weight' => str_repeat('0', 5000) . '700', 'w_screen' => '70'], [], null, PID, '2', 351, []);
+    check('a number padded with 5,000 zeros is judged by its digits: 700 from 70 is a rise (DLT-4) (got ' . json_encode($res) . ')',
+        ($res['invalid'][0]['reason'] ?? null) === 'up' && !$res['unconfigurable']);
+    $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
+        'delta', ['weight' => '70.5' . str_repeat('0', 5000), 'w_screen' => '70'], [], null, PID, '2', 351, []);
+    check('... and 70.5 with 5,000 zeros after it is within the limit', !$res['invalid'] && !$res['unconfigurable']);
 
     // ---- 3) the page: live, snapshot, withheld --------------------------------------
     $r = ruleFor($p, 'w_same');
@@ -357,6 +370,11 @@ namespace {
     check('a survey: a vs on another form is withheld (got ' . json_encode($r['deltaVsOp'] ?? null) . ')',
         $r && ($r['deltaVsOp'] ?? null) === ['withheld']);
     check('a survey: a vs on the page stays live', (ruleFor($ps, 'w_same')['deltaVsOp'] ?? null) === ['ref', 'w_prev', null]);
+    // DLT-2: a Text field with no validation has nothing else to say its value must be a number.
+    check('a Text field with no validation: the page is told (deltaUnvalidated)', (ruleFor($p, 'free')['deltaUnvalidated'] ?? null) === true
+        && (ruleFor($ps, 'free')['deltaUnvalidated'] ?? null) === true);
+    check('... a validated field, a calc and a slider are not', !array_filter(['weight', 'w_comma', 'bmi', 'pain', 'height', 'num_text'],
+        function ($f) use ($p) { return isset(ruleFor($p, $f)['deltaUnvalidated']); }));
 
     // ---- 4) the post-save audit -------------------------------------------------------
     $m = mod($DICT, $DATA, $FULL);
@@ -371,8 +389,11 @@ namespace {
     check('slider, direction up: 230 is 53% above 150', ($by['pain']['reason'] ?? null) === 'up');
     check('max 0 down: a fall of 1', ($by['height']['reason'] ?? null) === 'down');
     check('message rule: up', ($by['msg_w']['reason'] ?? null) === 'up');
-    check('a value that is not a number: a rule problem, not a finding', !isset($by['free'])
-        && (bool) array_filter(problems($m, 'free'), function ($w) { return strpos($w, 'the saved value is not a number') !== false; }));
+    check('a Text field with no validation, a value that is not a number: a finding (DLT-2) (got ' . json_encode($by['free'] ?? null) . ')',
+        ($by['free']['reason'] ?? null) === 'not-a-number' && $by['free']['value'] === 'n/a' && $by['free']['vs'] === '[w_screen]'
+        && !array_filter(problems($m, 'free'), function ($w) { return strpos($w, 'the saved value') !== false; }));
+    check('a validated field that holds text all the same: a rule problem, not a finding', !isset($by['num_text'])
+        && (bool) array_filter(problems($m, 'num_text'), function ($w) { return strpos($w, 'the saved value is not a number') !== false; }));
     check('an earlier value that is not a number: a rule problem naming the vs', !isset($by['w_vs_free'])
         && (bool) array_filter(problems($m, 'w_vs_free'), function ($w) { return strpos($w, 'the "vs" value [w_free] is not a number') !== false; }));
     check('misconfigured rules log nothing as data', !array_intersect(array_keys($by),
@@ -390,7 +411,11 @@ namespace {
     foreach (['w_screen', 'h_screen', 'w_src_comma', 'w_prev', 'w_free'] as $k) $blank['2'][351][$k] = '';
     $m = mod($DICT, $blank, $FULL);
     $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 1);
-    check('a blank earlier value checks nothing', !deltaBy($m) && !problems($m, 'weight') && !problems($m, 'w_vs_free'));
+    $by = deltaBy($m);
+    check('a blank earlier value checks nothing', !array_diff(array_keys($by), ['free']) && !problems($m, 'weight')
+        && !problems($m, 'w_vs_free') && !problems($m, 'num_text'));
+    check('... but text in an unvalidated field is flagged with nothing to compare with (a first visit)',
+        ($by['free']['reason'] ?? null) === 'not-a-number');
 
     \Project::$codes = "UNK, Unknown\nNASK, Not asked";
     $mdc = $DATA;
@@ -446,11 +471,13 @@ namespace {
     foreach ($res['violations'] as $v) if ($v['type'] === 'delta') $by[$v['field']] = $v;
     check('scan: the same verdicts (got ' . json_encode(array_map(function ($v) { return $v['reason']; }, $by)) . ')',
         ($by['weight']['reason'] ?? null) === 'up' && ($by['height']['reason'] ?? null) === 'down'
-        && ($by['w_comma']['reason'] ?? null) === 'up' && ($by['bmi']['reason'] ?? null) === 'up' && !isset($by['free']));
+        && ($by['w_comma']['reason'] ?? null) === 'up' && ($by['bmi']['reason'] ?? null) === 'up'
+        && ($by['free']['reason'] ?? null) === 'not-a-number' && !isset($by['num_text']));
     check('scan: misconfigured rules are rule problems, not data', !isset($by['bad_self'])
         && (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('bad_self', $u['fields'], true); }));
-    check('scan: a value that is not a number is a rule problem',
-        (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('free', $u['fields'], true); }));
+    check('scan: text in a validated field is a rule problem, in an unvalidated one it is not',
+        (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('num_text', $u['fields'], true); })
+        && !array_filter($res['unconfigurable'], function ($u) { return in_array('free', $u['fields'], true); }));
 
     $dims = $m->scanDimensions(PID, $res['rules'] ?? null);
     $cols = \INSPIRE\UniversalValidator\ScanColumns::all($dims);
@@ -463,6 +490,11 @@ namespace {
     $row = \INSPIRE\UniversalValidator\ScanColumns::row($by['msg_w'], $dims, $cols);
     check('report: a rule message speaks for it (got ' . json_encode($row['problem'] ?? null) . ')',
         ($row['problem'] ?? '') === 'Re-weigh. Allowed a change of at most 1 from [w_screen].');
+    $row = \INSPIRE\UniversalValidator\ScanColumns::row($by['free'], $dims, $cols);
+    check('report: not a number (got ' . json_encode([$row['issue'] ?? null, $row['problem'] ?? null]) . ')',
+        strpos($row['problem'] ?? '', 'The value is not a number, so its change cannot be checked.') === 0);
+    check('scan labels for a value that cannot be compared', \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('delta', 'not-a-number') === 'Not a number'
+        && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('delta', 'too-long') === 'Too long to compare');
     check('scan labels per direction', \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('delta', 'up') === 'Rose more than allowed'
         && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('delta', 'down') === 'Fell more than allowed'
         && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('delta', 'other') === 'Changed more than allowed');

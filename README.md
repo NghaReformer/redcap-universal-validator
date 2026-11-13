@@ -1152,7 +1152,11 @@ and flags a change larger than its limit:
   is `|change| × 100` against `maxPct × |earlier value|`, with no division and
   no rounding. A number with an exponent is written out in full, so `1e80`
   against `1e100` is a real change. A value longer than 4,096 digits written
-  out is reported as too long to compare, never judged. A limit is at most 64
+  out is flagged as too long to compare: a red note under the field that holds
+  the save as `blockSave` says, and reason `too-long` in the audit and the
+  scan. Zeros that pad a number are not digits, so `000…0700` is 700 however
+  many zeros come first. An earlier value that long is a rule problem, not a
+  fault of the value typed. A limit is at most 64
   characters. Long numbers are charged to the record's evaluation budget in
   the audit and the scan. An earlier value of 0 has no percent, so `maxPct`
   does not apply to it; `"maxPct": 0` is refused for that reason (use
@@ -1160,6 +1164,14 @@ and flags a change larger than its limit:
 - **Nothing to compare with.** A blank value, a blank earlier value and a
   missing data code on either side check nothing. On the first visit or the
   first instance there is no earlier value.
+- **Not a number.** On a Text field with number or integer validation REDCap
+  itself refuses `700kg`, so this tag says nothing about it. On a Text field
+  with no validation nothing else does, so the tag flags a value that is not
+  a number (`700kg`, `70,5`, `1 000`, digits of another script) with "This is
+  not a number.", holds the save as `blockSave` says, and logs reason
+  `not-a-number` in the audit and the scan. It does so on a first visit too.
+  Give the field number validation where you can: REDCap then stops the value
+  as it is typed.
 - **The previous value.** `previous-event` and `previous-instance`, and a
   reference written with `[previous-event-name]` or `[previous-instance]`,
   compare with the nearest earlier event or instance that holds a value. A
@@ -1255,9 +1267,12 @@ and flags a change larger than its limit:
   with the same `vs` and direction need different `when` conditions.
 - **Audited.** The post-save audit logs `type: delta` with reason `up` or
   `down` and the `vs` it compared with. Saving an earlier visit re-checks the
-  visits that compare with it. A value or an earlier value that is not a number
-  is a rule problem. The Validation scan counts the findings as "Rose more than
-  allowed" or "Fell more than allowed", with the limits in the detail line.
+  visits that compare with it. A value that is not a number is a finding on a
+  Text field with no validation (reason `not-a-number`) and a rule problem on
+  a validated field; an earlier value that is not a number is a rule problem.
+  The Validation scan counts the findings as "Rose more than allowed", "Fell
+  more than allowed", "Not a number" or "Too long to compare", with the limits
+  in the detail line.
   Configure via field annotation only.
 
 ## Values entered once — the `@UVWRITEONCE` tag

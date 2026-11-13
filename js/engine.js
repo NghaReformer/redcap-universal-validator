@@ -2864,12 +2864,18 @@ var QRID_MAX_PLAIN = 4096;
 /* @UVDELTA: a typed or saved number written out in full, "" for blank, null
    when it is not a number, false when written out it is longer than
    QRID_MAX_PLAIN characters. Never judged as 10^70 the way QRID_rangeNumber
-   does: a change is the difference of two values. Twin of Logic::deltaNumber. */
+   does: a change is the difference of two values. A number padded past
+   QRID_MAX_PLAIN with zeros is written without them, as one with an exponent
+   is: it is as long as its digits (DLT-4). Twin of Logic::deltaNumber. */
 function QRID_deltaNumber(value, decimalComma){
   var v = QRID_whenTrim(value == null ? "" : String(value));
   if(v === "") return "";
   if(decimalComma && v.split(",").length === 2 && v.indexOf(".") < 0) v = v.replace(",", ".");
-  if(QRID_WHEN_NUM_RE.test(v)) return v.length > QRID_MAX_PLAIN ? false : v;
+  if(QRID_WHEN_NUM_RE.test(v)){
+    if(v.length <= QRID_MAX_PLAIN) return v;
+    var unpadded = QRID_plainDecimal(v + "e0");
+    return unpadded === null ? false : unpadded;
+  }
   if(QRID_exponentParts(v) === null) return null;
   var plain = QRID_plainDecimal(v);
   return plain === null ? false : plain;
@@ -2956,7 +2962,7 @@ function QRID_rangeVerdict(spec, value){
   return { tier: "ok", reason: null };
 }
 /* The @UVDELTA verdict for a value against the earlier one: { verdict:
-   ok|inert|up|down|unknown, reason: null|max|maxPct|not-a-number|
+   ok|inert|up|down|invalid|unknown, reason: null|max|maxPct|not-a-number|
    earlier-not-a-number|too-long, change }. Exact decimals: the change by
    QRID_temporalSum, the percent limit by QRID_temporalMultiply
    (|change| * 100 against maxPct * |earlier|), never a division. An earlier
@@ -2964,10 +2970,15 @@ function QRID_rangeVerdict(spec, value){
    Logic::deltaVerdict; tests/delta_fixture.json pins both. */
 function QRID_deltaVerdict(spec, value, earlier){
   var v = QRID_deltaNumber(value, !!spec.decimalComma), e = QRID_deltaNumber(earlier, !!spec.earlierComma);
-  if(v === "" || e === "") return { verdict: "inert", reason: null, change: null };
+  if(v === "") return { verdict: "inert", reason: null, change: null };
+  /* The value itself can never be compared: too long (DLT-4), or, on a Text
+     field with no validation (spec.strict), not a number (DLT-2). */
+  if(v === false) return { verdict: "invalid", reason: "too-long", change: null };
+  if(v === null && spec.strict === true) return { verdict: "invalid", reason: "not-a-number", change: null };
+  if(e === "") return { verdict: "inert", reason: null, change: null };
   if(v === null) return { verdict: "unknown", reason: "not-a-number", change: null };
   if(e === null) return { verdict: "unknown", reason: "earlier-not-a-number", change: null };
-  if(v === false || e === false) return { verdict: "unknown", reason: "too-long", change: null };
+  if(e === false) return { verdict: "unknown", reason: "too-long", change: null };
   var minus = e.charAt(0) === "-" ? e.slice(1) : "-" + e.replace(/^\+/, "");
   var change = QRID_temporalSum([v, minus]);
   if(change === null) return { verdict: "unknown", reason: "too-long", change: null };
@@ -7436,7 +7447,8 @@ function QRIDDeltaInit(QRID_CONFIG){
              i18n: (cfg.i18n && typeof cfg.i18n === "object") ? cfg.i18n : null,
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              spec: { max: max, maxPct: pct, direction: dir,
-                     decimalComma: cfg.decimalComma === true, earlierComma: cfg.deltaVsComma === true },
+                     decimalComma: cfg.decimalComma === true, earlierComma: cfg.deltaVsComma === true,
+                     strict: cfg.deltaUnvalidated === true },
              vsOp: vsOp,
              label: (typeof cfg.deltaVsLabel === "string" && cfg.deltaVsLabel !== "") ? cfg.deltaVsLabel
                   : (typeof cfg.deltaVs === "string" ? cfg.deltaVs : ""),
@@ -7463,8 +7475,12 @@ function QRIDDeltaInit(QRID_CONFIG){
   }
   function verdictOf(V, fieldName, typed){
     var e = earlierOf(V, fieldName);
-    if(e === null) return { verdict: "withheld" };
     var t = (typed == null || typeof typed === "object") ? "" : String(typed);
+    if(e === null){
+      /* the value itself is judged without the value this viewer is not sent */
+      var own = QRID_deltaVerdict(V.spec, t, "");
+      return own.verdict === "invalid" ? own : { verdict: "withheld" };
+    }
     var r = QRID_deltaVerdict(V.spec, t, e);
     r.earlier = e;
     r.typed = t;
@@ -7558,8 +7574,15 @@ function QRIDDeltaInit(QRID_CONFIG){
         return { kind: "warn", html: subject(V) + " is not checked on this page: that value is on a form you cannot view here." +
           " It is checked when the record is saved." };
       }
+      if(r.verdict === "invalid"){
+        /* The value can never be compared, whatever the earlier one is: red,
+           and it holds the save as blockSave says. A survey reads the same line:
+           it names no other field. */
+        return { kind: "bad", block: V.blockSave,
+                 html: r.reason === "too-long" ? "This number is too long to compare." : "This is not a number." };
+      }
       if(r.verdict === "unknown"){
-        /* A value that is not (yet) a number is REDCap's own check's to name. */
+        /* On a validated field a value that is not (yet) a number is REDCap's own check's to name. */
         if(QRID_IS_SURVEY || r.reason === "not-a-number") return { kind: "none" };
         return { kind: "warn", html: subject(V) + " is not checked: " + (r.reason === "earlier-not-a-number"
           ? "the value it is compared with is not a number this rule can read." : "the numbers are too long to compare.") };
@@ -7647,7 +7670,7 @@ function QRIDDeltaInit(QRID_CONFIG){
           if(a[ti].deferred){ open = true; continue; }
           var v;
           try { v = verdictOf(a[ti], f, typed).verdict; } catch(e){ open = true; continue; }   /* fail open, as check() */
-          if(v === "up" || v === "down") return false;
+          if(v === "up" || v === "down" || v === "invalid") return false;
           if(v !== "ok") open = true;
         }
         return open ? null : true;
@@ -10087,8 +10110,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "growthCurveKey", "growthTableKey", "growthChartWhy", "growthChartSource",
                       "deltaVs", "deltaVsOp", "deltaVsLabel", "deltaVsFound", "deltaVsComma",
                       "deltaMax", "deltaMaxPct", "deltaDirection", "deltaUnit", "deltaText",
-                      "deltaGroup", "deltaComputed", "writeonceRolesUnread", "writeonceSaved",
-                      "writeonceValuesUnread", "justifyReason"];
+                      "deltaGroup", "deltaComputed", "deltaUnvalidated", "writeonceRolesUnread",
+                      "writeonceSaved", "writeonceValuesUnread", "justifyReason"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",

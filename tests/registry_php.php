@@ -110,7 +110,7 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     // @UVDELTA: what it compares with (as written, its shorthand, its name,
     // that field's decimal comma), the limits, their words, the branch group
     'deltaVs', 'deltaVsName', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct', 'deltaDirection',
-    'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
+    'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed', 'deltaUnvalidated',
     // "previous":"adjacent": only the event or instance right before (DLT-1)
     'deltaAdjacent',
     // @UVWRITEONCE: the roles that may still change the value, the day the lock starts;
@@ -175,7 +175,7 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // @UVDELTA (the earlier value travels folded, as deltaVsOp)
     // deltaVsFound: where a value further back than the entry right before was found (DLT-1)
     'deltaVs', 'deltaVsOp', 'deltaVsLabel', 'deltaVsFound', 'deltaVsComma', 'deltaMax', 'deltaMaxPct',
-    'deltaDirection', 'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
+    'deltaDirection', 'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed', 'deltaUnvalidated',
     // @UVWRITEONCE, from the page hook: the roles could not be read, a dropdown's saved code,
     // the saved values could not be read
     'writeonceRolesUnread', 'writeonceSaved', 'writeonceValuesUnread',

@@ -79,7 +79,14 @@ $paid = [];
 $huge = '1' . str_repeat('0', Logic::MAX_PLAIN);
 $r = Logic::deltaVerdict(['max' => '1'], $huge, '1', $wallet);
 check('a plain number past MAX_PLAIN is too long to compare, and pays nothing (round 2)',
-    $r['verdict'] === 'unknown' && $r['reason'] === 'too-long' && $paid === []);
+    $r['verdict'] === 'invalid' && $r['reason'] === 'too-long' && $paid === []);
+// DLT-4: zeros that pad a number are not its digits
+check('leading zeros past MAX_PLAIN are taken off', Logic::deltaNumber(str_repeat('0', Logic::MAX_PLAIN + 1) . '700') === '700');
+check('... with a sign, a plus dropped', Logic::deltaNumber('-' . str_repeat('0', Logic::MAX_PLAIN) . '7.5') === '-7.5'
+    && Logic::deltaNumber('+' . str_repeat('0', Logic::MAX_PLAIN) . '7.5') === '7.5');
+check('trailing zeros of the decimals past MAX_PLAIN are taken off', Logic::deltaNumber('7.5' . str_repeat('0', Logic::MAX_PLAIN)) === '7.5');
+check('a number inside MAX_PLAIN keeps its zeros, as typed', Logic::deltaNumber('007.50') === '007.50');
+check('padding does not hide a number that is too long', Logic::deltaNumber('000' . str_repeat('9', Logic::MAX_PLAIN + 1)) === false);
 check('... the same as one written with an exponent', Logic::deltaVerdict(['max' => '1'], '1e' . (Logic::MAX_PLAIN + 1), '1', $wallet)['reason'] === 'too-long'
     && $paid === []);
 check('... and one exactly MAX_PLAIN long is worked out', Logic::deltaNumber(str_repeat('9', Logic::MAX_PLAIN)) === str_repeat('9', Logic::MAX_PLAIN)

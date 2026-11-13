@@ -4107,7 +4107,10 @@ class UniversalValidator extends AbstractExternalModule
      * absent row to blank). A "vs" this context could not resolve is
      * reported, never read as blank, as the assert above is (M-01); so is a
      * saved value, or an earlier one, that is not a number this rule can
-     * read. A "vs" that resolved to the field itself in this same entry (the
+     * read. A value that can never be compared is a finding with its reason:
+     * "not-a-number" in a Text field with no validation (deltaUnvalidated,
+     * review DLT-2), "too-long" for a number past Logic::MAX_PLAIN digits
+     * (DLT-4). A "vs" that resolved to the field itself in this same entry (the
      * extended path's deltaVsValueSelf: [baseline_arm_1][weight] saved on the
      * baseline visit) has nothing to compare with there.
      *
@@ -4162,6 +4165,7 @@ class UniversalValidator extends AbstractExternalModule
             'direction' => isset($rule['deltaDirection']) ? $rule['deltaDirection'] : 'both',
             'decimalComma' => !empty($rule['decimalComma']),
             'earlierComma' => !empty($rule['deltaVsComma']),
+            'strict' => !empty($rule['deltaUnvalidated']),
         ];
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
@@ -4171,6 +4175,13 @@ class UniversalValidator extends AbstractExternalModule
             if ($self === $field) continue;
             $r = Logic::deltaVerdict($spec, (string) $value, $earlier, $charge);
             if ($r['verdict'] === 'ok' || $r['verdict'] === 'inert') continue;
+            if ($r['verdict'] === 'invalid') {
+                // The value itself can never be compared (not a number in an unvalidated
+                // field, or too long): the data's fault, so a finding, not a rule problem.
+                $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'delta', 'type' => 'delta', 'reason' => $r['reason'],
+                    'vs' => $vs];
+                continue;
+            }
             if ($r['verdict'] === 'unknown') {
                 $why = $r['reason'] === 'not-a-number' ? 'the saved value is not a number this rule can read'
                      : ($r['reason'] === 'earlier-not-a-number' ? 'the "vs" value ' . $vs . ' is not a number this rule can read'
@@ -9368,6 +9379,8 @@ class UniversalValidator extends AbstractExternalModule
                     . 'or none (it has "' . $validation . '").', '_tag' => $tag];
             }
             if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $frag['decimalComma'] = true;
+            // Nothing else says this field's value must be a number, so the rule does (DLT-2).
+            if ($validation === '') $frag['deltaUnvalidated'] = true;
         } elseif ($ftype === 'calc') {
             $frag['deltaComputed'] = true;
         }

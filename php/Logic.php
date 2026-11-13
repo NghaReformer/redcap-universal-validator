@@ -1058,14 +1058,22 @@ class Logic
      * than MAX_PLAIN characters. normalizeNumber judges a number past 70
      * places as 10^70, which is right against one limit of at most 64
      * characters; a change is the difference of two values, so 1e80 and 1e100
-     * must keep every digit. Twin of QRID_deltaNumber.
+     * must keep every digit. A number is as long as its digits: one padded
+     * past MAX_PLAIN with zeros before it or after its last decimal is
+     * written without them, as a number with an exponent is, so 4,097
+     * characters of "000...0700" are 700 and are judged (review DLT-4). Twin
+     * of QRID_deltaNumber.
      */
     public static function deltaNumber($value, $decimalComma = false)
     {
         $v = trim((string) $value, " \t\r\n");
         if ($v === '') return '';
         if ($decimalComma && substr_count($v, ',') === 1 && strpos($v, '.') === false) $v = str_replace(',', '.', $v);
-        if (preg_match(self::NUM_RE, $v)) return strlen($v) > self::MAX_PLAIN ? false : $v;
+        if (preg_match(self::NUM_RE, $v)) {
+            if (strlen($v) <= self::MAX_PLAIN) return $v;
+            $plain = self::plainDecimal($v . 'e0');
+            return $plain === null ? false : $plain;
+        }
         if (self::exponentParts($v) === null) return null;
         $plain = self::plainDecimal($v);
         return $plain === null ? false : $plain;
@@ -1275,20 +1283,28 @@ class Logic
 
     /**
      * The @UVDELTA verdict for one value against the earlier one it is
-     * compared with: ['verdict' => ok|inert|up|down|unknown, 'reason' =>
-     * null|max|maxPct|not-a-number|earlier-not-a-number|too-long, 'change' =>
-     * value - earlier as an exact decimal string, or null].
+     * compared with: ['verdict' => ok|inert|up|down|invalid|unknown,
+     * 'reason' => null|max|maxPct|not-a-number|earlier-not-a-number|too-long,
+     * 'change' => value - earlier as an exact decimal string, or null].
      *
      * $spec holds 'max' and 'maxPct' (NUM_RE strings at least 0; null or
      * absent = no such limit), 'direction' (both, up or down: the changes the
      * limits apply to), 'decimalComma' (the value's field reads one comma as
-     * the decimal mark) and 'earlierComma' (the same for the earlier value's
-     * field).
+     * the decimal mark), 'earlierComma' (the same for the earlier value's
+     * field) and 'strict' (the value's field is a Text field with no
+     * validation, so nothing else says its value must be a number).
      *
-     * A blank value or a blank earlier value is inert: nothing to compare. A
-     * value that is not a number is unknown, as is a number or a change too
-     * long to work out (deltaNumber, ExactDecimal::MAX_DIGITS). A change
-     * against "direction" is ok.
+     * A blank value or a blank earlier value is inert: nothing to compare.
+     * The value itself is invalid, whatever it is compared with, when no
+     * change could ever be worked out from it: a number longer than
+     * MAX_PLAIN digits written out (reason too-long, review DLT-4), and on a
+     * 'strict' field a value that is not a number (reason not-a-number,
+     * review DLT-2: "700kg", "70,5" or "1 000" typed into an unvalidated
+     * field passed a hard rule with no note). On a validated field a value
+     * that is not a number stays unknown: REDCap's own validation names it.
+     * An earlier value that is not a number is unknown, as is one, or a
+     * change, too long to work out (deltaNumber, ExactDecimal::MAX_DIGITS). A
+     * change against "direction" is ok.
      * "max" holds when |change| <= max; "maxPct" when |change| * 100 <=
      * maxPct * |earlier|, so no division and no rounding. An earlier value of
      * 0 has no percent: "maxPct" is not applied, and a rule with no other
@@ -1310,10 +1326,13 @@ class Logic
     {
         $v = self::deltaNumber($value, !empty($spec['decimalComma']));
         $e = self::deltaNumber($earlier, !empty($spec['earlierComma']));
-        if ($v === '' || $e === '') return ['verdict' => 'inert', 'reason' => null, 'change' => null];
+        if ($v === '') return ['verdict' => 'inert', 'reason' => null, 'change' => null];
+        if ($v === false) return ['verdict' => 'invalid', 'reason' => 'too-long', 'change' => null];
+        if ($v === null && !empty($spec['strict'])) return ['verdict' => 'invalid', 'reason' => 'not-a-number', 'change' => null];
+        if ($e === '') return ['verdict' => 'inert', 'reason' => null, 'change' => null];
         if ($v === null) return ['verdict' => 'unknown', 'reason' => 'not-a-number', 'change' => null];
         if ($e === null) return ['verdict' => 'unknown', 'reason' => 'earlier-not-a-number', 'change' => null];
-        if ($v === false || $e === false) return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => null];
+        if ($e === false) return ['verdict' => 'unknown', 'reason' => 'too-long', 'change' => null];
         $minus = $e[0] === '-' ? substr($e, 1) : '-' . ltrim($e, '+');
         if (!self::spendOn($charge, ExactDecimal::sumCost([$v, $minus]))) return ['verdict' => 'unknown', 'reason' => 'limit', 'change' => null];
         $d = ExactDecimal::sum([$v, $minus]);

@@ -42,6 +42,12 @@ for (const [label, v, e] of [['the value', '5' + ' '.repeat(100000) + '5', '1'],
 // a plain number past QRID_MAX_PLAIN (4,096) is too long, as Logic::deltaNumber says
 check('a plain number of 4,096 digits is read', L.number('9'.repeat(4096)) === '9'.repeat(4096));
 check('one of 4,097 is too long (false)', L.number('9'.repeat(4097)) === false);
+// DLT-4: zeros that pad a number are not its digits, as Logic::deltaNumber says
+check('leading zeros past 4,096 characters are taken off', L.number('0'.repeat(4097) + '700') === '700');
+check('... with a sign, a plus dropped', L.number('-' + '0'.repeat(4096) + '7.5') === '-7.5' && L.number('+' + '0'.repeat(4096) + '7.5') === '7.5');
+check('trailing zeros of the decimals are taken off', L.number('7.5' + '0'.repeat(4096)) === '7.5');
+check('a number inside 4,096 characters keeps its zeros', L.number('007.50') === '007.50');
+check('padding does not hide a number that is too long', L.number('000' + '9'.repeat(4097)) === false);
 
 console.log('delta_js: ' + n + ' checks, ' + fails + ' failure(s)');
 process.exit(fails ? 1 : 0);

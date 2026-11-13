@@ -4355,7 +4355,13 @@ value and a missing data code on either side check nothing.
   `|change| × 100` against `maxPct × |earlier value|`, with no division and no
   rounding, so a change of exactly 10% is 10%. A number with an exponent is
   written out in full; one longer than 4,096 digits written out is too long to
-  compare and is reported, not judged.
+  compare and is flagged as that (reason `too-long`), with the save held as
+  `blockSave` says. Zeros that pad a number are not counted.
+- A value that is not a number (`abc`, `700kg`, `70,5` on a point field) is
+  REDCap's own validation to refuse on a field with number or integer
+  validation. On a Text field with no validation this tag flags it: "This is
+  not a number.", the save held as `blockSave` says, reason `not-a-number` in
+  the audit and the scan, on a first visit too.
 - The note gives the percent to one decimal. A percent that rounds to the
   limit it broke reads "more than 10%", one that rounds to 0 reads "under
   0.1%", and the earlier value is written in one form (`070` and `+70` are 70).
