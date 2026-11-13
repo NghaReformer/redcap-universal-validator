@@ -262,6 +262,8 @@ answer.
 | `redcap_user_rights`, `redcap_user_roles`, `redcap_user_information` | `@UVWRITEONCE` roles | Which role a user holds in the project, by role name. |
 | `redcap_data_access_groups` | Validation scan | The group a scan is confined to. |
 | `redcap_locking_data`, `redcap_locking_records` | Returned values (`@UVRANGE`, `@UVEXISTS` outputs) | The page does not fill returned fields on a locked form or record. |
+| `redcap_events_metadata` (`arm_id`) | Returned values | REDCap locks a whole record per arm, so the lock is read for the arm of the event shown. A REDCap whose lock table has no arm column is asked without it. |
+| `redcap_surveys`, `redcap_surveys_participants`, `redcap_surveys_response` (`completion_time`) | Returned values | A completed survey response opened on the data-entry form is read only until someone with the "Edit survey responses" right opens it for editing, so the page fills nothing there. |
 | `new \Project($pid)`, `$GLOBALS['Proj']` | Events, forms and repeating instruments of the project | The project object REDCap itself builds for the request; read, never changed. |
 | `$GLOBALS['super_user']` | Scan page | Whether the viewer is an administrator, where the framework's user object does not say. |
 

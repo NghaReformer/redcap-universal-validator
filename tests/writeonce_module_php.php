@@ -536,7 +536,9 @@ namespace {
     $mn->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
     $e = $roleNotes($mn)[0] ?? [];
     check('roles kept: where the log keeps no record id, the record and the user are keyed hashes (got ' . json_encode($e) . ')',
-        !isset($e['record']) && preg_match('/^[0-9a-f]{64}$/', $e['record_hmac'] ?? '') === 1 && preg_match('/^[0-9a-f]{64}$/', $e['saved_by'] ?? '') === 1);
+        // log() writes the hash in the record column then (UniversalValidator::logRecordColumn), never the id
+        (!isset($e['record']) || $e['record'] === ($e['record_hmac'] ?? null)) && strpos(json_encode($e), '"2"') === false
+        && preg_match('/^[0-9a-f]{64}$/', $e['record_hmac'] ?? '') === 1 && preg_match('/^[0-9a-f]{64}$/', $e['saved_by'] ?? '') === 1);
     $mn2 = $again($mn, $NODM, 'none');
     $mn2->redcap_save_record(PID, '2', 'enrol_form', 351, null, null, null, 1);
     check('roles kept: ... and are found again by the hash', !isset(woBy($mn2)['arm']) && count($roleNotes($mn2)) === 2);

@@ -3095,19 +3095,10 @@
                     "uj_dia"
                 ],
                 "assertAst": [
-                    "cmp",
-                    "<",
-                    [
-                        "ref",
-                        "uj_dia",
-                        null
-                    ],
-                    [
-                        "ref",
-                        "uj_sys",
-                        null
-                    ]
-                ]
+                    "const",
+                    true
+                ],
+                "deferred": true
             },
             {
                 "type": "justify",
@@ -3132,18 +3123,10 @@
                     "uj_dose"
                 ],
                 "whenAst": [
-                    "cmp",
-                    "=",
-                    [
-                        "ref",
-                        "uj_arm",
-                        null
-                    ],
-                    [
-                        "lit",
-                        "2"
-                    ]
-                ]
+                    "const",
+                    true
+                ],
+                "deferred": true
             },
             {
                 "type": "justify",
@@ -3166,11 +3149,7 @@
                 "fields": [
                     "uj_visit"
                 ],
-                "windowFromOp": [
-                    "ref",
-                    "uj_anchor",
-                    null
-                ]
+                "deferred": true
             },
             {
                 "type": "justify",
@@ -3195,11 +3174,7 @@
                 "fields": [
                     "uj_wt2"
                 ],
-                "deltaVsOp": [
-                    "ref",
-                    "uj_wt",
-                    null
-                ]
+                "deferred": true
             },
             {
                 "type": "justify",
@@ -3249,18 +3224,10 @@
                     "uj_off"
                 ],
                 "assertAst": [
-                    "cmp",
-                    ">=",
-                    [
-                        "ref",
-                        "uj_off",
-                        null
-                    ],
-                    [
-                        "lit",
-                        "90"
-                    ]
-                ]
+                    "const",
+                    true
+                ],
+                "deferred": true
             },
             {
                 "type": "justify",

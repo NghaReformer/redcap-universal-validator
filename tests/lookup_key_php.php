@@ -92,13 +92,16 @@ foreach ([[], ['keySecret' => ''], ['keySecret' => 'short'], ['keySecret' => 123
     check('with ' . json_encode($opts) . ' the index answers null and sends no statement',
         $ix->candidates(7, ['tok' => null], 'x') === null && $m->log === []);
     check('...and its cron pass does nothing',
-        $ix->maintain(time() + 60) === ['built' => 0, 'dropped' => 0, 'waiting' => 0, 'left' => 0] && $m->log === []);
+        $ix->maintain(time() + 60) === ['built' => 0, 'dropped' => 0, 'waiting' => 0, 'left' => 0, 'synced' => 0, 'why' => []]
+        && $m->log === []);
 }
 
 // ---- the cron's question, and forgetProject() -----------------------------------
 $m = new UvKeyModule();
 (new LookupIndex($m, ['keySecret' => $S]))->maintain(time() + 60);
-$q = $m->log[0];
+// the pass first tries the lock nobody holds, then lists its fields
+$listed = array_values(array_filter($m->log, function ($l) { return strpos($l[0], 'FROM uv_lookup_field') !== false; }));
+$q = $listed ? $listed[0] : ['', []];
 check('the cron also lists the fields keyed another way, comparing bytes, not a pattern',
     strpos($q[0], 'FROM uv_lookup_field') !== false && strpos($q[0], 'LEFT(spec, ?) <> ?') !== false
     && array_slice($q[1], -2) === [strlen($head . '|'), $head . '|']);

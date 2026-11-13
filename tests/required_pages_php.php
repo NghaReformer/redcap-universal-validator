@@ -539,10 +539,14 @@ namespace {
             public function queryLogs($sql, $params)
             {
                 if (!preg_match('/ and (record|record_hmac|instrument) = \?$/', $sql, $mm)) throw new \Exception('unexpected log query: ' . $sql);
+                // One message ("message = ?") or several in one query ("message in (?, ?)", JUS-7):
+                // the messages are every parameter before the last, the last is the record.
+                $messages = array_slice($params, 0, -1);
+                $value = (string) end($params);
                 $rows = [];
                 foreach ($this->stored as $i => $c) {
-                    if ($c[0] === $params[0] && isset($c[1][$mm[1]]) && (string) $c[1][$mm[1]] === $params[1] && isset($c[1]['fingerprint'])) {
-                        $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null];
+                    if (in_array($c[0], $messages, true) && isset($c[1][$mm[1]]) && (string) $c[1][$mm[1]] === $value && isset($c[1]['fingerprint'])) {
+                        $rows[] = ['log_id' => $i + 1, 'message' => $c[0], 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null];
                     }
                 }
                 return new class($rows) {
