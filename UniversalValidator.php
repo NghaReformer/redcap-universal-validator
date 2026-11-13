@@ -9742,6 +9742,17 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function deltaReferenceProblem(ProjectShape $shape, array $op, $form, $vsForm)
     {
+        // The answer depends on the layout and on these parts of the reference alone,
+        // so the fields of one form that write the same reference share it (review DLT-8).
+        $key = 'deltaReference|' . serialize([$op[0], isset($op[3]) ? $op[3] : null, isset($op[4]) ? $op[4] : null, (string) $form, (string) $vsForm]);
+        return $shape->remember($key, function () use ($shape, $op, $form, $vsForm) {
+            return self::deltaReferenceLayout($shape, $op, $form, $vsForm);
+        });
+    }
+
+    /** deltaReferenceProblem(), worked out from the layout. */
+    private static function deltaReferenceLayout(ProjectShape $shape, array $op, $form, $vsForm)
+    {
         $token = $op[0] === 'qref' && isset($op[3]) ? (string) $op[3] : null;
         $sel = $op[0] === 'qref' && isset($op[4]) ? (string) $op[4] : null;
         $relative = in_array($token, ['previous-event-name', 'next-event-name', 'first-event-name', 'last-event-name'], true);
@@ -10072,6 +10083,25 @@ class UniversalValidator extends AbstractExternalModule
      * the refusal says why when one was passed over (deltaHeldNote).
      */
     private static function deltaShorthandProblem(ProjectShape $shape, $short, $form, $name, $taken = [], $direction = 'both', $example = true, &$readable = null, &$advised = null)
+    {
+        // Whether a shorthand fits a form is the layout's to say, the same for every field
+        // of the form, so it is worked out once (review DLT-8). A refusal can name the
+        // field and its other tags, so it is worked out for each field that gets one.
+        $kept = $shape->remember('deltaShorthand|' . serialize([(string) $short, (string) $form]), function () use ($shape, $short, $form, $name) {
+            $read = null;
+            $why = self::deltaShorthandLayout($shape, $short, $form, $name, [], 'both', false, $read);
+            return ['fits' => $why === null, 'readable' => $read];
+        });
+        if ($kept['fits']) {
+            $readable = $kept['readable'];
+            $advised = null;
+            return null;
+        }
+        return self::deltaShorthandLayout($shape, $short, $form, $name, $taken, $direction, $example, $readable, $advised);
+    }
+
+    /** deltaShorthandProblem(), worked out from the layout. */
+    private static function deltaShorthandLayout(ProjectShape $shape, $short, $form, $name, $taken = [], $direction = 'both', $example = true, &$readable = null, &$advised = null)
     {
         $readable = false;
         $advised = null;

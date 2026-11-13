@@ -1966,6 +1966,40 @@ namespace {
     $m->projectSettings['qualified-audit-max-contexts'] = 13;
     $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
     check('... a limit of 13 entries holds all 13 visits', $eventsHit($m) === range(3, 14) && $incomplete($m) === 0);
+    // ---- DLT-8: a layout check is worked out once per form, not once per field ------------
+    $n8 = 0;
+    $ws->remember('k', function () use (&$n8) { $n8++; return null; });
+    $ws->remember('k', function () use (&$n8) { $n8++; return 'again'; });
+    check('DLT-8: ProjectShape::remember works an answer out once, a null answer too', $n8 === 1
+        && $ws->remember('k', function () { return 'again'; }) === null && $ws->remember('other', function () { return 7; }) === 7);
+    $keptBy = function ($m) {
+        $sp = new \ReflectionProperty(\INSPIRE\UniversalValidator\UniversalValidator::class, 'temporalShapes');
+        $sp->setAccessible(true);
+        $keys = [];
+        foreach ($sp->getValue($m) as $shape) {
+            $kp = new \ReflectionProperty(\INSPIRE\UniversalValidator\ProjectShape::class, 'kept');
+            $kp->setAccessible(true);
+            $keys = array_merge($keys, array_keys($kp->getValue($shape)));
+        }
+        return $keys;
+    };
+    $pick = function (array $keys, $prefix) { return array_values(array_filter($keys, function ($k) use ($prefix) { return strpos($k, $prefix) === 0; })); };
+    $m = mod($WD, $WDATA, $FULL, $REFS);
+    $p8 = page($m, 'form', '2', 'visit_form', 3);
+    check('DLT-8: 40 fields with "previous-event" on one form ask the layout once (got ' . json_encode($pick($keptBy($m), 'deltaShorthand|')) . ')',
+        count($pick($keptBy($m), 'deltaShorthand|')) === 1 && count($pick($keptBy($m), 'deltaReference|')) === 0
+        && ruleFor($p8, 'w0') && empty(ruleFor($p8, 'w0')['configError']) && empty(ruleFor($p8, 'w39')['configError']));
+    $WQ = $wide(13, 40, '@UVDELTA={"vs":"[visit1_arm_1][w0]","maxPct":10}');
+    $m = mod($WQ, $WDATA, $FULL, $REFS);
+    $p8 = page($m, 'form', '2', 'visit_form', 4);
+    check('DLT-8: 40 fields with the same written reference ask the layout once (got ' . count($pick($keptBy($m), 'deltaReference|')) . ')',
+        count($pick($keptBy($m), 'deltaReference|')) === 1 && empty(ruleFor($p8, 'w5')['configError']));
+    // a refusal still names its own field: the answer shared is only that the shorthand fits
+    $WR = $wide(1, 2, '@UVDELTA={"vs":"previous-event","maxPct":10}');
+    $p8 = page(mod($WR, ['2' => [1 => ['record_id' => '2'], 2 => ['w0' => '70', 'w1' => '70']]], $FULL, $REFS), 'form', '2', 'visit_form', 2);
+    check('DLT-8: a shorthand that does not fit is refused on every field of the form (got ' . json_encode(ruleFor($p8, 'w1')['configError'] ?? null) . ')',
+        strpos(ruleFor($p8, 'w0')['configError'] ?? '', '@UVDELTA on "w0": "vs": "previous-event" needs the form on two or more events') === 0
+        && strpos(ruleFor($p8, 'w1')['configError'] ?? '', '@UVDELTA on "w1": "vs": "previous-event" needs the form on two or more events') === 0);
     classic();
     // Extended path: a "vs" the resolver could not read arrives without a
     // value and with the reason, and the evaluator reports it.

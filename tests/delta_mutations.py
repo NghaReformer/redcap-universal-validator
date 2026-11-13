@@ -887,6 +887,13 @@ MUTATIONS = [
     ('a rule with record uniqueness narrowed by its references', TEMPORAL,
      "        if(isset($rule['references'])||($rule['uniqueScope']??null)==='record')return null;\n        $out=[];",
      "        $out=[];", TEMPORAL_INT),
+    # ---- a layout check worked out once per form (DLT-8) ----
+    ('an answer worked out again on every ask', SHAPE,
+     'if (!array_key_exists($key, $this->kept)) $this->kept[$key] = $work();',
+     '$this->kept[$key] = $work();', MODULE),
+    ('a refusal shared by the fields of a form', UV,
+     "            return ['fits' => $why === null, 'readable' => $read];",
+     "            return ['fits' => true, 'readable' => $read];", MODULE),
     ('the shorthand name sent to the page (DLT-7)', MODES,
      '"serverKeys": ["deltaVsName", "deltaAdjacent"],',
      '"serverKeys": ["deltaAdjacent"],', MODULE),

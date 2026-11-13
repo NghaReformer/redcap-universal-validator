@@ -10,6 +10,8 @@ final class ProjectShape
     private $recordIdField;
     /** eventId() answers, keyed by its arguments. The shape never changes, so neither do they. */
     private $eventIds = [];
+    /** remember() answers, by key. */
+    private $kept = [];
 
     /**
      * events[id] = {name, arm, order, forms: ?array<string>, repeats: ?array<string>,
@@ -23,6 +25,19 @@ final class ProjectShape
         $this->fields = $fields;
         $this->fieldsKnown = (bool)$fieldsKnown;
         $this->recordIdField = is_string($recordIdField) && $recordIdField !== '' ? $recordIdField : null;
+    }
+
+    /**
+     * One answer per key for this layout. A check that reads only the layout
+     * (which events hold a form, where it repeats) gives every field that asks
+     * the same question the same answer, and 500 tagged fields on a form asked
+     * it 500 times on each page load (review DLT-8). $work runs once; a null
+     * answer is kept too.
+     */
+    public function remember($key, callable $work)
+    {
+        if (!array_key_exists($key, $this->kept)) $this->kept[$key] = $work();
+        return $this->kept[$key];
     }
 
     public function fieldsKnown() { return $this->fieldsKnown; }
