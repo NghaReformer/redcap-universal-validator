@@ -341,7 +341,7 @@ function flagged(env, field) {
 {
   const rule = { type: 'choices', fields: ['pick'], choicesHide: ['NA'], choicesAll: ['1', 'NA'], blockSave: 'hard' };
   const field = () => {
-    const mirror = input('pick', 'NA'); mirror.type = 'hidden';
+    const mirror = input('pick', 'NA'); mirror.type = 'text';
     const r1 = input('pick___radio', '1'); r1.type = 'radio';
     const r2 = input('pick___radio', 'NA'); r2.type = 'radio'; r2.checked = true;
     return [mirror, r1, r2];

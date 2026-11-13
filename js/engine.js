@@ -3682,19 +3682,37 @@ function QRID_whenCollectRefs(ast, out, seen){
    for a CHECKED box on 17.x, so every [field(code)] reference silently evaluated
    false. Resolution order handles all shapes:
      1. a named __chk__…_RC_code that IS a checkbox  -> its .checked  (classic)
-     2. a named __chk__…_RC_code that is hidden       -> value===code  (17.x mirror)
-     3. the visible id-__chk__…_RC_code checkbox      -> its .checked  (fallback) */
+     2. a named __chk__…_RC_code that is not          -> value filled   (17.x mirror)
+     3. the visible id-__chk__…_RC_code checkbox      -> its .checked  (fallback)
+   The mirror is known by its name and by not being a box to tick, never by
+   type "hidden": REDCap draws the mirror of a radio as a text input hidden by
+   a style, and one drawn that way for a checkbox must read the same (R1113 CHO-2). */
 function QRID_readCheckbox(f, code){
+  return QRID_checkboxState(QRID_checkboxEls(f, code));
+}
+/* The elements of one checkbox option, {named, vis}: every element named
+   __chk__<field>_RC_<code>, and the visible box with id id-__chk__… (null
+   when the page has none). Two document lookups; a caller that redraws many
+   options keeps the result (QRIDChoiceFilterInit, R1113 CHO-5). */
+function QRID_checkboxEls(f, code){
   var nm = "__chk__" + f + "_RC_" + code;
   var els = document.getElementsByName ? document.getElementsByName(nm) : [];
-  for(var i = 0; i < els.length; i++){
-    var e = els[i];
+  var named = [];
+  for(var i = 0; i < els.length; i++) named.push(els[i]);
+  return { named: named, vis: document.getElementById ? document.getElementById("id-" + nm) : null };
+}
+/* "1" when the option whose elements these are is ticked, else "0". */
+function QRID_checkboxState(o){
+  for(var i = 0; i < o.named.length; i++){
+    var e = o.named[i];
     if((e.tagName || "").toLowerCase() !== "input") continue;
     var t = (e.type || "").toLowerCase();
     if(t === "checkbox") return e.checked ? "1" : "0";
-    if(t === "hidden") return (e.value != null && String(e.value) !== "") ? "1" : "0";
+    if(t !== "radio" && t !== "button" && t !== "submit"){
+      return (e.value != null && String(e.value) !== "") ? "1" : "0";
+    }
   }
-  var vis = document.getElementById ? document.getElementById("id-" + nm) : null;
+  var vis = o.vis;
   if(vis && (vis.type || "").toLowerCase() === "checkbox") return vis.checked ? "1" : "0";
   return "0";
 }
@@ -3891,17 +3909,22 @@ var QRID_WHEN = (function(){
      radio buttons sit beside the hidden input that carries a radio's answer,
      and REDCap builds the autocomplete box over a dropdown's select. A text
      input or a textarea has neither, so once it binds those targets are
-     dropped, and no later sweep looks for them again (PRF-4). */
+     dropped, and no later sweep looks for them again (PRF-4).
+     The input that carries a radio's answer is told by what stands beside it,
+     the buttons named <field>___radio, never by its type: REDCap 17 draws it
+     as <input type="text"> hidden by a style, older versions as type="hidden".
+     Asking for type "hidden" dropped the buttons of every radio, yes/no and
+     true/false field on 17, so a click was only heard by the 400 ms poll
+     (R1113 CHO-2). REDCap prints the buttons in the same cell as that input, so
+     when it is on the page and they are not, the field has none. */
   function bindTarget(t){
     if(!tryBind(t)) return false;
     if(t.siblings){
-      var els = document.getElementsByName(t.name), hidden = false, select = false;
+      var els = document.getElementsByName(t.name), select = false;
       for(var i = 0; i < els.length; i++){
-        var tag = (els[i].tagName || "").toLowerCase();
-        if(tag === "select") select = true;
-        else if(tag === "input" && (els[i].type || "").toLowerCase() === "hidden") hidden = true;
+        if((els[i].tagName || "").toLowerCase() === "select") select = true;
       }
-      if(!hidden) t.siblings.radio.dead = true;
+      if(select || !document.getElementsByName(t.siblings.radio.name).length) t.siblings.radio.dead = true;
       if(!select) t.siblings.ac.dead = true;
     }
     return true;
@@ -8290,6 +8313,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     var selectOrig = [];   /* options retain their original parent and order */
     var parking = null;    /* where hidden options wait (QRID_choiceParking) */
     var activeHidden = Object.create(null), autocompleteInput = null;
+    var labelIndex = null;   /* this field's codes and labels (buildLabelIndex) */
     function inSelect(o){
       var at = o.parentNode;
       return !!at && (at === select || at.parentNode === select);
@@ -8325,7 +8349,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
              main thread for seconds per selection). */
           if(o.__qridSnap === selectOrig) continue;
           o.__qridSnap = selectOrig;
-          selectOrig.push({ node: o, parent: parent, disabled: !!o.disabled, parked: false });
+          selectOrig.push({ node: o, parent: parent, parked: false });
         }
       }
       visit(select); // also discover options populated after page initialization
@@ -8340,16 +8364,123 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
          labels. Resolve labels against this field only, never another menu. */
       var value = item && item.value != null ? String(item.value) : String(item);
       var label = item && item.label != null ? String(item.label) : value;
-      var found = null;
+      /* Looked up in an index of this field's codes and labels, built once
+         per redraw. Walking every option for every suggestion made one
+         keystroke over 1,000 label-only suggestions cost over a second
+         (R1113 CHO-4). */
+      var ix = labelIndex || (labelIndex = buildLabelIndex());
+      /* An item whose value is its own label is a label first: read as a
+         code it named the wrong choice whenever one choice's label was
+         another choice's code (R1113 CHO-4). */
+      var asLabel = label in ix.byText ? ix.byText[label] : (value in ix.byText ? ix.byText[value] : undefined);
+      if(label === value && asLabel !== undefined) return asLabel;
+      if(ix.byCode[value]) return value;
+      return asLabel === undefined ? null : asLabel;
+    }
+    /* {byCode: code => true, byText: label => code, or null when two choices
+       share that label (an ambiguous label cannot authorize an option)}. */
+    function buildLabelIndex(){
+      var ix = { byCode: Object.create(null), byText: Object.create(null) };
+      function put(text, code){
+        if(text === "") return;
+        if(text in ix.byText){ if(ix.byText[text] !== code) ix.byText[text] = null; }
+        else ix.byText[text] = code;
+      }
       for(var i = 0; i < selectOrig.length; i++){
-        var o = selectOrig[i].node, code = String(o.value), text = String(o.text || o.textContent || "");
-        if(value === code) return code;
-        if(label === text || value === text){
-          if(found !== null && found !== code) return null; // ambiguous labels cannot authorize an option
-          found = code;
+        var o = selectOrig[i].node, code = String(o.value);
+        ix.byCode[code] = true;
+        put(optionText(o), code);
+        if(typeof o.innerHTML === "string") put(o.innerHTML, code);
+      }
+      return ix;
+    }
+    function optionText(o){ return String(o.text || o.textContent || ""); }
+    /* REDCap builds the autocomplete box of a dropdown once, from the options
+       the select holds at that moment: a list of {value: label, code: code}
+       that is the widget's source and that its own blur handler reads to
+       turn typed text into a code. The engine may hide options before or
+       after that, so the list went stale: a choice the rule released later
+       was never offered and the cascade looked dead until a reload (R1113 CHO-1),
+       and a hidden choice typed in full was accepted, which emptied the
+       select while the box kept the text (R1113 CHO-3). After each redraw that
+       changes the options, and whenever the widget has a new list, the list
+       is filled again the way REDCap fills it, from the options in the
+       select, in their order. It is changed in place, because REDCap's
+       handlers hold the same array. Items REDCap made are kept and reused,
+       so a label keeps the form REDCap gave it. A source that is not such a
+       list (a function, a URL, items without a code) is left alone, and the
+       response filter above still hides what the rule hides. */
+    var acSource = null, acItems = Object.create(null), acKeys = null;
+    function syncSource(ac, jq, changed){
+      if(!jq || !jq.fn || !jq.fn.autocomplete) return;
+      var src;
+      try { src = jq(ac).autocomplete("option", "source"); } catch(e){ return; }   /* widget not built yet */
+      if(!src || Object.prototype.toString.call(src) !== "[object Array]") return;
+      if(!changed && src === acSource) return;
+      var i, it, blank = false;
+      for(i = 0; i < src.length; i++){
+        it = src[i];
+        if(!it || typeof it !== "object" || it.code == null) return;   /* not REDCap's list */
+      }
+      for(i = 0; i < src.length; i++){
+        it = src[i];
+        acItems[String(it.code)] = it;
+        if(String(it.code) === "") blank = true;
+        if(!acKeys) acKeys = { label: it.label != null, html: null, sample: it };
+      }
+      var list = [];
+      for(i = 0; i < selectOrig.length; i++){
+        var e = selectOrig[i], o = e.node, code = o.value == null ? "" : String(o.value);
+        if(e.parked || !inSelect(o)) continue;
+        if(code === "" && !blank) continue;   /* the blank option only where REDCap listed it */
+        it = acItems[code];
+        /* an item kept from an earlier list is good while its label is still
+           the option's (a language switch rewrites the labels) */
+        if(it && String(it.value) !== optionText(o) && String(it.value) !== o.innerHTML) it = null;
+        if(!it){
+          /* a choice the list never held (REDCap built it while the choice
+             was hidden): its label takes the form the list's own items use,
+             the option's text or its markup */
+          if(acKeys && acKeys.html === null){
+            var so = null;
+            for(var k = 0; k < selectOrig.length && !so; k++){
+              if(String(selectOrig[k].node.value) === String(acKeys.sample.code)) so = selectOrig[k].node;
+            }
+            acKeys.html = !!(so && typeof so.innerHTML === "string" && String(acKeys.sample.value) === so.innerHTML
+              && so.innerHTML !== optionText(so));
+          }
+          var text = (acKeys && acKeys.html) ? o.innerHTML : optionText(o);
+          it = { value: text, code: code };
+          if(acKeys && acKeys.label) it.label = text;
+          acItems[code] = it;
+        }
+        list.push(it);
+      }
+      src.length = 0;
+      for(i = 0; i < list.length; i++) src.push(list[i]);
+      acSource = src;
+      try { jq(ac).autocomplete("option", "source", src); } catch(e2){}
+    }
+    /* The box shows the label of a choice the rule hides while the select
+       holds no answer: REDCap's blur handler accepted the typed label from a
+       list this module could not refill, and set the select to a code it no
+       longer has. The text is taken out, as REDCap does for any text that
+       matches no choice, so the box never shows an answer the save will not
+       carry (R1113 CHO-3). Never while the person is still typing in the box. */
+    function settleTypedHidden(ac){
+      if(typeof ac.value !== "string" || ac.value === "") return;
+      if(select.value != null && String(select.value) !== "") return;
+      if(typeof document !== "undefined" && document.activeElement === ac) return;
+      for(var i = 0; i < selectOrig.length; i++){
+        var e = selectOrig[i];
+        if(!e.parked) continue;
+        if(ac.value === optionText(e.node) || (typeof e.node.innerHTML === "string" && e.node.innerHTML !== "" && ac.value === e.node.innerHTML)){
+          ac.value = "";
+          /* no option selected at all: back to the blank one, which posts "" */
+          if(select.selectedIndex === -1) select.value = "";
+          return;
         }
       }
-      return found;
     }
     function syncAutocomplete(changed){
       if(!select || !document.getElementById) return;
@@ -8384,12 +8515,15 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
         }
       }
       QRID_setModeState(ac, "ch", input.__qridModeState && input.__qridModeState.ch || null);
+      syncSource(ac, jq, changed);
+      settleTypedHidden(ac);
       if(changed && jq && jq.fn && jq.fn.autocomplete){
         try { jq(ac).autocomplete("close"); } catch(e){} // late widget initialization is legitimate
       }
     }
-    function renderSelect(hiddenSet){
+    function renderSelect(hiddenSet, V){
       snapshotOptions();
+      labelIndex = null;   /* labels may have been rewritten since (a language switch) */
       var changed = false;
       for(var k in activeHidden) if(!hiddenSet[k]) changed = true;
       for(var k2 in hiddenSet) if(!activeHidden[k2]) changed = true;
@@ -8422,10 +8556,15 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
            answer REDCap received: an edit was silently discarded and the audit
            never saw it. Disabling bought nothing anyway — the stale option is
            already a dead end, removed the moment another choice is picked.
-           `disabled` is only ever restored to what REDCap itself set. */
+           `disabled` is never written here at all. It used to be put back to
+           what the option had when the page opened, which undid an option
+           REDCap, another module or a project script disabled or enabled
+           later (R1113 CHO-6). */
         if(o.parentNode === parent) parent.__qridNext = o;
-        var stale = !!(isCur && hiddenSet[val]);
-        if(o.disabled !== entry.disabled){ o.disabled = entry.disabled; changed = true; }
+        /* Greyed only when the answer is one the rule judges: a Missing Data
+           Code, or a value outside the field's list, is never reported stale
+           (staleCodes), so it is not drawn stale either (R1113 CHO-11). */
+        var stale = !!(isCur && V && judged(V, val));
         if(!!o.__qridStale !== stale){
           o.__qridStale = stale;
           if(o.setAttribute && o.removeAttribute){
@@ -8443,15 +8582,29 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       if(String(select.value) !== cur) select.value = cur;
       syncAutocomplete(changed);
     }
+    /* One checkbox option's elements (QRID_checkboxEls), kept between
+       redraws. Each redraw looked every option up again, four document
+       lookups an option, two of them by name: 400 options cost most of a
+       second per change of the controlling field (R1113 CHO-5). What was found
+       stays good while every element of it is still in the page; an option
+       REDCap drew again, or one not on the page yet, is looked up afresh. */
+    var chkEls = Object.create(null);
+    function attached(el){
+      return !!el && el.parentNode != null && el.isConnected !== false;
+    }
+    function checkboxEls(code){
+      var o = chkEls[code], ok = !!o && (o.named.length > 0 || !!o.vis);
+      for(var i = 0; ok && i < o.named.length; i++) ok = attached(o.named[i]);
+      if(ok && o.vis) ok = attached(o.vis);
+      if(!ok) o = chkEls[code] = QRID_checkboxEls(fieldName, code);
+      return o;
+    }
     function optionWrappers(code){   /* checkbox: a radio's come from renderOptions */
-      var out = [];
       /* checkbox: the hidden mirror AND (REDCap 17.x) the visible checkbox both
          sit inside the same choicevert row, so hiding either one's parent hides
          the whole option — include both so the row hides on every rendering. */
-      var chk = document.getElementsByName ? document.getElementsByName("__chk__" + fieldName + "_RC_" + code) : [];
-      for(var c = 0; c < chk.length; c++) out.push(chk[c]);
-      var vis = document.getElementById ? document.getElementById("id-__chk__" + fieldName + "_RC_" + code) : null;
-      if(vis) out.push(vis);
+      var o = checkboxEls(code), out = o.named.slice();
+      if(o.vis) out.push(o.vis);
       return out;
     }
     function renderOptions(hiddenSet){   /* radio + checkbox: hide the wrapper row */
@@ -8474,7 +8627,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
         /* a checked/selected option is NEVER hidden from under the user. The
            checked state is read robustly (QRID_readCheckbox) because a checkbox
            option's .checked cannot be read off the hidden mirror on REDCap 17. */
-        var selected = isCheckbox ? (QRID_readCheckbox(fieldName, code) === "1") : (cur === code);
+        var selected = isCheckbox ? (QRID_checkboxState(checkboxEls(code)) === "1") : (cur === code);
         var hide = !!hiddenSet[code] && !selected;
         var els = isCheckbox ? optionWrappers(code) : (radioRows[code] || []);
         for(var j = 0; j < els.length; j++) QRID_choiceDisplay(els[j].parentNode, hide);
@@ -8482,21 +8635,26 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
         for(var b = 0; b < btns.length; b++) QRID_choiceDisplay(btns[b], hide);
       }
     }
-    function render(hiddenSet){
-      if(select) renderSelect(hiddenSet);
+    function render(hiddenSet, V){
+      if(select) renderSelect(hiddenSet, V || null);
       else renderOptions(hiddenSet);
+    }
+    /* Whether a dropdown's or radio's answer v is one branch V hides and
+       judges: in the field's list and not a Missing Data Code. */
+    function judged(V, v){
+      return v !== "" && !!V.hiddenSet[v] && (!V.all || QRID_inList(V.all, v)) && !QRID_isMissingCode(v);
     }
     /* codes currently SELECTED that the active filter hides (the stale set) */
     function staleCodes(V){
       var out = [];
       if(!isCheckbox){                                     /* dropdown / radio: one scalar value */
         var v = QRID_whenTrim(QRID_WHEN.readRef(fieldName, null));
-        if(v !== "" && V.hiddenSet[v] && (!V.all || QRID_inList(V.all, v)) && !QRID_isMissingCode(v)) out.push(v);
+        if(judged(V, v)) out.push(v);
         return out;
       }
       for(var i = 0; i < V.hiddenList.length; i++){        /* checkbox: any checked hidden code */
         var code = V.hiddenList[i];
-        if(QRID_WHEN.readRef(fieldName, code) === "1") out.push(code);
+        if(QRID_checkboxState(checkboxEls(code)) === "1") out.push(code);
       }
       return out;
     }
@@ -8509,11 +8667,14 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       if(select || !document.getElementsByName) return out;
       els = document.getElementsByName(fieldName + "___radio");
       for(i = 0; i < els.length; i++) out.push(els[i]);
-      els = document.getElementsByName("__chkn__" + fieldName);
+      var shared = "__chkn__" + fieldName;
+      els = document.getElementsByName(shared);
       for(i = 0; i < els.length; i++) out.push(els[i]);
-      for(k = 0; isCheckbox && document.getElementById && k < MANAGED.length; k++){
-        var vis = document.getElementById("id-__chk__" + fieldName + "_RC_" + MANAGED[k]);
-        if(vis && out.indexOf(vis) < 0) out.push(vis);
+      /* a visible box that does not carry the shared name was not in that
+         list; the others are in it already */
+      for(k = 0; isCheckbox && k < MANAGED.length; k++){
+        var vis = checkboxEls(MANAGED[k]).vis;
+        if(vis && vis.name !== shared) out.push(vis);
       }
       return out;
     }
@@ -8553,7 +8714,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
         setGuard(false); setState(null); return;
       }
       var V = act[0];
-      render(V.hiddenSet);
+      render(V.hiddenSet, V);
       var stale = staleCodes(V);
       if(!stale.length){ clear(); return; }
       styleMsg(msg);

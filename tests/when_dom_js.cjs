@@ -144,7 +144,7 @@ const BAD_ID = '0ABC00001X'; // wrong iso7064_mod37_36 check character
 // ---- 2) radio-family ref (hidden input + ___radio group) -------------------
 {
   const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;
-  const hidden = makeEl('input'); hidden.name = 'sex'; hidden.type = 'hidden'; hidden.value = '';
+  const hidden = makeEl('input'); hidden.name = 'sex'; hidden.type = 'text'; hidden.value = '';
   const r1 = makeEl('input'); r1.name = 'sex___radio'; r1.type = 'radio'; r1.value = '1';
   const r2 = makeEl('input'); r2.name = 'sex___radio'; r2.type = 'radio'; r2.value = '2';
   const env = boot([sid, hidden, r1, r2], {

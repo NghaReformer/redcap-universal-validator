@@ -223,7 +223,7 @@ function submitEv() {
 
 // ---- 5) required on a radio-family field (hidden mirror + ___radio group) --
 {
-  const hidden = makeEl('input'); hidden.name = 'sex'; hidden.type = 'hidden'; hidden.value = '';
+  const hidden = makeEl('input'); hidden.name = 'sex'; hidden.type = 'text'; hidden.value = '';
   const r1 = makeEl('input'); r1.name = 'sex___radio'; r1.type = 'radio'; r1.value = '1';
   const r2 = makeEl('input'); r2.name = 'sex___radio'; r2.type = 'radio'; r2.value = '2';
   const env = boot([hidden, r1, r2], {

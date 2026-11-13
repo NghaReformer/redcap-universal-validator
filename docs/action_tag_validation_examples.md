@@ -1338,7 +1338,9 @@ three-level cascade is this same pattern on two fields: `region` branches on
 ### `@UVCHOICES` JSON keys
 
 `show` **or** `hide` (exactly one, a list of choice codes), `when`, `message`,
-`blockSave`, `caseSensitive`. Any other key is a configuration error.
+`blockSave`, `caseSensitive`, and `references` (named bindings that `when` reads
+as `{alias}`; needs event and instance references). Any other key is a
+configuration error.
 
 ---
 
@@ -1366,6 +1368,13 @@ branch stays visible and is marked invalid; `blockSave:"hard"` challenges the br
 save until it is corrected. Dropdowns keep that stale option greyed and marked
 `data-uv-stale`, never disabled, so the answer on screen is the answer REDCap
 receives; autocomplete keeps the entered text but excludes it from new suggestions.
+With auto-complete on, the text box offers and accepts the choices on show: a
+choice released by a new region can be picked or typed at once, and the label of a
+hidden choice typed in full is treated as text that matches no choice, so the box
+and the field are left blank.
+A dropdown whose choice labels pipe another field's value (`[field]` inside a
+label) may show an old label on a choice that was hidden while that value changed;
+reloading the page shows the current label. The stored code is not affected.
 On a survey shown one section per page, the controlling field may sit on an earlier
 page: the page is drawn with the condition settled from the saved answer. Clearing or correcting
 the answer releases the choice-filter block. Off-page/extended conditions remain
