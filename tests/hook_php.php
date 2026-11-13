@@ -342,6 +342,12 @@ namespace {
         return array_values(array_filter($m->logCalls, function ($c) use ($kind) { return $c[0] === $kind; }));
     }
     function invalidLogs($m) { return logsOf($m, 'invalid-id-saved'); }
+    /** An entry whose record column the module filled itself, with the record's hash or the withheld word (FRM-2). */
+    function recordKept(array $e) {
+        if (!isset($e['record']) || $e['record'] === '') return false;
+        if ($e['record'] === \INSPIRE\UniversalValidator\UniversalValidator::LOG_RECORD_WITHHELD) return true;
+        return isset($e['record_hmac']) && $e['record'] === $e['record_hmac'];
+    }
     function loggedFields($m) {
         return array_map(function ($c) { return $c[1]['field']; }, invalidLogs($m));
     }
@@ -553,13 +559,13 @@ namespace {
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
     $one = invalidLogs($m)[0][1];
     check('strict mode omits the value entirely', !isset($one['value']) && !isset($one['value_hmac']));
-    check('strict mode hashes the record id', isset($one['record_hmac']) && !isset($one['record']));
+    check('strict mode hashes the record id', isset($one['record_hmac']) && recordKept($one));
 
     // strict mode ON THE EXCEPTION PATH: the audit-error entry must honor it too (SEC-003)
     $m = newModule($dialogRules, $dictionary, $classicData, 149, true, ['log-values' => 'none']);
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
     $errs = logsOf($m, 'uvalidate-audit-error');
-    check('strict mode: audit-error has NO raw record', count($errs) === 1 && !isset($errs[0][1]['record']));
+    check('strict mode: audit-error has NO raw record', count($errs) === 1 && recordKept($errs[0][1]));
     check('strict mode: audit-error record is keyed-hashed', isset($errs[0][1]['record_hmac']));
 
     // raw: explicit opt-in stores both raw
@@ -576,7 +582,7 @@ namespace {
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
     $errs = logsOf($m, 'uvalidate-audit-error');
     check('off mode: audit-error is logged without ANY record identifier',
-        count($errs) === 1 && !isset($errs[0][1]['record']) && !isset($errs[0][1]['record_hmac']));
+        count($errs) === 1 && recordKept($errs[0][1]) && !isset($errs[0][1]['record_hmac']));
 
     // CFXB-N3. A "log-values" that cannot be read, or holds a value this
     // build does not know, is strict mode: it was read as "hashed", which
@@ -589,7 +595,7 @@ namespace {
     check('CFXB-N3: a log-values read that throws still logs the detection',
         count($inv) >= 1 && $inv[0][1]['field'] !== '');
     check('CFXB-N3: and logs it as strict mode does: the record as its keyed hash, no value',
-        isset($inv[0][1]['record_hmac']) && !isset($inv[0][1]['record'])
+        isset($inv[0][1]['record_hmac']) && recordKept($inv[0][1])
         && !isset($inv[0][1]['value']) && !isset($inv[0][1]['value_hmac'])
         && $inv[0][1]['record_hmac'] === hash_hmac('sha256', '2', $m->systemSettings['log-hmac-key'] . '|149'));
     foreach (['strict', 'Hashed', 'RAW', ' none', '1', 0, ['raw']] as $odd) {
@@ -597,7 +603,7 @@ namespace {
         $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
         $inv = invalidLogs($m);
         check('CFXB-N3: a log-values of ' . json_encode($odd) . ' this build does not know is strict mode',
-            count($inv) >= 1 && isset($inv[0][1]['record_hmac']) && !isset($inv[0][1]['record'])
+            count($inv) >= 1 && isset($inv[0][1]['record_hmac']) && recordKept($inv[0][1])
             && !isset($inv[0][1]['value']) && !isset($inv[0][1]['value_hmac']));
     }
     $m = newModule($dialogRules, $dictionary, $classicData, 149, true, ['log-values' => 'none']);
@@ -605,7 +611,7 @@ namespace {
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
     $errs = logsOf($m, 'uvalidate-audit-error');
     check('CFXB-N3: and on the audit-error path a read that throws gives the record as its keyed hash, never raw',
-        count($errs) === 1 && !isset($errs[0][1]['record']) && isset($errs[0][1]['record_hmac']));
+        count($errs) === 1 && recordKept($errs[0][1]) && isset($errs[0][1]['record_hmac']));
     $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => '']);
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
     check('CFXB-N3 (control): an unset log-values is still the default, with the record raw',
@@ -3948,6 +3954,146 @@ namespace {
         $probe();
         $m->redcap_module_ajax('scan-status', ['run_id' => 0], 149, null, null, null, null, null, null, null, '', '', 'alice', null);
         check('QUA-5: ...and an AJAX answer', count($faultsOf($m)) === 1);
+    }
+
+    // ---- FRM-2: the log's record column follows the log mode ------------------
+    // The framework fills the record column from the page or hook it runs in
+    // when log() is handed no "record". In the none and off modes the module
+    // handed it none, so the raw record id could sit beside the hash meant to
+    // replace it. Every entry of such a project now names its record itself:
+    // the hash, or a fixed word, never an empty value the framework might fill.
+    {
+        $W = \INSPIRE\UniversalValidator\UniversalValidator::LOG_RECORD_WITHHELD;
+        $raws = function ($m) {
+            return array_values(array_filter($m->logCalls, function ($c) { return isset($c[1]['record']) && (string) $c[1]['record'] === '2'; }));
+        };
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => 'none']);
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $one = invalidLogs($m)[0][1];
+        check('FRM-2: none mode names the record column itself, as the hash (got ' . json_encode($one['record'] ?? null) . ')',
+            isset($one['record'], $one['record_hmac']) && $one['record'] === $one['record_hmac'] && strlen($one['record']) === 64);
+        check('FRM-2: none mode: no entry of the save leaves the record column to the framework',
+            count($m->logCalls) > 0 && count(array_filter($m->logCalls, function ($c) { return !isset($c[1]['record']) || $c[1]['record'] === ''; })) === 0);
+        check('FRM-2: none mode: no entry holds the raw record id', $raws($m) === []);
+
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, true, ['log-values' => 'none']);
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $errs = logsOf($m, 'uvalidate-audit-error');
+        check('FRM-2: none mode: the audit-error entry names its hash as the record',
+            count($errs) === 1 && isset($errs[0][1]['record']) && $errs[0][1]['record'] === $errs[0][1]['record_hmac']);
+
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, true, ['log-values' => 'off']);
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $errs = logsOf($m, 'uvalidate-audit-error');
+        check('FRM-2: off mode: the audit-error entry says the record is withheld, and holds no id or hash',
+            count($errs) === 1 && $errs[0][1]['record'] === $W && !isset($errs[0][1]['record_hmac']) && $raws($m) === []);
+
+        // no key to hash with: still never the raw id, and never empty
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => 'none']);
+        $m->systemSettings['log-hmac-key'] = 'not a key';
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        foreach (invalidLogs($m) as $c) {
+            check('FRM-2: none mode with or without a key: the record column is a hash or the withheld word',
+                isset($c[1]['record']) && ($c[1]['record'] === $W || (isset($c[1]['record_hmac']) && $c[1]['record'] === $c[1]['record_hmac'])));
+        }
+
+        // the modes that store record ids on purpose are passed on as they came
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, true, ['log-values' => '']);
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        $errs = logsOf($m, 'uvalidate-audit-error');
+        check('FRM-2 (control): hashed mode still names the record raw', count($errs) === 1 && $errs[0][1]['record'] === '2');
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => '']);
+        $m->log('some-entry', ['a' => '1']);
+        check('FRM-2 (control): hashed mode: an entry that names no record is passed on as it came',
+            $m->logCalls[0][1] === ['a' => '1']);
+        $m->log('some-entry', ['a' => '1', 'record' => '']);
+        check('FRM-2 (control): ...and an empty record is dropped, not passed on', $m->logCalls[1][1] === ['a' => '1']);
+
+        // an entry written outside the save hook, by a page or an endpoint
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => 'none']);
+        $m->log('some-entry', ['a' => '1']);
+        check('FRM-2: none mode: an entry that names no record says it is withheld', $m->logCalls[0][1] === ['a' => '1', 'record' => $W]);
+        $m->log('some-entry', ['a' => '1', 'record' => '']);
+        check('FRM-2: none mode: an empty record is replaced, never passed on', $m->logCalls[1][1]['record'] === $W);
+        $m->log('some-entry', ['record' => '7']);
+        check('FRM-2: a caller that names a record is left alone', $m->logCalls[2][1]['record'] === '7');
+        // the project named by the entry, when the page names none
+        $m = newModule($dialogRules, $dictionary, $classicData, null, false, ['log-values' => 'off']);
+        $m->log('some-entry', ['project_id' => 149]);
+        check('FRM-2: off mode, project named by the entry: withheld', $m->logCalls[0][1]['record'] === $W);
+        // no project at all (a system cron): nothing to protect, nothing added
+        $m = newModule($dialogRules, $dictionary, $classicData, null, false, ['log-values' => 'none']);
+        $m->log('scan-cron', ['what' => 'x']);
+        check('FRM-2: with no project the entry is passed on as it came', $m->logCalls[0][1] === ['what' => 'x']);
+        // a log mode that cannot be read is the none mode (CFXB-N3), here too
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => 'raw']);
+        $m->settingThrows = ['log-values' => true];
+        $m->log('some-entry', []);
+        check('FRM-2: a log mode that cannot be read withholds the record', $m->logCalls[0][1]['record'] === $W);
+    }
+
+    // ---- FRM-3: a page hook never throws to the framework --------------------
+    // A settings read that threw inside redcap_data_entry_form_top or
+    // redcap_survey_page_top went up to the framework: the form rendered with
+    // no rule, no hard block and no word to the person entering data.
+    {
+        $hooks = ['redcap_data_entry_form_top' => [149, '1', 'id_validation_test', 351, null, 1],
+                  'redcap_survey_page_top'     => [149, '1', 'id_validation_test', 351, null, 'hash', null, 1]];
+        foreach ($hooks as $hook => $args) {
+            $m = newModule($dialogRules, $dictionary, $classicData, 149);
+            ob_start();
+            $m->$hook(...$args);
+            $ok = ob_get_clean();
+            $keys = array_values(array_unique(array_map(function ($r) { return $r[1]; },
+                array_filter($m->settingReads, function ($r) { return $r[0] === 'getProjectSetting'; }))));
+            check("FRM-3 (control): $hook puts the rules on the page", strpos($ok, 'uv-page-error-notice') === false && strlen($ok) > 100);
+
+            $m = newModule($dialogRules, $dictionary, $classicData, 149);
+            $m->settingThrows = array_fill_keys($keys, true);
+            $F::take();
+            $level = ob_get_level();
+            ob_start();
+            $threw = null;
+            try { $m->$hook(...$args); } catch (\Throwable $e) { $threw = get_class($e); }
+            $out = ob_get_clean();
+            check("FRM-3: $hook does not throw when the settings cannot be read (got " . json_encode($threw) . ')', $threw === null);
+            check("FRM-3: $hook leaves the output buffers as it found them", ob_get_level() === $level);
+            $errs = logsOf($m, 'uvalidate-page-error');
+            check("FRM-3: $hook logs one uvalidate-page-error entry (got " . count($errs) . ')', count($errs) === 1);
+            if ($errs) {
+                $e1 = $errs[0][1];
+                check("FRM-3: $hook: the entry names the class, the place and the instrument, and no message",
+                    $e1['error'] === 'RuntimeException' && preg_match('/^[A-Za-z_]+\.php:\d+$/', $e1['where']) === 1
+                    && $e1['instrument'] === 'id_validation_test' && !isset($e1['detail'])
+                    && $e1['context'] === ($hook === 'redcap_survey_page_top' ? 'survey' : 'form'));
+            }
+            if ($hook === 'redcap_data_entry_form_top') {
+                check('FRM-3: a data-entry form tells staff once that the checks did not load',
+                    substr_count($out, 'id="uv-page-error-notice"') === 1 && strpos($out, 'not checked as you type') !== false);
+                check('FRM-3: ...and prints nothing else: no half-written script or config',
+                    strpos($out, '<script') === false && strpos($out, 'application/json') === false);
+                ob_start();
+                $m->$hook(...$args);
+                $again = ob_get_clean();
+                check('FRM-3: a second failing hook of the same request neither logs nor shows the notice again',
+                    $again === '' && count(logsOf($m, 'uvalidate-page-error')) === 1);
+            } else {
+                check('FRM-3: a survey page shows the respondent nothing', $out === '');
+            }
+        }
+        // the throw is counted (Faults), and in debug mode the entry carries the message
+        $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => '', 'debug-log' => true]);
+        $m->settingThrows = array_fill_keys(array_diff($keys, ['debug-log']), true);
+        $F::take();
+        ob_start();
+        $m->redcap_data_entry_form_top(149, '1', 'id_validation_test', 351, null, 1);
+        ob_end_clean();
+        $errs = logsOf($m, 'uvalidate-page-error');
+        check('FRM-3: with the debug setting on, the entry carries the message',
+            count($errs) === 1 && isset($errs[0][1]['detail']) && $errs[0][1]['detail'] === 'the settings could not be read');
+        $fl = $faultsOf($m);
+        check('FRM-3: the throw is counted at UniversalValidator::runPageHook (got ' . json_encode($fl) . ')',
+            count($fl) === 1 && ($fl[0]['UniversalValidator::runPageHook|RuntimeException'] ?? 0) === 1);
     }
 
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);

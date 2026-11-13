@@ -131,11 +131,7 @@ class UniversalValidator extends AbstractExternalModule
     {
         // Record context is threaded through so "when" conditions can snapshot
         // saved values of fields that are not on the rendered page.
-        try {
-            $this->injectClient($project_id, 'form', $record, $instrument, $event_id, $repeat_instance);
-        } finally {
-            $this->reportFaults($project_id);
-        }
+        $this->runPageHook($project_id, 'form', $record, $instrument, $event_id, $repeat_instance);
     }
 
     public function redcap_survey_page_top($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance = 1)
@@ -144,11 +140,77 @@ class UniversalValidator extends AbstractExternalModule
         // detail in front of survey respondents (who cannot act on it); the
         // same problems stay fully visible on staff data-entry forms and in
         // the module log.
+        $this->runPageHook($project_id, 'survey', $record, $instrument, $event_id, $repeat_instance);
+    }
+
+    /** Whether this request has already written its uvalidate-page-error entry and shown its notice. */
+    private $pageHookFailed = false;
+
+    /**
+     * The body of both page hooks. NO EXCEPTION LEAVES IT (FRM-3).
+     *
+     * injectClient() reads settings, the data dictionary and saved values. A
+     * read that threw (a lock wait timeout on the settings table is enough)
+     * went up to the framework, which mails the administrator and renders the
+     * form with no rule on it, no hard block and no word to the person
+     * entering data. The throw is caught now: it is counted (Faults), written
+     * once to the module log as uvalidate-page-error, and a data-entry form
+     * says, once, that the checks did not load. A survey page says nothing:
+     * the respondent can do nothing about it. The check after the save does
+     * not depend on this hook and still runs.
+     *
+     * What injectClient() printed before it threw is dropped, so the page
+     * never gets half a script element.
+     */
+    private function runPageHook($project_id, $context, $record, $instrument, $event_id, $repeat_instance)
+    {
+        $level = ob_get_level();
+        $buffered = ob_start();
         try {
-            $this->injectClient($project_id, 'survey', $record, $instrument, $event_id, $repeat_instance);
+            $this->injectClient($project_id, $context, $record, $instrument, $event_id, $repeat_instance);
+            if ($buffered) ob_end_flush();
+        } catch (\Throwable $e) {
+            while ($buffered && ob_get_level() > $level) ob_end_clean();
+            Faults::swallow($e, 'UniversalValidator::runPageHook');
+            $this->pageHookFailure($project_id, $context, $instrument, $e);
         } finally {
             $this->reportFaults($project_id);
         }
+    }
+
+    /**
+     * Log a page hook that threw, and tell staff, once in a request. The entry
+     * names the exception's class and place; its message can hold data, so it
+     * is included only when the project's debug setting is on (as
+     * logAuditError()). It names no record.
+     */
+    private function pageHookFailure($pid, $context, $instrument, \Throwable $e)
+    {
+        if ($this->pageHookFailed) return;
+        $this->pageHookFailed = true;
+        try {
+            $entry = [
+                'context'    => (string) $context,
+                'instrument' => (string) $instrument,
+                'error'      => get_class($e),
+                'where'      => basename($e->getFile()) . ':' . $e->getLine(),
+                'effect'     => 'no rule was put on this page; the check after the save still runs',
+            ];
+            try {
+                if ($pid && $this->debugEnabled($pid)) $entry['detail'] = substr((string) $e->getMessage(), 0, 500);
+            } catch (\Throwable $ignored) {
+                Faults::swallow($ignored, 'UniversalValidator::pageHookFailure');
+            }
+            $this->log('uvalidate-page-error', $entry);
+        } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::pageHookFailure');
+        }
+        if ($context !== 'form') return;
+        echo '<div id="uv-page-error-notice" role="alert" style="margin:8px 0;padding:8px 12px;border:1px solid #d9a0a0;'
+            . 'border-radius:4px;background:#fdf0f0;color:#7a1f1f;font-size:13px;max-width:900px">'
+            . '<b>Universal Field Validator could not load its checks on this page.</b> Values are not checked as you type, '
+            . 'and nothing here will stop a save. The check after the save still runs. Reload the page; if this notice '
+            . 'stays, tell the project administrator (the module log has a <code>uvalidate-page-error</code> entry).</div>';
     }
 
     // -- what the audit found, told to the person who saved ------------------
@@ -4886,6 +4948,69 @@ class UniversalValidator extends AbstractExternalModule
         }
         if ($mode === null || $mode === '') return 'hashed';
         return in_array($mode, self::LOG_MODES, true) ? $mode : 'none';
+    }
+
+    /** What the log's record column holds when the project's mode keeps record ids out and no hash can stand in. */
+    const LOG_RECORD_WITHHELD = '[withheld]';
+
+    /**
+     * Every module log entry goes through here, so that the log's RECORD
+     * COLUMN follows the project's "log-values" mode as the entry's
+     * parameters do (FRM-2).
+     *
+     * The framework's log() takes the record from the "record" parameter and,
+     * when the caller passes none, fills the column itself from the page or
+     * hook it runs in. In the "none" mode the module passed "record_hmac" and
+     * no "record", and in "off" neither, so the raw record id could be stored
+     * in the column beside the hash meant to replace it. Nothing in this
+     * module reads the framework's source, and whether an empty "record" also
+     * counts as none passed differs by reading, so the value written here is
+     * never empty where an id must stay out:
+     *
+     *   - an entry that carries "record_hmac" gets that hash as its record;
+     *   - any other entry of a project in the "none" or "off" mode gets
+     *     LOG_RECORD_WITHHELD;
+     *   - in "hashed" and "raw", which store record ids on purpose, and where
+     *     no project is known (a system cron), the entry is passed on as it
+     *     came.
+     *
+     * A caller that names a record itself is left alone: logInvalid() and its
+     * siblings do so only in the modes that store the id.
+     */
+    public function log($message, $parameters = [])
+    {
+        if (!is_array($parameters)) $parameters = [];
+        if (!isset($parameters['record']) || (string) $parameters['record'] === '') {
+            $column = $this->logRecordColumn($parameters);
+            if ($column !== null) $parameters['record'] = $column;
+            else unset($parameters['record']);
+        }
+        return parent::log($message, $parameters);
+    }
+
+    /**
+     * What log() writes as the record of an entry that names none: the
+     * entry's own record hash, LOG_RECORD_WITHHELD for a project whose mode
+     * keeps record ids out, or null to leave the column to the framework.
+     */
+    private function logRecordColumn(array $parameters)
+    {
+        if (isset($parameters['record_hmac']) && is_string($parameters['record_hmac']) && $parameters['record_hmac'] !== '') {
+            return $parameters['record_hmac'];
+        }
+        $pid = $this->auditPid;
+        if (!$pid && isset($parameters['project_id']) && is_numeric($parameters['project_id'])) $pid = (int) $parameters['project_id'];
+        if (!$pid) {
+            try {
+                $pid = $this->getProjectId();
+            } catch (\Throwable $e) {
+                Faults::swallow($e, 'UniversalValidator::logRecordColumn');
+                $pid = null;
+            }
+        }
+        if (!$pid) return null;
+        $mode = $this->logMode($pid);
+        return ($mode === 'none' || $mode === 'off') ? self::LOG_RECORD_WITHHELD : null;
     }
 
     /** Most field names the project setting shared-reference-fields may list. */
@@ -11219,9 +11344,10 @@ class UniversalValidator extends AbstractExternalModule
      * (missingLogged), which is said of the server, not of a project, and the
      * clock of the scan record being judged and whether it changed since
      * planning (judgedClock, judgedSettled), which durableEvaluateRecord()
-     * sets and clears around that one record.
+     * sets and clears around that one record, and whether a page hook of
+     * this request has already reported its failure (pageHookFailed).
      */
-    const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave',
+    const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave', 'pageHookFailed',
         'returnBarred', 'valueHistoryOverride', 'roleBookOverride', 'auditPid', 'uniqueAuditPlan', 'uniqueAuditReads',
         'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveStaffLookup', 'liveReadSkipped'];
 

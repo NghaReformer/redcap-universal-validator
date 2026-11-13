@@ -324,6 +324,10 @@ namespace {
                 if ($ok && $call['kind'] !== 'parent' && isset($pool[$want]) && $pool[$want] === 'framework') {
                     $framed[$want] = true;
                 }
+                // The module's own log() hands each entry on with parent::log() (FRM-2).
+                if ($ok && $call['kind'] === 'parent' && $parent[$want] === 'framework') {
+                    $framed[$want] = true;
+                }
                 if (!$ok) {
                     $unresolved[] = basename($c['file']) . ':' . $call['line'] . ' ' . $name . ' calls '
                         . ($call['kind'] === 'this' ? '$this->' : $call['kind'] . '::') . $call['method'] . '()';

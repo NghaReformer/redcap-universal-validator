@@ -804,7 +804,7 @@ writes any invalid value to the **module log**. It is a detection/audit trail,
 not a second gate: it fires *after* the write, so the browser *Compulsory* block
 remains the primary control for human entry.
 
-Four log entry types make sure nothing passes silently:
+These log entry types make sure nothing passes silently:
 
 - `invalid-id-saved` — an invalid value was written.
 - `uvalidate-justified` — a value that breaks a rule was written with a reason
@@ -816,6 +816,11 @@ Four log entry types make sure nothing passes silently:
   Check those values by hand. A rule refused when it was read (its `why` starts
   with "configuration error:") is logged on the first save of its form.
 - `uvalidate-audit-error` — the hook itself failed.
+- `uvalidate-page-error` — the module could not put its rules on a form or
+  survey page (a settings or dictionary read failed). The page opened without
+  them, a data-entry form showed a red notice saying so, and the check after
+  the save still ran. The entry names the exception's class and place, and no
+  record.
 - `uvalidate-faults`, written only with the project's debug setting on, lists
   the places where this request caught an exception and carried on (a rights
   read that failed, a log write given up), each with the exception's class and

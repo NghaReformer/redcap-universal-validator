@@ -997,7 +997,7 @@ namespace {
     $hashed->projectSettings['log-values'] = 'none';
     $hashed->redcap_save_record(149, '2', 'anthro_form', 351, null, null, null, 1);
     $hn = findings($hashed, 'uvalidate-not-evaluated');
-    check('log mode none: the record is not named', $hn && !isset($hn[0]['record']) && (isset($hn[0]['record_hmac']) || isset($hn[0]['hmac_unavailable'])));
+    check('log mode none: the record is not named', $hn && isset($hn[0]['record']) && $hn[0]['record'] !== '' && $hn[0]['record'] !== '2' && (isset($hn[0]['record_hmac']) || isset($hn[0]['hmac_unavailable'])));
     // CFXB-N3: a log-values read that throws, or a value this build does not
     // know, is strict mode on the not-evaluated entry too, never the raw record.
     foreach (['throws' => null, 'unknown' => 'strict'] as $how => $odd) {
@@ -1008,7 +1008,7 @@ namespace {
         $bn = findings($bad, 'uvalidate-not-evaluated');
         check('CFXB-N3: log-values that ' . ($how === 'throws' ? 'cannot be read' : 'this build does not know')
             . ': the not-evaluated entry names the record by its keyed hash only (got ' . json_encode($bn) . ')',
-            $bn && !isset($bn[0]['record']) && isset($bn[0]['record_hmac']) && !isset($bn[0]['value']));
+            $bn && isset($bn[0]['record_hmac']) && $bn[0]['record'] === $bn[0]['record_hmac'] && !isset($bn[0]['value']));
     }
     // the scan: the same verdicts, and the plausible range in the detail
     $m = mod($PL, $nodob, $FULL, 'nurse');

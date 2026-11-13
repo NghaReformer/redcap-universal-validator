@@ -68,7 +68,13 @@ validate identically here, in Excel, and in the browser (same verified engine).
   project-scoped hash is (HMAC-SHA-256 with a module-held secret), configurable
   per project down to logging nothing. When the `log-values` setting cannot be
   read, or holds a value this version does not know, the log uses the strict
-  mode (`none`): the record ID as its keyed hash and no value. A keyed hash is
+  mode (`none`): the record ID as its keyed hash and no value. In the `none`
+  and `off` modes the log's own record column follows the mode too: the module
+  writes the record's hash there, or `[withheld]` where an entry has no hash,
+  so that REDCap does not fill the column with the record being viewed. A page
+  hook that fails leaves a `uvalidate-page-error` entry and a notice on the
+  data-entry form; the form opens without the module's checks and the audit
+  after the save still runs. A keyed hash is
   pseudonymization, not anonymity: treat the module log as identifying data in
   access and retention policies. The audit trims a value the way the browser
   does and checks values with characters outside printable ASCII too. Where
