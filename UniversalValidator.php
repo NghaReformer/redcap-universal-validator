@@ -1620,10 +1620,12 @@ class UniversalValidator extends AbstractExternalModule
         if ($scope === 'dag' && $dag === false) return $unknown;
         $prefer = isset($opts['callerDag']) ? $opts['callerDag'] : null;
         $budgeted = isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']);
-        // The record being edited, when its own value of the searched field
+        // The entry being edited, when its own value of the searched field
         // came with the request (EXS-6): the saved one is not what it holds.
-        if (isset($opts['skip']) && $opts['skip'] !== null && $opts['skip'] !== '' && $spec['in'] !== 'record') {
-            $spec['skip'] = (string) $opts['skip'];
+        // Only that entry is left out (EXI-1): another instance or event of
+        // the same record holds what it holds, as the audit reads it.
+        if (isset($opts['skip']) && is_array($opts['skip']) && $spec['in'] !== 'record') {
+            $spec['skip'] = $this->existsSkipSlot($pid, $opts['skip']);
         }
         try {
             if ($spec['in'] === 'record') {
@@ -1766,6 +1768,73 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             return $unknown;
         }
+    }
+
+    /**
+     * The entry a live lookup leaves out of its search (EXI-1): the one being
+     * edited, whose value of the searched field the page sent. $at is
+     * ['record', 'event', 'instance', 'form'] as REDCap names the page. The
+     * result adds 'repeat': 'form' when that form repeats on its own in the
+     * event, 'event' when the event repeats as a whole, 'none' when neither,
+     * null when what repeats cannot be read. Null for no record: nothing is
+     * saved to leave out.
+     */
+    private function existsSkipSlot($pid, array $at)
+    {
+        $record = isset($at['record']) ? (string) $at['record'] : '';
+        if ($record === '') return null;
+        $event = (isset($at['event']) && $at['event'] !== null && $at['event'] !== '') ? (string) $at['event'] : null;
+        $form = isset($at['form']) ? (string) $at['form'] : '';
+        $instance = (isset($at['instance']) && (int) $at['instance'] > 1) ? (int) $at['instance'] : 1;
+        $repeat = null;
+        $map = $this->repeatingMap($pid);
+        if ($map === false) {
+            $repeat = 'none';
+        } elseif (is_array($map) && $event !== null) {
+            $repeat = 'none';
+            if (array_key_exists($event, $map)) {
+                $node = $map[$event];
+                if (is_array($node) && $form !== '' && array_key_exists($form, $node)) {
+                    $repeat = 'form';
+                } else {
+                    $whole = !is_array($node);
+                    foreach (is_array($node) ? $node : [] as $f => $_) {
+                        if (!is_string($f) || $f === '') $whole = true;
+                    }
+                    if ($whole) $repeat = 'event';
+                }
+            }
+        }
+        return ['record' => $record, 'event' => $event, 'instance' => $instance, 'form' => $form, 'repeat' => $repeat];
+    }
+
+    /**
+     * Whether $ctx (a recordContexts context of record $rec) is the entry
+     * existsSkipSlot named, or shows only that entry's saved value:
+     *   - the form repeats on its own: its instance of that number;
+     *   - the event repeats as a whole: the event's instance of that number;
+     *   - neither: the event's row, and with it every repeat instance of
+     *     another form in that event, which carries the row's values;
+     *   - not known: the row or instance of that number only. Leaving too
+     *     little out can answer "found" from the value saved before the
+     *     edit, which the audit corrects after the save; leaving too much out
+     *     would refuse a value that is saved.
+     * A page without an event leaves the whole record out, as before.
+     */
+    private static function existsEntrySkipped($skip, $rec, array $ctx)
+    {
+        if (!is_array($skip) || (string) $rec !== $skip['record']) return false;
+        if ($skip['event'] === null) return true;
+        if ((string) $ctx['event_id'] !== $skip['event']) return false;
+        $key = $ctx['repeatKey'];
+        $same = (int) $ctx['instance'] === (int) $skip['instance'];
+        if ($skip['repeat'] === 'form') return $key !== null && (string) $key === $skip['form'] && $same;
+        if ($skip['repeat'] === 'event') return $key === '' && $same;
+        // An instance of the page's own form, or of the event, where the map
+        // says nothing repeats: the data disagrees with the map, so only the
+        // instance of that number is left out.
+        if ($skip['repeat'] === 'none' && $key !== '' && (string) $key !== $skip['form']) return true;
+        return $same && ($key === null || $key === '' || (string) $key === $skip['form']);
     }
 
     /**
@@ -2187,13 +2256,14 @@ class UniversalValidator extends AbstractExternalModule
         $best = null;
         $bestScore = -1;
         $top = ($prefer !== null ? 2 : 0) + 1;
-        $skip = isset($spec['skip']) ? (string) $spec['skip'] : null;
+        $skip = isset($spec['skip']) ? $spec['skip'] : null;
         foreach ($data as $rec => $node) {
-            if (!is_array($node) || ($skip !== null && (string) $rec === $skip)) continue;
+            if (!is_array($node)) continue;
             $rdag = self::dagOfRecordNode($node);
             if ($scope === 'dag' && $rdag !== $dag) continue;
             foreach (self::recordContexts($node) as $ctx) {
                 if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
+                if ($skip !== null && self::existsEntrySkipped($skip, $rec, $ctx)) continue;
                 $exact = self::existsRowMatch($ctx, $spec, $filtered);
                 if ($exact === null) continue;
                 $score = ($prefer !== null && $rdag === $prefer ? 2 : 0) + ($exact ? 1 : 0);
@@ -2221,13 +2291,14 @@ class UniversalValidator extends AbstractExternalModule
     private static function existsHitsIn(array $data, array $spec, $scope, $dag, &$filtered = null)
     {
         $hits = [];
-        $skip = isset($spec['skip']) ? (string) $spec['skip'] : null;
+        $skip = isset($spec['skip']) ? $spec['skip'] : null;
         foreach ($data as $rec => $node) {
-            if (!is_array($node) || ($skip !== null && (string) $rec === $skip)) continue;
+            if (!is_array($node)) continue;
             $rdag = self::dagOfRecordNode($node);
             if ($scope === 'dag' && $rdag !== $dag) continue;
             foreach (self::recordContexts($node) as $ctx) {
                 if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
+                if ($skip !== null && self::existsEntrySkipped($skip, $rec, $ctx)) continue;
                 $exact = self::existsRowMatch($ctx, $spec, $filtered);
                 if ($exact === null) continue;
                 $hits[] = ['record' => (string) $rec, 'dag' => $rdag, 'exact' => $exact,
@@ -11720,9 +11791,10 @@ class UniversalValidator extends AbstractExternalModule
     private function existsFromTable($pid, array $spec, array $params, $scope, $dag, $prefer, $value, array $opts, $via = 'any')
     {
         $in = $spec['in'];
-        $skip = isset($spec['skip']) ? $spec['skip'] : null;
+        // The record being edited stays a candidate (EXI-1): only its entry
+        // on the page is left out, by existsMatchIn and existsHitsIn.
         $cands = $this->existsCandidates($pid, $in, $value, $spec['fold'], isset($spec['marks'][$in]) ? $spec['marks'][$in] : null,
-            $spec['codes'], $spec['event'], $skip, $via);
+            $spec['codes'], $spec['event'], null, $via);
         if ($cands === null) return null;
         $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
         if (!$cands) return $notFound;

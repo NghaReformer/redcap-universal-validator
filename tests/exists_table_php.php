@@ -222,7 +222,8 @@ namespace {
             if (!isset(self::$dictionaries[(int) $pid])) throw new \RuntimeException('no such project');
             return self::$dictionaries[(int) $pid];
         }
-        public static function getRepeatingFormsEvents($pid = null) { return []; }
+        public static $repeats = [];         // event id => form => label, as REDCap lists what repeats
+        public static function getRepeatingFormsEvents($pid = null) { return self::$repeats; }
         public static function getEventNames($unique = false, $assoc = false, $id = null) { return [351 => 'enrolment_arm_1']; }
         public static function getGroupNames($unique = false, $g = null) { return [7 => 'north', 8 => 'south'][$g] ?? ''; }
         public static function getRecordIdField() { return 'record_id'; }
@@ -235,7 +236,7 @@ namespace {
         public function __construct($pid) { $this->project = ['missing_data_codes' => '']; }
         public function getUniqueEventNames() { return []; }
         public function getUniqueGroupNames() { return []; }
-        public function getRepeatingFormsEvents() { return []; }
+        public function getRepeatingFormsEvents() { return REDCap::$repeats; }
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
@@ -259,8 +260,9 @@ namespace {
                 'select_choices_or_calculations' => ''];
     }
     function named(array $dd) { foreach ($dd as $k => $_) $dd[$k]['field_name'] = $k; return $dd; }
-    function mod($user, array $dict, array $data, array $rights) {
+    function mod($user, array $dict, array $data, array $rights, array $repeats = []) {
         $GLOBALS['__TEST_USER'] = $user;
+        \REDCap::$repeats = $repeats;
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectIdReturn = 149;
         $m->settingsBy = [149 => ['log-values' => 'raw']];
@@ -277,6 +279,11 @@ namespace {
     function ask($m, $field, array $values, $record, $form, $group = null) {
         return $m->redcap_module_ajax('exists-check', ['field' => $field, 'values' => $values],
             149, $record, $form, 351, 1, null, null, null, '', '', $GLOBALS['__TEST_USER'], $group);
+    }
+    /** ask() from one event and instance of the record. */
+    function askAt($m, $field, array $values, $record, $form, $event, $instance) {
+        return $m->redcap_module_ajax('exists-check', ['field' => $field, 'values' => $values],
+            149, $record, $form, $event, $instance, null, null, null, '', '', $GLOBALS['__TEST_USER'], null);
     }
     function askSurvey($m, $field, array $values, $record, $form) {
         return $m->redcap_module_ajax('exists-check', ['field' => $field, 'values' => $values],
@@ -610,6 +617,66 @@ namespace {
         });
         check("EXS-5 scan $fld=" . json_encode($val) . ': the table index and the export agree (' . json_encode($a) . ' / ' . json_encode($b) . ')', $a === $b);
     }
+
+    // ---- EXI-1: "in" on the same form leaves out the entry being edited, not the record ----
+    // An aliquot names its parent sample, saved in another instance of the same record.
+    $DE = ['record_id' => f('enrol'), 'sample_id' => f('result'),
+           'parent' => f('result', '@UVEXISTS={"in":"[sample_id]","blockSave":"hard"}')];
+    $DATA_E = ['1' => [351 => ['record_id' => '1'],
+                       'repeat_instances' => [351 => ['result' => [1 => ['sample_id' => 'S-1', 'parent' => ''],
+                                                                     2 => ['sample_id' => 'S-2', 'parent' => 'S-1']]]]]];
+    $REP = [351 => ['result' => null]];
+    foreach ([$REP, []] as $rp) {
+        $how = $rp ? 'the form listed as repeating' : 'the repeat map naming nothing';
+        list($a, $b) = both(function () use ($DE, $DATA_E, $FULL, $rp) {
+            $m = mod('nurse', $DE, $DATA_E, $FULL, $rp);
+            return core(askAt($m, 'parent', ['parent' => 'S-1', 'sample_id' => 'S-2'], '1', 'result', 351, 2));
+        });
+        check("EXI-1 a value saved in another instance of the record being edited is found ($how; got " . json_encode($a) . ')',
+            $a['state'] === 'found' && $a['record'] === '1');
+        check("EXI-1 ...without the data table too ($how)", $b['state'] === 'found');
+        list($a, $b) = both(function () use ($DE, $DATA_E, $FULL, $rp) {
+            $m = mod('nurse', $DE, $DATA_E, $FULL, $rp);
+            return core(askAt($m, 'parent', ['parent' => 'S-1', 'sample_id' => 'S-9'], '1', 'result', 351, 1));
+        });
+        check("EXI-1 the saved value of the instance being edited does not count once the page changed it ($how; got " . json_encode($a) . ')',
+            $a['state'] === 'not-found' && $b['state'] === 'not-found');
+        list($a, $b) = both(function () use ($DE, $DATA_E, $FULL, $rp) {
+            $m = mod('nurse', $DE, $DATA_E, $FULL, $rp);
+            return core(askAt($m, 'parent', ['parent' => 'S-2', 'sample_id' => 'S-1'], '1', 'result', 351, 1));
+        });
+        check("EXI-1 instance 1 finds what instance 2 holds ($how)", $a['state'] === 'found' && $b['state'] === 'found');
+    }
+    $m = mod('nurse', $DE, $DATA_E, $FULL, $REP);
+    $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 2);
+    check('EXI-1 the audit of the saved instance agrees: no finding', !logsOf($m, 'invalid-id-saved'));
+    $m = mod('nurse', $DE, $DATA_E, $FULL, $REP);
+    $o = $scan($m, 'parent', 'S-1', '1');
+    check('EXI-1 the scan agrees: no finding', !$o['invalid'] && !$o['unconfigurable']);
+    // Two events of one record, a form that does not repeat.
+    $DATA_E2 = ['1' => [351 => ['record_id' => '1', 'hh_id' => 'H-A', 'hh_site' => 'A'],
+                        352 => ['record_id' => '1', 'hh_id' => 'H-B', 'hh_site' => 'A']]];
+    list($a, $b) = both(function () use ($DC, $DATA_E2, $FULL) {
+        $m = mod('nurse', $DC, $DATA_E2, $FULL);
+        return core(askAt($m, 'hh_ref', ['hh_ref' => 'H-A', 'hh_id' => 'H-B'], '1', 'hh', 352, 1));
+    });
+    check('EXI-1 a value saved in another event of the record being edited is found (got ' . json_encode($a) . ')',
+        $a['state'] === 'found' && $a['record'] === '1' && $b['state'] === 'found');
+    list($a, $b) = both(function () use ($DC, $DATA_E2, $FULL) {
+        $m = mod('nurse', $DC, $DATA_E2, $FULL);
+        return core(askAt($m, 'hh_ref', ['hh_ref' => 'H-B', 'hh_id' => 'H-Z'], '1', 'hh', 352, 1));
+    });
+    check('EXI-1 ...and the saved value of the event being edited does not count once the page changed it',
+        $a['state'] === 'not-found' && $b['state'] === 'not-found');
+    // The event row's value shows in every instance of another, repeating form of that event.
+    $DATA_E3 = ['1' => [351 => ['record_id' => '1', 'hh_id' => 'H-A', 'hh_site' => 'A'],
+                        'repeat_instances' => [351 => ['visits' => [1 => ['hh_id' => ''], 2 => ['hh_id' => '']]]]]];
+    list($a, $b) = both(function () use ($DC, $DATA_E3, $FULL) {
+        $m = mod('nurse', $DC, $DATA_E3, $FULL, [351 => ['visits' => null]]);
+        return core(askAt($m, 'hh_ref', ['hh_ref' => 'H-A', 'hh_id' => 'H-Z'], '1', 'hh', 351, 1));
+    });
+    check('EXI-1 the event row being edited is left out of the instances of another form that carry it (got ' . json_encode($a) . ')',
+        $a['state'] === 'not-found' && $b['state'] === 'not-found');
 
     fwrite(STDOUT, "exists_table_php: $n checks, $fail failure(s)" . ($INDEX ? ' through the lookup index' : '') . "\n");
     if (!$INDEX) {

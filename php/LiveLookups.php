@@ -477,15 +477,18 @@ trait LiveLookups
                 if ($opts['callerDag'] === null) return $unknown('your Data Access Group could not be read');
             }
             // "in" on this form (EXS-6): the page sent what that field holds
-            // now. The search leaves the record being edited out, and that
-            // value counts for it below, so the page judges what the audit
-            // judges once the record is saved.
+            // now. The search leaves the entry being edited out (this event
+            // and instance of the record, EXI-1: its other entries count),
+            // and that value counts for it below, so the page judges what the
+            // audit judges once the record is saved.
             $selfIn = null;
             $inField = isset($rule['existsIn']) ? (string) $rule['existsIn'] : '';
             if (empty($rule['existsPid']) && !empty($rule['existsSelfIn']) && $inField === (string) $rule['existsSelfIn']
                     && $inField !== $field && array_key_exists($inField, $values)) {
                 $selfIn = Logic::lookupTrim($values[$inField]);
-                if ($record !== null && $record !== '') $opts['skip'] = $record;
+                if ($record !== null && $record !== '') {
+                    $opts['skip'] = ['record' => $record, 'event' => $event_id, 'instance' => $repeat_instance, 'form' => $instrument];
+                }
             }
             // "return": values go only to a signed-in person on a data-entry
             // form. Any other caller's lookup asks for none, so none is read,
