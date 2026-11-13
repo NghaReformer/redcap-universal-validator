@@ -525,13 +525,34 @@
   }
   const DEFAULT_RULES = {strip_delimiters:"-/ ", uppercase:true, unify_unicode_dashes:true, keep_only:null};
 
+  /* s in upper case, except that a character outside ASCII whose upper case
+     holds an ASCII character is left as it is (VAL-8). toUpperCase turns the
+     long s into "S", the dotless i into "I", the sharp s into "SS" and the
+     ligature fi into "FI", so "FC1-0589" plus a long s became an ASCII ID and
+     was reported as verified while the field stored another string. Left
+     alone, the character is outside every ID alphabet and fails the check or
+     the format like any other foreign character. Upper-casing must not add
+     ASCII characters: ASCII maps to ASCII one for one, so more of them
+     afterwards came from outside. Twin of CheckCharacter::upperCase (php). */
+  function asciiCount(s){ return s.replace(/[^\x00-\x7F]/g, "").length; }
+  function upperCase(s){
+    const u = s.toUpperCase();
+    if(!/[^\x00-\x7F]/.test(s) || asciiCount(u) === asciiCount(s)) return u;
+    let out = "";
+    for(const ch of s){
+      const up = ch.toUpperCase();
+      out += (ch.charCodeAt(0) > 0x7F && /[\x00-\x7F]/.test(up)) ? ch : up;
+    }
+    return out;
+  }
+
   function normalize(value, rules){
     rules = rules || DEFAULT_RULES;
     if(value === null || value === undefined) return "";
     if(typeof value === "number" && Number.isNaN(value)) return "";
     let s = String(value);
     if(rules.unify_unicode_dashes) s = unifyDashes(s);
-    if(rules.uppercase) s = s.toUpperCase();
+    if(rules.uppercase) s = upperCase(s);
     if(rules.strip_delimiters){
       const strip = new Set(Array.from(rules.strip_delimiters));
       s = Array.from(s).filter(function(ch){ return !strip.has(ch); }).join("");

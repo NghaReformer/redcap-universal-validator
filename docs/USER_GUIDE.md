@@ -755,6 +755,10 @@ Depending on how the rule is set:
 - Patterns must be **printable ASCII**. Python-only constructs (`\A`, `\Z`,
   `(?P<name>…)`) are rejected with a specific message — use `^`/`$` and plain
   groups instead.
+- `\d`, `\w`, `\s` and `\b` are **ASCII** in the browser and in the check after
+  the save: `\d` is `[0-9]`, `\w` is `[A-Za-z0-9_]`, and `\s` is the white space
+  JavaScript lists. A full-width digit (`４`) or an Arabic-Indic digit (`٤`)
+  does not match `\d`, and an accented letter does not match `\w`.
 - With `algorithm: none`, the pattern is the whole check. With a check algorithm
   **and** a pattern, the format is tested **first**, then the check character —
   so the typist learns which kind of error they made.

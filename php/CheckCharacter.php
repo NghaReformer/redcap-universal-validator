@@ -57,6 +57,19 @@ class CheckCharacter
      *  LineTerminator (LF, CR, LS, PS). The browser judges input.value.trim(),
      *  so the server trims the same set (VAL-3). */
     const JS_TRIM_CLASS = '[\x{0009}-\x{000D}\x{0020}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]';
+
+    /** What \d, \w and \s match in a JavaScript RegExp without the "u" flag,
+     *  as code point ranges: ASCII digits, ASCII word characters, and the
+     *  white space of JS_TRIM_CLASS. PHP's "u" modifier turns on Unicode
+     *  properties, so PCRE's own \d \w \s \b match far more (a full-width or
+     *  Arabic-Indic digit, an accented letter); asciiShorthands writes these
+     *  ranges into the pattern instead (VAL-1). Ranges ascend and do not touch. */
+    const JS_SHORTHAND = [
+        'd' => [[0x30, 0x39]],
+        'w' => [[0x30, 0x39], [0x41, 0x5A], [0x5F, 0x5F], [0x61, 0x7A]],
+        's' => [[0x09, 0x0D], [0x20, 0x20], [0xA0, 0xA0], [0x1680, 0x1680], [0x2000, 0x200A],
+                [0x2028, 0x2029], [0x202F, 0x202F], [0x205F, 0x205F], [0x3000, 0x3000], [0xFEFF, 0xFEFF]],
+    ];
     // One pooled parse costs about (scanned length) x |PAIRS| x (member length)
     // "char-ops"; this budget bounds the product for every legal config, so an
     // expensive rule shrinks its scan cap instead of stalling the save hook.
@@ -157,7 +170,7 @@ class CheckCharacter
             );
         }
         if ($uppercase) {
-            $s = mb_strtoupper($s, 'UTF-8');
+            $s = self::upperCase($s);
         }
         if ($strip !== null && $strip !== '') {
             // Split the strip set by code point (not byte) so a multibyte
@@ -174,6 +187,33 @@ class CheckCharacter
             $s = $out;
         }
         return $s;
+    }
+
+    /**
+     * $s in upper case, except that a character outside ASCII whose upper case
+     * holds an ASCII character is left as it is (VAL-8). Unicode upper-cases
+     * the long s to "S", the dotless i to "I", the sharp s to "SS" and the
+     * ligature fi to "FI", so "FC1-0589" plus a long s was upper-cased into
+     * an ASCII ID and reported as verified while the field stored another
+     * string. Left alone, the character is outside every ID alphabet and
+     * fails the check or the format like any other foreign character. The
+     * test is that upper-casing must not add ASCII characters: ASCII maps to
+     * ASCII one for one, so more of them afterwards came from outside.
+     * Twin of upperCase in QRCheck (js).
+     */
+    private static function upperCase($s)
+    {
+        $u = mb_strtoupper($s, 'UTF-8');
+        if (!preg_match('/[^\x00-\x7F]/', $s)) return $u;
+        if (preg_match_all('/[\x00-\x7F]/', $u) === preg_match_all('/[\x00-\x7F]/', $s)) return $u;
+        $chars = preg_split('//u', $s, -1, PREG_SPLIT_NO_EMPTY);
+        if ($chars === false) return $u;                   // not UTF-8: nothing maps cleanly anyway
+        $out = '';
+        foreach ($chars as $ch) {
+            $up = mb_strtoupper($ch, 'UTF-8');
+            $out .= (strlen($ch) > 1 && preg_match('/[\x00-\x7F]/', $up)) ? $ch : $up;
+        }
+        return $out;
     }
 
     /**
@@ -609,13 +649,12 @@ class CheckCharacter
     /**
      * Whether JS RegExp (no flags, UTF-16 code units) and PCRE /u (code points)
      * may disagree on $pattern for the value $norm. They read printable ASCII
-     * the same way, and \d \w \b and positive classes of ASCII the same way
-     * for any value. An astral character, two units to JS and one code point to
-     * PCRE, is matched as two placeholder characters (jsUnits), so ".", negated
-     * classes and \D \W \S count it as JS does. They differ only where both of
-     * these hold:
-     *  - the value has whitespace JS's \s knows and PCRE's does not (NBSP,
-     *    U+2000-U+200A, U+3000, U+FEFF ...) and the pattern uses \s or \S;
+     * the same way, and positive classes of ASCII the same way for any value.
+     * \d \w \s \b and their capitals are compiled as the ranges JavaScript
+     * gives them (asciiShorthands, VAL-1), so they agree for any value too. An
+     * astral character, two units to JS and one code point to PCRE, is matched
+     * as two placeholder characters (jsUnits), so ".", negated classes and
+     * \D \W \S count it as JS does. They differ only where both of these hold:
      *  - the value has CR, U+2028 or U+2029, which JS's "." refuses and PCRE's
      *    accepts, and the pattern has ".";
      *  - the value has any character outside printable ASCII and the pattern
@@ -628,7 +667,7 @@ class CheckCharacter
         if (!preg_match('/[^\x20-\x7E]/', $norm)) return false;
         $p = (string) $pattern;
         $n = strlen($p);
-        $dot = false; $negated = false; $space = false; $other = false;
+        $dot = false; $other = false;
         $inClass = false;
         for ($i = 0; $i < $n; $i++) {
             $c = $p[$i];
@@ -637,10 +676,10 @@ class CheckCharacter
             if ($c === '\\') {
                 if ($i + 1 >= $n) { $other = true; break; }
                 $e = $p[++$i];
-                if ($e === 's') $space = true;
-                elseif ($e === 'S') { $space = true; $negated = true; }
-                elseif ($e === 'D' || $e === 'W') $negated = true;
-                elseif (strpos('pPxuhHvVRXNcCkKgGQEz', $e) !== false) $other = true;
+                // \a and \e are a bell and an escape to PCRE, the letters to JS;
+                // \1 to \9 are a reference or an octal character by rules the
+                // two engines do not share (VAL-5)
+                if (strpos('pPxuhHvVRXNcCkKgGQEzae123456789', $e) !== false) $other = true;
                 continue;
             }
             if ($inClass) {
@@ -648,7 +687,7 @@ class CheckCharacter
                 continue;
             }
             if ($c === '[') {
-                if ($i + 1 < $n && $p[$i + 1] === '^') { $negated = true; $i++; }
+                if ($i + 1 < $n && $p[$i + 1] === '^') $i++;
                 $inClass = true;
                 // a "]" right after "[" or "[^" is a literal in both engines
                 if ($i + 1 < $n && $p[$i + 1] === ']') $i++;
@@ -657,7 +696,6 @@ class CheckCharacter
             if ($c === '.') $dot = true;
         }
         if ($other) return true;
-        if ($space && @preg_match('/[\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]/u', $norm)) return true;
         if ($dot && @preg_match('/[\r\x{2028}\x{2029}]/u', $norm)) return true;
         // not UTF-8: no exact reading is possible
         if (@preg_match('//u', $norm) !== 1) return true;
@@ -1553,8 +1591,91 @@ class CheckCharacter
             if (strpos($body, $cand) === false) { $d = $cand; break; }
         }
         if ($d === null) { $d = '/'; $body = str_replace('/', '\\/', $body); }
-        $re = $d . '^(?:' . $body . ')$' . $d . 'u';
+        // "D": "$" is the end of the value only, as in the browser, never the
+        // place before a last line feed.
+        $re = $d . '^(?:' . self::asciiShorthands($body) . ')$' . $d . 'uD';
         return (@preg_match($re, '') === false) ? null : $re;
+    }
+
+    /**
+     * $body with \d \w \s, their capitals and \b \B written out as the browser
+     * reads them (VAL-1). The pattern is compiled with "u" so a value is matched
+     * by code point, and in PHP that modifier also makes the shorthands
+     * Unicode: FC\d{4} accepted "FC123" plus a full-width 4 on the server while
+     * the browser refused it, and \D \W \S refused values the browser
+     * accepted. Outside a class a shorthand becomes a class of JS_SHORTHAND's
+     * ranges; inside one its ranges join the class, a capital as the
+     * complement ranges, so [^\D] and [\W-] keep their meaning. \b and \B
+     * become lookarounds over the ASCII word characters ([\b] stays the
+     * backspace it is in both engines). Every other escape is copied as written.
+     */
+    private static function asciiShorthands($body)
+    {
+        $body = (string) $body;
+        if (strpos($body, '\\') === false) return $body;
+        $n = strlen($body);
+        $out = '';
+        $inClass = false;
+        for ($i = 0; $i < $n; $i++) {
+            $c = $body[$i];
+            if ($c === '\\' && $i + 1 < $n) {
+                $e = $body[++$i];
+                $low = strtolower($e);
+                if (isset(self::JS_SHORTHAND[$low])) {
+                    $members = self::shorthandMembers($low, $e !== $low);
+                    $out .= $inClass ? $members : '[' . $members . ']';
+                } elseif (!$inClass && ($e === 'b' || $e === 'B')) {
+                    $w = '[' . self::shorthandMembers('w', false) . ']';
+                    $out .= $e === 'b'
+                        ? '(?:(?<=' . $w . ')(?!' . $w . ')|(?<!' . $w . ')(?=' . $w . '))'
+                        : '(?:(?<=' . $w . ')(?=' . $w . ')|(?<!' . $w . ')(?!' . $w . '))';
+                } else {
+                    $out .= '\\' . $e;
+                    // the character a \c names is part of the escape, whatever it is
+                    if ($e === 'c' && $i + 1 < $n) $out .= $body[++$i];
+                }
+                continue;
+            }
+            $out .= $c;
+            if ($inClass) {
+                if ($c === ']') $inClass = false;
+                continue;
+            }
+            if ($c === '[') {
+                $inClass = true;
+                if ($i + 1 < $n && $body[$i + 1] === '^') $out .= $body[++$i];
+                // PCRE reads a "]" right after "[" or "[^" as a member
+                if ($i + 1 < $n && $body[$i + 1] === ']') $out .= $body[++$i];
+            }
+        }
+        return $out;
+    }
+
+    /** @var array "d" "w" "s", or "D" "W" "S" for the complement => class members */
+    private static $shorthandMemo = [];
+
+    /** JS_SHORTHAND[$key] as PCRE class members; everything else when $negate. */
+    private static function shorthandMembers($key, $negate)
+    {
+        $memo = $negate ? strtoupper($key) : $key;
+        if (isset(self::$shorthandMemo[$memo])) return self::$shorthandMemo[$memo];
+        $ranges = self::JS_SHORTHAND[$key];
+        if ($negate) {
+            $gaps = [];
+            $next = 0;
+            foreach ($ranges as $r) {
+                if ($r[0] > $next) $gaps[] = [$next, $r[0] - 1];
+                $next = $r[1] + 1;
+            }
+            $gaps[] = [$next, 0x10FFFF];
+            $ranges = $gaps;
+        }
+        $out = '';
+        foreach ($ranges as $r) {
+            $out .= sprintf('\\x{%X}', $r[0]);
+            if ($r[1] > $r[0]) $out .= sprintf('-\\x{%X}', $r[1]);
+        }
+        return self::$shorthandMemo[$memo] = $out;
     }
 
     /**

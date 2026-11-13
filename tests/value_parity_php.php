@@ -113,8 +113,12 @@ $splits = [
     ['FC.[0-9]{4}',       "FC\r1234",       true,  '"." against CR'],
     ['FC.[0-9]{4}',       "FC\u{2028}1234", true,  '"." against U+2028'],
     ['FC.[0-9]{4}',       "FC\u{00E9}1234", false, '"." against a BMP letter'],
-    ['FC\\s[0-9]{4}',     "FC\u{00A0}1234", true,  '"\\s" against a no-break space'],
-    ['FC\\S[0-9]{4}',     "FC\u{3000}1234", true,  '"\\S" against U+3000'],
+    // \s is compiled as JavaScript's white space, so it no longer splits (review 2026-11-13, VAL-1)
+    ['FC\\s[0-9]{4}',     "FC\u{00A0}1234", false, '"\\s" against a no-break space (compiled as the browser reads it)'],
+    ['FC\\S[0-9]{4}',     "FC\u{3000}1234", false, '"\\S" against U+3000 (compiled as the browser reads it)'],
+    ['FC\\w[0-9]{4}',     "FC\u{00C9}1234", false, '"\\w" against an accented letter'],
+    ['FC\\e[0-9]{4}',     "FC\x1B1234",     true,  '"\\e", an escape character to PCRE and the letter e to JavaScript'],
+    ['FC\\a[0-9]{4}',     "FC\x071234",     true,  '"\\a", a bell to PCRE and the letter a to JavaScript'],
     ['FC\\s[0-9]{4}',     "FC\r1234",       false, '"\\s" against CR (both engines match)'],
     ['FC[^0-9][0-9]{4}',  "FC\u{00E9}1234", false, 'a negated class against a BMP letter'],
     ['FC[0-9]{4}',        "FC\u{00E9}1234", false, 'a positive ASCII class'],
@@ -132,6 +136,50 @@ foreach (["FC1-0589\u{0421}", "FC1-0589C\u{200B}", "\u{00E9}\u{00E9}\u{00E9}\u{0
     $res = CheckCharacter::validateSingleField($bare, $v);
     check('VAL-1: ' . json_encode($v) . ' fails the check', $res === ['ok' => false, 'reason' => 'check-character']);
 }
+
+// ---- 5b) \d \w \s \b are compiled as the browser reads them (review 2026-11-13, VAL-1) ----
+// PHP's "u" modifier makes PCRE's own shorthands Unicode. The fixture rows
+// above hold the verdicts; these lock the parts of the rewrite no row reaches.
+$fmt = function ($pattern, $value) {
+    $res = CheckCharacter::validateSingleField(
+        ['algorithm' => 'none', 'source' => 'normalized_id', 'strip' => '', 'idPattern' => $pattern], $value);
+    return $res['reason'];
+};
+check('VAL-1: \d refuses a full-width digit', $fmt('FC\d{4}', "FC123\u{FF14}") === 'format');
+check('VAL-1: \d refuses an Arabic-Indic digit', $fmt('FC\d{4}', "FC123\u{0664}") === 'format');
+check('VAL-1: \d still accepts ASCII digits', $fmt('FC\d{4}', 'FC1234') === 'valid');
+check('VAL-1: \S accepts U+0085, which is not white space to JavaScript', $fmt('\S+', "A\u{0085}B") === 'valid');
+check('VAL-1: \D\D.* accepts two Arabic-Indic digits, as the browser does', $fmt('\D\D.*', "\u{0664}\u{0664}1") === 'valid');
+check('VAL-1: an escaped backslash before d is not the shorthand', $fmt('FC\\\\D', 'FC\D') === 'valid' && $fmt('FC\\\\D', 'FC-') === 'format');
+check('VAL-1: [\b] is still a backspace, not a boundary', $fmt('A[\b-]B', 'A-B') === 'valid' && $fmt('A[\b-]B', "A\x08B") === 'valid');
+check('VAL-1: a "]" first in a class is a member to PCRE, and \d after it is still ASCII',
+    $fmt('A[]\d]B', 'A]B') === 'valid' && $fmt('A[]\d]B', 'A1B') === 'valid' && $fmt('A[]\d]B', "A\u{0661}B") === 'format');
+check('VAL-1: "$" is the end of the value only', $fmt('A(?:$|B)\n?', "A\nB") === 'format');
+// Non-ASCII digits, letters and spaces, one code point at a time, against
+// what the browser's RegExp (no "u" flag) says of each.
+$jsSpace = [0xA0, 0x1680, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF];
+for ($cp = 0x2000; $cp <= 0x200A; $cp++) $jsSpace[] = $cp;
+$bad = [];
+foreach ([0x85, 0xAA, 0xB5, 0xC9, 0x17F, 0x212A, 0x660, 0x966, 0xFF10, 0xFF21, 0x180E, 0x200B, 0x2060, 0x1D7CE, 0xE000] as $cp) {
+    $ch = mb_chr($cp, 'UTF-8');
+    $two = $cp > 0xFFFF;                       // an astral character is two units to the browser
+    $expect = [
+        'X\dY' => 'format', 'X\wY' => 'format', 'X\sY' => 'format',
+        'X\DY' => $two ? 'format' : 'valid', 'X\WY' => $two ? 'format' : 'valid', 'X\SY' => $two ? 'format' : 'valid',
+        'X\D\DY' => $two ? 'valid' : 'format',
+    ];
+    foreach ($expect as $p => $want) {
+        if ($fmt($p, 'X' . $ch . 'Y') !== $want) $bad[] = sprintf('%s U+%04X', $p, $cp);
+    }
+}
+foreach ($jsSpace as $cp) {
+    $ch = mb_chr($cp, 'UTF-8');
+    if ($fmt('X\sY', 'X' . $ch . 'Y') !== 'valid' || $fmt('X\SY', 'X' . $ch . 'Y') !== 'format'
+            || $fmt('X[\s]Y', 'X' . $ch . 'Y') !== 'valid' || $fmt('X[^\s-]Y', 'X' . $ch . 'Y') !== 'format') {
+        $bad[] = sprintf('\s U+%04X', $cp);
+    }
+}
+check('VAL-1: \d \w \s and their capitals read non-ASCII characters as the browser does (' . implode(', ', $bad) . ')', !$bad);
 
 // ---- 6) a PCRE engine failure is "not-checked", never "valid" (VAL-10) ----
 $old = ini_get('pcre.backtrack_limit');
