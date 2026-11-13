@@ -82,10 +82,29 @@ foreach ($fx['measure'] as $c) {
         . ') (got ' . json_encode($got) . ')', sameState($got, $c['want']));
 }
 foreach ($fx['plausible'] as $c) {
-    $got = G::plausible((float) $c['y'], $c['lo'], $c['hi']);
-    check('plausible(' . json_encode($c['y']) . ', ' . json_encode($c['lo']) . ', ' . json_encode($c['hi']) . ') (got ' . json_encode($got) . ')',
-        $got === $c['want']);
+    $got = G::plausible((float) $c['y'], $c['lo'], $c['hi'], isset($c['exact']) ? $c['exact'] : null);
+    check('plausible(' . json_encode($c['y']) . ', ' . json_encode($c['lo']) . ', ' . json_encode($c['hi']) . ', ' . json_encode($c['exact'] ?? null)
+        . ') (got ' . json_encode($got) . ')', $got === $c['want']);
 }
+// RNG-1: a measurement typed in another unit ("measureScale") and lying exactly
+// on a "plausible" limit is inside it. As doubles, 111 of these 600 weights in
+// grams landed above their own value in kg (5600 * 0.001 > 5.6).
+$offLimit = [];
+for ($g = 100; $g <= 60000; $g += 100) {
+    $kg = rtrim(rtrim(sprintf('%d.%03d', intdiv($g, 1000), $g % 1000), '0'), '.');
+    $m = G::measure((string) $g, false, '0.001');
+    if ($m['state'] !== 'ok' || $m['exact'] !== $kg || $m['y'] !== (float) $kg
+        || G::plausible($m['y'], $kg, $kg, $m['exact']) !== null) $offLimit[] = $g;
+}
+check('measureScale: every whole hundred grams from 100 g to 60 kg is on its own limit in kg, not beyond it (off: '
+    . json_encode(array_slice($offLimit, 0, 5)) . ')', $offLimit === []);
+$m = G::measure('5601', false, '0.001');
+check('measureScale: one gram past the limit is beyond it', G::plausible($m['y'], '0.5', '5.6', $m['exact']) === 'plausible-high');
+$m = G::measure('499', false, '0.001');
+check('measureScale: one gram short of the low limit is below it', G::plausible($m['y'], '0.5', '5.6', $m['exact']) === 'plausible-low');
+$m = G::measure(str_repeat('9', 4090), false, '1.0000001');
+check('measureScale: a product past what the exact multiplication takes falls back to doubles',
+    $m['state'] === 'ok' && $m['exact'] === null && $m['y'] === INF && G::plausible($m['y'], null, '30', $m['exact']) === 'plausible-high');
 foreach ($fx['zScore'] as $c) {
     $got = G::zScore($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x'], $c['y']);
     check('zScore: ' . $c['name'] . ' (got ' . json_encode($got) . ')', sameState($got, $c['want']));

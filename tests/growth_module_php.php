@@ -965,6 +965,16 @@ namespace {
     $nodob['2'][351]['weight'] = '1.5';
     list($by) = audit($PL, $nodob);
     check('plausible: ... 1.5 kg below it', ($by['weight'] ?? null) === 'plausible-low');
+    // RNG-1: grams on the limit. 5600 * 0.001 as doubles is 5.6000000000000005,
+    // which was above a limit of 5.6 and held the save.
+    $ON = $PL;
+    $ON['wt_g'] = f('anthro_form', tag('who-wfa', $AGE, '"soft":[-2,2],"hard":[-5,5],"plausible":[0.7,5.6],"measureScale":0.001'), 'integer');
+    foreach (['5600' => null, '700' => null, '5601' => 'plausible-high', '699' => 'plausible-low'] as $grams => $wantReason) {
+        $on = $nodob; $on['2'][351]['weight'] = '9'; $on['2'][351]['wt_g'] = (string) $grams;
+        list($by, $un, $ne) = audit($ON, $on);
+        check('plausible with measureScale: ' . $grams . ' g against 0.7 to 5.6 kg (got ' . json_encode($by['wt_g'] ?? null) . ')',
+            ($by['wt_g'] ?? null) === $wantReason && isset($ne['wt_g']));
+    }
     $nodob['2'][351]['weight'] = '9';
     list($by, $un, $ne) = audit($PL, $nodob);
     check('plausible: ... 9 kg inside it: no finding, still not evaluated', !isset($by['weight']) && isset($ne['weight']));

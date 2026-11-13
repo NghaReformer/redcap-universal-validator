@@ -204,7 +204,7 @@ $growth = function (array $frag, $value, array $inputs) use ($rangeSpec, $exampl
     }
     $in = GrowthReference::inputsFor($frag, $read, $entry);
     if ($in['state'] !== 'ok') {
-        $p = GrowthReference::plausible($m['y'], $case['plausibleLo'], $case['plausibleHi']);
+        $p = GrowthReference::plausible($m['y'], $case['plausibleLo'], $case['plausibleHi'], $m['exact']);
         return [$p !== null ? $p : 'not evaluated', $case];
     }
     // x as the shortest text that reads back as the same double, in both runtimes

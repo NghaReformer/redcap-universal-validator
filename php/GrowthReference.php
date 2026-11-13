@@ -1,6 +1,7 @@
 <?php
 namespace INSPIRE\UniversalValidator;
 require_once __DIR__ . '/Logic.php';
+require_once __DIR__ . '/ExactDecimal.php';
 require_once __DIR__ . '/TemporalValue.php';
 
 /**
@@ -845,10 +846,19 @@ final class GrowthReference
     }
 
     /**
-     * A measurement typed as text: ['state' => 'ok', 'y' => float], or
-     * ['state' => 'blank'|'not-a-number'|'not-positive']. Read before the
-     * inputs, so a value that is no measurement at all is reported whatever
-     * the sex and age say.
+     * A measurement typed as text: ['state' => 'ok', 'y' => float, 'exact' =>
+     * ?string], or ['state' => 'blank'|'not-a-number'|'not-positive']. Read
+     * before the inputs, so a value that is no measurement at all is reported
+     * whatever the sex and age say.
+     *
+     * 'exact' is the measurement in the reference's unit as a decimal text,
+     * which plausible() compares digit for digit, and 'y' is the double
+     * nearest to it. With a "measureScale" the typed text is multiplied by
+     * the scale as decimals (ExactDecimal), not as doubles: 5600 * 0.001 in
+     * binary floating point is 5.6000000000000005, which put a weight typed
+     * exactly on its limit beyond it (RNG-1). 'exact' is null only when the
+     * product has more digits than ExactDecimal multiplies; the doubles then
+     * serve, as before.
      */
     public static function measure($text, $decimalComma = false, $scale = null)
     {
@@ -858,9 +868,13 @@ final class GrowthReference
         $y = (float) $n;
         if (!($y > 0)) return ['state' => 'not-positive'];
         // A rule's "measureScale" (0.001 for grams typed into a reference in kg),
-        // one double multiplication in both runtimes. Twin: QRID_growthMeasure.
-        if ($scale !== null) $y *= (float) $scale;
-        return ['state' => 'ok', 'y' => $y];
+        // multiplied as decimal text in both runtimes. Twin: QRID_growthMeasure.
+        $exact = $n;
+        if ($scale !== null) {
+            $exact = ExactDecimal::multiply($n, (string) $scale);
+            $y = $exact === null ? $y * (float) $scale : (float) $exact;
+        }
+        return ['state' => 'ok', 'y' => $y, 'exact' => $exact];
     }
 
     /**
@@ -964,11 +978,18 @@ final class GrowthReference
     /**
      * 'plausible-low', 'plausible-high' or null: measurement $y, in the
      * reference's unit, against a rule's "plausible" limits (texts, or null
-     * for no limit on that side). Doubles compared as doubles: "30" is the
-     * same double in both runtimes, and $y is too. Twin: QRID_growthPlausible.
+     * for no limit on that side). $exact is the measurement as decimal text
+     * (measure()'s 'exact'), compared with the limits digit for digit, so a
+     * value on a limit is inside it whatever its binary form (RNG-1). Without
+     * it (null) the doubles are compared. Twin: QRID_growthPlausible.
      */
-    public static function plausible($y, $lo, $hi)
+    public static function plausible($y, $lo, $hi, $exact = null)
     {
+        if (is_string($exact) && preg_match(Logic::NUM_RE, $exact)) {
+            if ($lo !== null && Logic::numCompare($exact, (string) $lo) < 0) return 'plausible-low';
+            if ($hi !== null && Logic::numCompare($exact, (string) $hi) > 0) return 'plausible-high';
+            return null;
+        }
         if ($lo !== null && $y < (float) $lo) return 'plausible-low';
         if ($hi !== null && $y > (float) $hi) return 'plausible-high';
         return null;

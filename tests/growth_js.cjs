@@ -55,8 +55,27 @@ for (const c of fx.zRaw) {
 }
 for (const [z, want] of fx.zText) check('zText(' + z + ') => ' + want + ' (got ' + G.zText(z) + ')', G.zText(z) === want);
 for (const c of fx.plausible) {
-  const got = G.plausible(c.y, c.lo, c.hi);
-  check('plausible(' + c.y + ', ' + c.lo + ', ' + c.hi + ') (got ' + got + ')', got === c.want);
+  const got = G.plausible(c.y, c.lo, c.hi, c.exact === undefined ? null : c.exact);
+  check('plausible(' + c.y + ', ' + c.lo + ', ' + c.hi + ', ' + c.exact + ') (got ' + got + ')', got === c.want);
+}
+// RNG-1: a measurement typed in another unit ("measureScale") and lying exactly
+// on a "plausible" limit is inside it (twin of the sweep in tests/growth_php.php).
+{
+  const off = [];
+  for (let g = 100; g <= 60000; g += 100) {
+    const kg = (Math.floor(g / 1000) + '.' + String(1000 + g % 1000).slice(1)).replace(/0+$/, '').replace(/\.$/, '');
+    const m = G.measure(String(g), false, '0.001');
+    if (m.state !== 'ok' || m.exact !== kg || m.y !== parseFloat(kg) || G.plausible(m.y, kg, kg, m.exact) !== null) off.push(g);
+  }
+  check('measureScale: every whole hundred grams from 100 g to 60 kg is on its own limit in kg, not beyond it (off: '
+    + JSON.stringify(off.slice(0, 5)) + ')', off.length === 0);
+  let m = G.measure('5601', false, '0.001');
+  check('measureScale: one gram past the limit is beyond it', G.plausible(m.y, '0.5', '5.6', m.exact) === 'plausible-high');
+  m = G.measure('499', false, '0.001');
+  check('measureScale: one gram short of the low limit is below it', G.plausible(m.y, '0.5', '5.6', m.exact) === 'plausible-low');
+  m = G.measure('9'.repeat(4090), false, '1.0000001');
+  check('measureScale: a product past what the exact multiplication takes falls back to doubles',
+    m.state === 'ok' && m.exact === null && m.y === Infinity && G.plausible(m.y, null, '30', m.exact) === 'plausible-high');
 }
 for (const c of fx.measure) {
   const got = G.measure(c.text, c.comma, c.scale);

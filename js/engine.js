@@ -3114,21 +3114,35 @@ function QRID_growthZText(z){
   var frac = String(n % 100);
   return (z < 0 && n !== 0 ? "-" : "") + Math.floor(n / 100) + "." + (frac.length < 2 ? "0" + frac : frac);
 }
-/* A typed measurement: { state: "ok", y } | { state: "blank"|"not-a-number"|"not-positive" }. */
+/* A typed measurement: { state: "ok", y, exact } | { state: "blank"|"not-a-number"|"not-positive" }.
+   exact is the measurement in the reference's unit as decimal text and y the
+   double nearest to it. A rule's "measureScale" multiplies the typed text as
+   decimals (QRID_temporalMultiply): 5600 * 0.001 as doubles is
+   5.6000000000000005, beyond a limit of 5.6 (RNG-1). exact is null only when
+   the product has too many digits; the doubles then serve. Twin:
+   GrowthReference::measure. */
 function QRID_growthMeasure(text, decimalComma, scale){
   var n = QRID_rangeNumber(text, !!decimalComma);
   if(n === "") return { state: "blank" };
   if(n === null) return { state: "not-a-number" };
-  var y = parseFloat(n);
+  var y = parseFloat(n), exact = n;
   if(!(y > 0)) return { state: "not-positive" };
-  /* a rule's "measureScale": one double multiplication, as on the server */
-  if(scale != null) y = y * parseFloat(scale);
-  return { state: "ok", y: y };
+  if(scale != null){
+    exact = QRID_temporalMultiply(n, String(scale));
+    y = exact === null ? y * parseFloat(scale) : parseFloat(exact);
+  }
+  return { state: "ok", y: y, exact: exact };
 }
 /* "plausible-low" | "plausible-high" | null: y (in the reference's unit)
-   against a rule's "plausible" limits, texts or null. Twin:
-   GrowthReference::plausible. */
-function QRID_growthPlausible(y, lo, hi){
+   against a rule's "plausible" limits, texts or null. exact is the
+   measurement as decimal text (QRID_growthMeasure), compared digit for digit;
+   without it the doubles are compared. Twin: GrowthReference::plausible. */
+function QRID_growthPlausible(y, lo, hi, exact){
+  if(typeof exact === "string" && QRID_WHEN_NUM_RE.test(exact)){
+    if(lo != null && QRID_whenDecCmp(exact, String(lo)) < 0) return "plausible-low";
+    if(hi != null && QRID_whenDecCmp(exact, String(hi)) > 0) return "plausible-high";
+    return null;
+  }
   if(lo != null && y < parseFloat(lo)) return "plausible-low";
   if(hi != null && y > parseFloat(hi)) return "plausible-high";
   return null;
@@ -6979,7 +6993,7 @@ function QRIDRangeInit(QRID_CONFIG){
     var g = V.growth;
     var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
     var noZ = function(why){
-      var p = QRID_growthPlausible(m.y, V.plausibleLo, V.plausibleHi);
+      var p = QRID_growthPlausible(m.y, V.plausibleLo, V.plausibleHi, m.exact);
       return p ? { tier: "hard", reason: p, why: why } : { tier: "inert", why: why };
     };
     if(m.state === "blank") return { tier: "inert", why: null };

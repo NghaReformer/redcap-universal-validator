@@ -783,6 +783,13 @@ const PL = { rangePlausibleLo: '2', rangePlausibleHi: '30', rangePlausibleText: 
   check('measureScale: 0 is still not a measurement', /must be above 0/.test(msg.innerHTML) && save(env) === 'held');
   const env2 = boot(inputs('', '95000'), { growth: GROWTH, rules: [rule(Object.assign({ rangeMeasureScale: '0.001' }, PL, LIVE))] });
   check('measureScale: "plausible" is in the reference\'s unit, after the scale', /above the plausible range \(allowed 2 to 30 kg/.test(nMsg(env2, 'weight').innerHTML));
+  // RNG-1: grams exactly on the limit are inside it (5600 * 0.001 as doubles is above 5.6)
+  const ON = { rangeMeasureScale: '0.001', rangePlausibleLo: '0.7', rangePlausibleHi: '5.6', rangePlausibleText: '0.7 to 5.6 kg' };
+  for (const [grams, want] of [['5600', 'saved'], ['700', 'saved'], ['5601', 'held'], ['699', 'held']]) {
+    const envOn = boot(inputs('', grams), { growth: GROWTH, rules: [rule(Object.assign({}, ON, LIVE))] });
+    check('plausible with measureScale: ' + grams + ' g against 0.7 to 5.6 kg is ' + want + ' (got ' + nMsg(envOn, 'weight').innerHTML + ')',
+      save(envOn) === want && /plausible range/.test(nMsg(envOn, 'weight').innerHTML) === (want === 'held'));
+  }
   const env3 = boot(inputs('1', '13'), { growth: GROWTH, rules: [rule(Object.assign({ rangeMeasureScale: 'grams' }, LIVE))] });
   check('measureScale that is not a number: a configuration error', !!cfgErr(env3, 'weight') && /rangeMeasureScale is not a number/.test(cfgErr(env3, 'weight').innerHTML));
   const env4 = boot(inputs('1', '13'), { growth: GROWTH, rules: [rule(Object.assign({ rangePlausibleLo: 'x' }, LIVE))] });

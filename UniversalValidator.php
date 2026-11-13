@@ -4066,7 +4066,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ($growth['state'] !== 'ok') {
                     // No z-score: the "plausible" range judges, if the rule has one.
                     $p = GrowthReference::plausible($m['y'], isset($rule['rangePlausibleLo']) ? $rule['rangePlausibleLo'] : null,
-                        isset($rule['rangePlausibleHi']) ? $rule['rangePlausibleHi'] : null);
+                        isset($rule['rangePlausibleHi']) ? $rule['rangePlausibleHi'] : null, $m['exact']);
                     if ($p !== null) {
                         $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'range', 'type' => 'range',
                                              'reason' => $p] + $extra;
