@@ -987,11 +987,14 @@ the specimen ID on the collection form.
   counted in the 6,000. Of the 600, one network address may spend 300, so a
   single machine cannot use up the budget all respondents share; behind a
   reverse proxy that hands REDCap its own address for every caller, the 300
-  is the cap. An `@UVUNIQUE` request from a caller who is not signed in is
-  counted before the module reads any rule, whether or not it is then
-  answered. A throttle that reaches its limit writes one
+  is the cap. An `@UVUNIQUE` or `@UVEXISTS` request from a caller who is not
+  signed in is counted before the module reads any rule, whether or not it is
+  then answered. A throttle that reaches its limit writes one
   `uv-throttle-limit-reached` row to the module log per minute, with the tier
-  and no address.
+  and no address. While a count cannot be kept, the project's or the
+  address's, a caller who is not signed in gets no answer (the page shows
+  nothing and the save goes through), and the module log gets one
+  `uv-throttle-storage-unavailable` row a minute.
 - **Audited.** The post-save audit logs `type: exists`, reason `not-found`
   (`filtered` for a value saved only in entries that fail `where`).
   Saving the form that holds a `match` field checks the lookup again. The

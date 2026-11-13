@@ -174,8 +174,10 @@ namespace {
             }
             return false;
         }
+        public static $dictionaryReads = 0;
         public static function getDataDictionary($pid, $f = 'array') {
             if (!$pid) throw new \RuntimeException('needs pid');
+            self::$dictionaryReads++;
             return self::$dictionary;
         }
         public static function getEventNames($unique = false, $assoc = false, $id = null) { return self::$events; }
@@ -912,6 +914,27 @@ namespace {
     $r = askSurvey($m, 'res_s', ['res_s' => 'SP-404']);
     check('survey budget: a counter that cannot be kept refuses the read (fail closed)',
         !in_array($r['state'] ?? null, ['found', 'not-found'], true) && (($r['state'] ?? null) === 'unknown' || isset($r['error'])) && fullReads() === 0);
+    // EXI-16: a caller REDCap did not sign in is counted before any rule or
+    // dictionary is read, the refused request included (as unique-check, UNQ-8).
+    $anon = '149|' . (((int) floor(time() / 60)) * \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS);
+    if (session_status() === PHP_SESSION_ACTIVE) $_SESSION = [];
+    $m = mod(null);
+    $r = askSurvey($m, 'res_off', ['res_off' => 'SP-1']);
+    check('survey throttle: a refused sessionless lookup is counted (got ' . json_encode($r) . ', ' . json_encode($m->rateBuckets) . ')',
+        ($r['error'] ?? null) === 'not enabled on surveys' && ($m->rateBuckets[$anon] ?? 0) === 1);
+    $r = askSurvey($m, 'no_such_field', ['no_such_field' => 'x']);
+    check('survey throttle: ...and one for a field with no rule', ($r['error'] ?? null) === 'not enabled on surveys' && ($m->rateBuckets[$anon] ?? 0) === 2);
+    $m = mod(null);
+    $m->rateBuckets[$anon] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON;
+    \REDCap::$dictionaryReads = 0; \REDCap::$calls = [];
+    foreach (['res_s' => 'SP-2', 'res_off' => 'SP-1'] as $tf => $tv) {
+        $r = askSurvey($m, $tf, [$tf => $tv]);
+        check('survey throttle: over the cap, ' . $tf . ' is refused before a rule or the dictionary is read (got ' . json_encode($r) . ')',
+            strpos((string) ($r['error'] ?? ''), 'too many checks') === 0 && \REDCap::$dictionaryReads === 0 && !\REDCap::$calls);
+    }
+    $m = mod(); $m->rateBuckets[$anon] = 10000;
+    check('survey throttle: staff are not counted by it', (ask($m, 'res_spec', ['res_spec' => 'SP-404'])['state'] ?? null) === 'not-found'
+        && $m->rateBuckets[$anon] === 10000);
     $m = mod(); $m->rateBuckets['149|' . $tier2] = 10000;
     check('survey budget: staff are not on it', (ask($m, 'res_spec', ['res_spec' => 'SP-404'])['state'] ?? null) === 'not-found');
 

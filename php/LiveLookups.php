@@ -378,6 +378,13 @@ trait LiveLookups
                 if (strlen($v) > 1024) return ['error' => 'value too long'];
                 $values[strtolower($k)] = $v;
             }
+            // A caller REDCap did not sign in meets the throttle before any
+            // work is done for it, as in unique-check (EXI-16): the rules
+            // were read and parsed, and the dictionary read for the
+            // identifier check, for requests that were then refused,
+            // uncounted. Every such request is counted now, the refused
+            // ones included.
+            if (!$isAuthenticated && $this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
             $live = $this->liveCondValues($payload, $project_id, $instrument);
             if ($live === null) return ['error' => 'malformed request'];
             $rule = $this->activeRuleFor($this->getRules($project_id, [$field]), 'exists', $field, $project_id, $record,
@@ -403,7 +410,6 @@ trait LiveLookups
                 if (!self::onSurveyInstrument($this->dataDictionary($project_id), $field, $instrument)) {
                     return ['error' => 'not enabled on surveys'];
                 }
-                if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
             } else {
                 // Flagged "throttled"; the page says it could not check and
                 // lets the save through.
@@ -1016,8 +1022,14 @@ trait LiveLookups
      * above ADDRESS_BUCKETS is (minute mod 1024) * 2^21 + 21 bits of a hash
      * of the address: no address is stored, and two addresses that share a
      * slot share a count. The request that creates a slot deletes the
-     * project's slots of every minute but this one and the last. Fails open,
-     * as the whole throttle does.
+     * project's slots of every minute but this one and the last.
+     *
+     * A COUNT THAT CANNOT BE KEPT REFUSES THE CALLER, as the project's tier
+     * does (FRM-5): this tier failed open on its own, so a write that failed
+     * for the address slots alone left one machine free to spend the budget
+     * every respondent shares. Only callers REDCap did not sign in come
+     * here, and the refusal is of the live lookup, never of a survey
+     * response. It is logged as the project tier's is (noteThrottleUnavailable).
      */
     private function surveyAddressLimited($pid, $now)
     {
@@ -1033,7 +1045,10 @@ trait LiveLookups
                 ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
                 [(int) $pid, $slot]);
             $r = $db->select('SELECT LAST_INSERT_ID()', []);
-            if (!isset($r[0][0]) || $r[0][0] === null) return false;
+            // no value is not "under the cap", as in the project's tier
+            if (!isset($r[0][0]) || $r[0][0] === null) {
+                throw new \RuntimeException('the address counter did not report a value');
+            }
             $hits = (int) $r[0][0];
             if ($hits === 1) {
                 $prev = $base($minute + 1023);
@@ -1044,8 +1059,8 @@ trait LiveLookups
             if ($hits === self::THROTTLE_ADDRESS + 1) $this->noteThrottleReached($pid, 'address', self::THROTTLE_ADDRESS);
             return $hits > self::THROTTLE_ADDRESS;
         } catch (\Throwable $e) {
-            Faults::swallow($e, 'LiveLookups::surveyAddressLimited');
-            return false;
+            $this->noteThrottleUnavailable($pid, (int) floor($now / 60), $e);
+            return true;
         }
     }
 

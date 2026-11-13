@@ -116,9 +116,15 @@ namespace ExternalModules {
         public $lastInsertIdUnreadable = false;
         /** Whether GET_LOCK grants the lock; off, it answers nothing, as the stub always did. */
         public $grantLocks = false;
+        /** The per-address slots only: the write fails, the project's counter works. */
+        public $addressTierThrows = false;
         public function query($sql, $params = []) {
             $this->rateStatements[] = $sql;
             if (strpos($sql, 'SELECT GET_LOCK(') === 0) return $this->grantLocks ? [['1']] : [];
+            if ($this->addressTierThrows && strpos($sql, 'uv_rate_bucket') !== false && strpos($sql, 'INSERT') === 0
+                    && (int) $params[1] >= \INSPIRE\UniversalValidator\UniversalValidator::ADDRESS_BUCKETS) {
+                throw new \RuntimeException('Out of range value for column \'bucket\' at row 1');
+            }
             if ($this->queryThrows && strpos($sql, 'uv_rate_bucket') !== false) {
                 throw new \RuntimeException("Table 'redcap.uv_rate_bucket' doesn't exist");
             }
@@ -3227,6 +3233,30 @@ namespace {
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('FRM-5 (control): with the counter kept, the unauthenticated caller is answered', isset($r['used']));
+
+    // THE PER-ADDRESS TIER FAILS THE SAME WAY (FRM-5). It failed open on its
+    // own: where only its write failed, one machine was free to spend the
+    // budget every respondent of the project shares.
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $m->addressTierThrows = true;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('FRM-5: an address count that cannot be kept refuses the unauthenticated caller (got ' . json_encode($r) . ')',
+        !isset($r['used']) && ($r['error'] ?? null) === 'too many checks — slow down');
+    check('FRM-5: ...without charging the project\'s counter', $m->rateBuckets === []);
+    $warn = array_values(array_filter($m->logCalls, function ($l) { return $l[0] === 'uv-throttle-storage-unavailable'; }));
+    check('FRM-5: ...and it is recorded, once, with no address in the row',
+        count($warn) === 1 && (int) $warn[0][1]['project_id'] === 149 && strpos(json_encode($m->logCalls), '203.0.113') === false);
+    $rs = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'alice', null);
+    check('FRM-5: a signed-in caller is answered all the same (got ' . json_encode($rs) . ')', isset($rs['used']));
+    // the control: with the address count kept, the same caller is answered
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('FRM-5 (control): with the address count kept, the unauthenticated caller is answered', isset($r['used']));
+    unset($_SERVER['REMOTE_ADDR']);
 
     // THE INSTALLER IS WHAT MAKES THE TIER REACHABLE AT ALL. Its own assertions
     // live in hosting_php.php; this one only fixes the seam, so that moving the
