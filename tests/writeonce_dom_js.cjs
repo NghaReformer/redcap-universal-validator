@@ -699,5 +699,82 @@ for (const order of ['lock first', 'lock last']) {
   check('every guard item names a mode the registry knows, and every mode that can hold a save has one', [...used].every((m) => holders.includes(m)) && holders.every((m) => used.has(m)), [...used]);
 }
 
+// ---- 14) branching logic that hides a locked field (WON-4) ------------------------------
+{
+  // REDCap's doBranching, reduced: the field's logic is false, so a value there is asked about
+  // ("erase the value?") and, on OK, erased. The stub counts every prompt and answers OK.
+  const f = text('consent_date', '2026-03-01'); f._row = 'consent_date-tr';
+  const dep = text('other', 'x');
+  let asks = 0, calcs = 0;
+  const env = boot([f, dep], { rules: [WO(['consent_date'])] }, { beforeEngine(doc, win) {
+    win.doBranching = function () { if (f.value !== '') { asks++; f.value = ''; } };
+    win.calculate = function () { calcs++; };
+  } });
+  // the person changed the controlling field and said OK to the erase: REDCap empties the field with no event
+  f.value = ''; asks = 0; calcs = 0;
+  for (let i = 0; i < 10; i++) env.poll();
+  check('a value REDCap\'s branching erased is put back', f.value === '2026-03-01', f.value);
+  check('... without asking REDCap to work its branching out again: no second prompt, at any turn of the poll (got ' + asks + ')', asks === 0 && calcs === 0);
+  check('... the note says a change was undone', /A change was undone/.test(note(env, 'consent_date')));
+  f.value = ''; asks = 0;
+  check('... erased again just before the save: put back still, and the save goes through', save(env) === 'saved' && f.value === '2026-03-01' && asks === 0, [f.value, asks]);
+  // a change an event announces is still told to REDCap, whose branching may depend on the field
+  let told = 0;
+  env.win.doBranching = function (name) { if (name === 'consent_date') told++; };
+  f.value = '2026-04-01'; f.fire('change');
+  check('a change with an event is undone and REDCap\'s branching is run for the field', f.value === '2026-03-01' && told === 1, [f.value, told]);
+  f.value = ''; f.fire('change');
+  check('... and so is a value emptied with an event (a script, the reset link)', f.value === '2026-03-01' && told === 2, [f.value, told]);
+  // ... and when that run erases the value again (the person said OK once more), it is put back and no third prompt follows
+  asks = 0;
+  env.win.doBranching = function () { if (f.value !== '') { asks++; f.value = ''; } };
+  f.value = '2026-05-01'; f.fire('change');
+  check('a value branching erases while the lock puts it back is put back still: one prompt, not a loop, and no hard hold',
+    f.value === '2026-03-01' && asks === 1 && save(env) === 'saved', [f.value, asks]);
+}
+{
+  // a locked radio REDCap's branching reset: the mirror and the buttons are put back with no event of the lock's own
+  const r = radioField('arm', ['1', '2'], '2');
+  let asks = 0;
+  const env = boot(r.els, { rules: [WO(['arm'])] }, { beforeEngine(doc, win) {
+    win.doBranching = function () { if (r.mirror.value !== '') { asks++; r.mirror.value = ''; r.buttons.forEach((b) => { b.checked = false; }); } };
+  } });
+  r.mirror.value = ''; r.buttons.forEach((b) => { b.checked = false; }); asks = 0;
+  env.poll(); env.poll();
+  check('a radio REDCap\'s branching erased is put back, its button checked, with no second prompt', r.mirror.value === '2' && r.buttons[1].checked === true && asks === 0, [r.mirror.value, asks]);
+}
+
+// ---- 15) the controls of an embedded field, and the slider's reset link (WON-9) ----------
+{
+  // REDCap moves an embedded field's controls into the host row: its reset link is not in <field>-tr
+  const r = radioField('arm', ['1', '2'], '1');
+  r.els.forEach((e) => { e._row = 'host-tr'; });
+  const hostReset = makeEl('a'); hostReset.setAttribute('onclick', "radioResetVal('host','form');return false;"); hostReset._row = 'host-tr'; hostReset.style.display = 'inline';
+  const today = makeEl('button'); today.setAttribute('onclick', "setToday('host_date','ymd');"); today._row = 'host-tr'; today.style.display = 'inline';
+  const env = boot(r.els.concat([hostReset, today]), { rules: [WO(['arm'])] });
+  check('the reset link of a locked radio embedded in another row is hidden', r.reset.style.display === 'none', r.reset.style.display);
+  check('... and the host row\'s own controls are left alone', hostReset.style.display === 'inline' && today.style.display === 'inline');
+  check('... its buttons are disabled', r.buttons.every((b) => b.disabled === true));
+}
+{
+  const en = makeEl('div'); en.className = 'enhancedchoice'; en._row = 'host-tr';
+  const lab = makeEl('label'); lab.setAttribute('comps', 'arm,value,1'); en.appendChild(lab);
+  const other = makeEl('div'); other.className = 'enhancedchoice'; other._row = 'host-tr';
+  const lab2 = makeEl('label'); lab2.setAttribute('comps', 'host,value,1'); other.appendChild(lab2);
+  const r = radioField('arm', ['1', '2'], '1');
+  r.els.forEach((e) => { e._row = 'host-tr'; });
+  boot(r.els.concat([en, other]), { rules: [WO(['arm'])] });
+  check('the enhanced buttons of an embedded locked radio take no clicks, the host field\'s still do', en.style.pointerEvents === 'none' && other.style.pointerEvents !== 'none');
+}
+{
+  const sl = text('pain', '40'); sl._row = 'pain-tr'; sl.readOnly = true;
+  const sliderDiv = makeEl('div'); sliderDiv.id = 'slider-pain'; sliderDiv._row = 'pain-tr';
+  const reset = makeEl('a'); reset.setAttribute('onclick', "resetSlider('pain');return false;"); reset._row = 'pain-tr'; reset.style.display = 'inline';
+  const otherReset = makeEl('a'); otherReset.setAttribute('onclick', "resetSlider('pain2');return false;"); otherReset._row = 'pain-tr'; otherReset.style.display = 'inline';
+  boot([sl, sliderDiv, reset, otherReset], { rules: [WO(['pain'])] }, { jQuery: true });
+  check('the reset link of a locked slider is hidden', reset.style.display === 'none', reset.style.display);
+  check('... and another slider\'s in the same row is not', otherReset.style.display === 'inline');
+}
+
 console.log('writeonce_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);
