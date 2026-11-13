@@ -886,8 +886,9 @@ the specimen ID on the collection form.
   throttle. It is refused when any field the lookup touches is an Identifier
   (the field, the `match` fields, the searched field, the `where` fields, or the
   record-ID field for a record-ID lookup), and when the Identifier flags cannot
-  be read. Where the value index cannot answer, a *not
-  found* costs a read of the whole searched field, so survey lookups may cause
+  be read. Where the value index cannot answer, an `@UVEXISTS` answer costs a
+  read of the searched field (from the data table, or through REDCap when
+  that cannot be read, narrowed or not), so survey lookups may cause
   at most 60 such reads a minute per project; past that they answer *could not
   check*, which a survey shows as nothing. Every survey lookup, `@UVUNIQUE`
   and `@UVEXISTS` together, also counts in the survey throttle: 30 a minute per

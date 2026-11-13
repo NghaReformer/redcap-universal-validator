@@ -1758,10 +1758,10 @@ class UniversalValidator extends AbstractExternalModule
             // A caller without a budget (staff, the save audit) reads the data
             // table first (existsFromTable): the records that hold the value,
             // then those records only, in place of a read of every record
-            // (EXS-4). A survey keeps its narrowed read, whose hit costs no
-            // budget, and reads the table in place of the full read below.
-            // A survey asks the lookup index first, outside the budget: it
-            // reads only the records it names.
+            // (EXS-4). A survey asks the lookup index first, outside the
+            // budget: it reads only the records it names. Every read after
+            // that is on the budget: the table, then the narrowed read, then
+            // the full one (EXI-7).
             //
             // A lookup in another project reads its data table the same way
             // (EXI-5): the module reads the table itself, so the read is not
@@ -1775,6 +1775,19 @@ class UniversalValidator extends AbstractExternalModule
                 // A signed-in person's live lookup of a field too large to
                 // read whole (wholeFieldRecords): the exports below cost more.
                 if ($this->liveReadSkipped) return $unknown + ['why' => self::LIVE_READ_SKIPPED_WHY];
+            }
+            // A caller under a read budget pays for every read past the lookup
+            // index out of it, the narrowed one too (EXI-7): REDCap applies a
+            // filterLogic to records it has already read, so that read costs
+            // what the full one does, and 200 misses a minute from a survey
+            // link were 200 of them. The budget is asked once per lookup, and
+            // the data table, which settles hit and miss alike, is read first.
+            if ($narrow && $budgeted && !call_user_func($opts['mayFullRead'])) {
+                return $unknown + ['why' => 'too many lookups in the last minute'];
+            }
+            if ($table && $budgeted) {
+                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, 'table');
+                if ($t !== null) return $t;
             }
             if ($narrow && !$spec['returns'] && !($budgeted && $spec['where'] !== null)) {
                 $fl = self::collisionFilterLogic(array_keys($spec['target']), $spec['target'], $spec['fold'], $spec['marks']);
@@ -1795,13 +1808,6 @@ class UniversalValidator extends AbstractExternalModule
                         // a filter this build cannot run: the full read below decides
                     }
                 }
-            }
-            if ($narrow && isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']) && !call_user_func($opts['mayFullRead'])) {
-                return $unknown + ['why' => 'too many lookups in the last minute'];
-            }
-            if ($table && $budgeted) {
-                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, 'table');
-                if ($t !== null) return $t;
             }
             $data = $spec['returns'] ? $this->existsFullRead($params) : \REDCap::getData($params);
             if (!is_array($data)) return $unknown;
