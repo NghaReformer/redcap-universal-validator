@@ -135,7 +135,7 @@ function makeEl(tag) {
       delete require.cache[require.resolve(enginePath2)];
       const allEls2 = [];
       const body2 = makeEl('body');
-      const ro = makeEl('input'); ro.name = 'locked_id'; ro.readOnly = true;
+      const ro = makeEl('input'); ro.name = 'locked_id'; ro.readOnly = true; ro.value = '0ABC00001X';
       const holder2 = makeEl('div'); holder2.appendChild(ro); body2.appendChild(holder2);
       allEls2.push(ro, holder2);
       const doc2 = {
@@ -158,7 +158,16 @@ function makeEl(tag) {
       require(enginePath2);
       const NS2 = win2.INSPIREUniversalValidator;
       check('readonly field still gets its message region', holder2.children.length === 2);
-      check('readonly field never arms the save blocker (UX-003)', NS2.guard.items.length === 0);
+      // The guard asks whether the field can be edited when the save is pressed, not when the rule
+      // binds (REQ-5): a read-only field never holds, and holds once the person can change it.
+      const submit2 = () => {
+        const ev = { _prevented: false, preventDefault() { this._prevented = true; }, stopImmediatePropagation() {} };
+        (doc2._handlers.submit || []).forEach((fn) => fn(ev));
+        return ev._prevented;
+      };
+      check('readonly field never holds the save (UX-003)', submit2() === false);
+      ro.readOnly = false;
+      check('...and holds it once it can be edited (REQ-5)', submit2() === true);
     }
 
     // ---- 2b) suggestFix opt-in restores the check-character hint ----
