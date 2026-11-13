@@ -420,6 +420,10 @@ for (const order of ['lock first', 'lock last']) {
   check('a locked box REDCap disabled: read-only by the lock, and marked so', k.readOnly === true && k.__qridLockSetRO === true);
   // the other rule's guard item exists, as every field's does (REQ-5); the guard asks at save whether the box can be edited
   check('... and another rule on it never holds the save, the disabled state being REDCap\'s', save(env) === 'saved', env.win._alerts);
+  // the other field changed so that the rule breaks: a box only the lock made read-only would hold
+  // the save here (see above), one REDCap disabled does not
+  h.value = '60'; h.fire('change');
+  check('... nor once the other field changed so that the rule breaks', save(env) === 'saved', env.win._alerts);
 }
 {
   // a radio: the lock disables the buttons, which must not count as @READONLY for the choices filter

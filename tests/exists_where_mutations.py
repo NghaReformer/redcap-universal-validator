@@ -53,7 +53,7 @@ MUTATIONS = [
      "&& $isAuthenticated && !$isSurvey) $resp['filtered'] = true;",
      ") $resp['filtered'] = true;", WHERE),
     ('record IDs in another letter case not judged', UV,
-     '$hit = self::recordWhereHit($spec, $more, $rows, $filtered);',
+     '$hit = self::recordWhereHit($spec, $more, $rows, $filtered, $beyond);',
      '$hit = null;', WHERE),
     ('no kind check of "where" comparisons', UV,
      "$why = self::conditionKindProblem($p['ast'], $ddThere, 'where', true, $pidThere ? $this->missingDataCodes($pidThere) : []);",
