@@ -1736,7 +1736,7 @@ cell.
 
 Two crons keep the scan's tables bounded. Each pass works in slices for a
 quarter of its run-time limit, carries on where the last pass stopped, and
-writes a `scan-cron` entry to the module log.
+writes a `scan-cron` entry to the module log when it changed something.
 
 - `uv_scan_reap_abandoned` runs every 15 minutes. It ends a run that has made
   no progress for `scan-system-stale-run-hours` hours (24 by default) as

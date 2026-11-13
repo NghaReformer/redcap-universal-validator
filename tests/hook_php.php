@@ -3967,6 +3967,71 @@ namespace {
         check('QUA-5: ...and an AJAX answer', count($faultsOf($m)) === 1);
     }
 
+    // ---- FRM-8: a survey page gets the module object only for a rule that answers surveys ----
+    // The object carries the framework's log(), which config.json must leave
+    // open to respondents (a survey save could not log its findings otherwise).
+    {
+        $page = function ($dict, $hook) {
+            $m = newModule([], $dict, [], 149);
+            ob_start();
+            if ($hook === 'survey') $m->redcap_survey_page_top(149, '1', 'uf', 351, null, 'hash', null, 1);
+            else $m->redcap_data_entry_form_top(149, '1', 'uf', 351, null, 1);
+            $html = ob_get_clean();
+            return [strpos($html, '/* jsmo bootstrap */') !== false, strpos($html, 'jsmoName') !== false,
+                    count(logsOf($m, 'uvalidate-no-unique-transport')), strpos($html, 'inspire-validator-config') !== false];
+        };
+        $plainDict = ['record_id' => $uqDict['record_id'], 'pid' => $uqDict['pid']];
+        $optIn = $plainDict;
+        $optIn['pid']['field_annotation'] = '@UVUNIQUE={"surveys":true}';
+        check('FRM-8 (fixture): the plain rule has no survey opt-in', strpos($plainDict['pid']['field_annotation'], 'surveys') === false);
+        check('FRM-8: a survey page with a lookup rule that does not answer surveys gets no module object (got ' . json_encode($page($plainDict, 'survey')) . ')',
+            $page($plainDict, 'survey') === [false, false, 0, true]);
+        check('FRM-8: ...the data-entry form of the same rule still gets it', array_slice($page($plainDict, 'form'), 0, 2) === [true, true]);
+        check('FRM-8: a survey page with a rule that answers surveys gets it', array_slice($page($optIn, 'survey'), 0, 2) === [true, true]);
+        $R = '\INSPIRE\UniversalValidator\ModeRegistry';
+        check('FRM-8: surveyOptIn reads the mode\'s own key, on the rule or a branch',
+            $R::surveyOptIn(['type' => 'unique', 'uniqueSurveys' => true]) === true
+            && $R::surveyOptIn(['type' => 'unique']) === false
+            && $R::surveyOptIn(['type' => 'unique', 'existsSurveys' => true]) === false
+            && $R::surveyOptIn(['type' => 'exists', 'existsSurveys' => true]) === true
+            && $R::surveyOptIn(['type' => 'unique', 'branches' => [['when' => 'x'], ['uniqueSurveys' => true]]]) === true
+            && $R::surveyOptIn(['type' => 'single', 'uniqueSurveys' => true]) === false
+            && $R::rulesNeedOnSurvey([['type' => 'single', 'singleSurveys' => true]], 'transport') === false
+            && $R::rulesNeedOnSurvey([['type' => 'unique', 'uniqueSurveys' => true, 'configError' => 'x']], 'transport') === false);
+        // A forged log row cannot change what the module logs: the one reader
+        // of the log matches keyed fingerprints, which a respondent cannot make.
+        $m = newModule($dialogRules, $dictionary, $classicData, 149);
+        $m->log('invalid-id-saved', ['record' => '2', 'field' => 'sample_id', 'fingerprint' => str_repeat('0', 64), 'finding' => str_repeat('1', 64)]);
+        $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+        check('FRM-8: a forged entry with a made-up fingerprint does not stop the real finding being logged',
+            count(invalidLogs($m)) >= 2 && preg_match('/^[0-9a-f]{64}$/', (string) invalidLogs($m)[1][1]['fingerprint']) === 1
+            && invalidLogs($m)[1][1]['fingerprint'] !== str_repeat('0', 64));
+    }
+
+    // ---- FRM-9: a scan verb is marked answered only after its service call ----
+    // scanAction()'s shutdown handler turns a fatal into a JSON answer unless
+    // $answered is set. scan-status and scan-cancel set it BEFORE calling the
+    // service, so a fatal there was the empty 200 the handler exists to prevent.
+    {
+        $src = file_get_contents(__DIR__ . '/../php/ScanRuns.php');
+        $at = strpos($src, 'private function scanAction(');
+        $body = substr($src, $at, strpos($src, "\n    }\n", $at) - $at);
+        check('FRM-9: scanAction() is found, with its shutdown handler', $at !== false && strpos($body, 'register_shutdown_function') !== false);
+        check('FRM-9: no verb sets $answered and then calls the service',
+            preg_match('/\$answered\s*=\s*true;\s*return\s+\$svc->/', $body) === 0);
+        preg_match_all('/\$svc->(\w+)\(/', $body, $calls);
+        check('FRM-9: all five verbs call the service (got ' . json_encode($calls[1]) . ')',
+            $calls[1] === ['start', 'work', 'status', 'cancel', 'findings']);
+        check('FRM-9: and each call is assigned, then marked answered, then returned',
+            preg_match_all('/\$r = \$svc->\w+\([^;]*\);\s*\$answered = true;\s*return \$r;/', $body) === 5);
+        // the verbs still answer
+        $m = newModule([], $dictionary, $classicData, 149);
+        $r = $m->redcap_module_ajax('scan-status', ['run_id' => 0], 149, null, null, null, null, null, null, null, '', '', 'alice', null);
+        check('FRM-9: scan-status still answers', is_array($r) && array_key_exists('ok', $r));
+        $r = $m->redcap_module_ajax('scan-cancel', ['run_id' => 5], 149, null, null, null, null, null, null, null, '', '', 'alice', null);
+        check('FRM-9: scan-cancel still answers', is_array($r) && array_key_exists('ok', $r));
+    }
+
     // ---- FRM-2: the log's record column follows the log mode ------------------
     // The framework fills the record column from the page or hook it runs in
     // when log() is handed no "record". In the none and off modes the module

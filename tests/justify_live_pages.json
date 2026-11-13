@@ -2883,8 +2883,7 @@
             "uj_bad_none": "point",
             "uj_bad_twice": "point"
         },
-        "configShape": 1,
-        "jsmoName": "EM.T.UV"
+        "configShape": 1
     },
     "surveyErrors": {
         "uj_rr": "this check is not set up correctly; the study team can see the details on the data entry form.",

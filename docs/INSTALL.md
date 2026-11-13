@@ -213,6 +213,18 @@ save, the lookups read the data table, and lookups from surveys are refused.
   REDCap as for any module, in `redcap_external_module_settings` and
   `redcap_external_modules_log`.
 
+### What the module removes from its own log
+
+Once a day the `uv_lookup_index` cron removes the module's operational log
+entries older than 90 days: the cron entries (`scan-cron`, `scan-cron-skipped`,
+`scan-cron-failed`, `scan-cron-state-unreadable`) and the entries that say a
+request went wrong (`uvalidate-faults`, `uvalidate-page-error`,
+`uvalidate-no-unique-transport`, `uv-throttle-storage-unavailable`). It never
+removes what a project relies on: `invalid-id-saved` and the other findings of
+the save audit, the reasons given under `@UVJUSTIFY`, and the scan's audit
+entries stay until an administrator removes them. On a REDCap whose framework
+has no `removeLogs()` nothing is removed.
+
 ### Upgrading to 2.5.0: the value index is rebuilt
 
 Up to 2.4.0 a key of the value index was a plain MD5 of the value. From this
@@ -370,7 +382,8 @@ says planning could not finish.
 The module declares three crons, which REDCap's own cron runner calls, so
 the server's REDCap cron has to be running. The scan's two do nothing while
 `scan-system-enable-durable` is off; while the tables are not ready a pass does
-nothing and logs `scan-cron-skipped`. The third keeps the value index of the
+nothing and logs `scan-cron-skipped`, once for each reason and once a day while
+it lasts. The third keeps the value index of the
 live lookups (README, "Lookups on large projects: the value index") and runs
 whether the scan is on or not.
 
@@ -384,8 +397,10 @@ A pass uses a quarter of its longest run, reads the projects with scan data
 500 to a statement, works in bounded slices, and saves where it stopped so the
 next pass carries on from there. A project whose step fails is logged as
 `scan-cron-step-failed` and tried again next pass; the pass goes on to the next
-project. Each pass ends with a `scan-cron` entry in the module log, which
-counts what it did. Pressing Start also ends an abandoned run of its own
+project. A pass that changed something, stopped early or had a failure ends
+with a `scan-cron` entry in the module log, which counts what it did; a pass
+that found nothing to do writes no entry, and REDCap's own cron history has its
+one-line summary. Pressing Start also ends an abandoned run of its own
 project at once, so a project never waits for the reap cron to scan again.
 
 Run retention is `scan-run-retention-days` per project (90 days by default,

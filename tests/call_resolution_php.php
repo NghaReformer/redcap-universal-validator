@@ -64,7 +64,7 @@ namespace {
         return ['AbstractExternalModule' => [
             'getJavascriptModuleObjectName', 'getProjectId', 'getProjectSetting',
             'getProjectStatus', 'getSubSettings', 'getSystemSetting', 'getUrl', 'getUser',
-            'initializeJavascriptModuleObject', 'isModuleEnabled', 'log', 'queryLogs', 'setProjectSetting',
+            'initializeJavascriptModuleObject', 'isModuleEnabled', 'log', 'queryLogs', 'removeLogs', 'setProjectSetting',
             'setSystemSetting',
         ]];
     }

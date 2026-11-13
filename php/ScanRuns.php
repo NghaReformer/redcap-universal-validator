@@ -2385,8 +2385,20 @@ trait ScanRuns
                 $answered = true;
                 return $r;
             }
-            if ($action === 'scan-status') { $answered = true; return $svc->status($project_id, $runId); }
-            if ($action === 'scan-cancel') { $answered = true; return $svc->cancel($project_id, $runId); }
+            // Marked answered AFTER the service returns, as the verbs above
+            // and below are (FRM-9): set before the call, a fatal inside
+            // status() or cancel() left the shutdown handler silent and the
+            // page got the empty 200 this method exists to prevent.
+            if ($action === 'scan-status') {
+                $r = $svc->status($project_id, $runId);
+                $answered = true;
+                return $r;
+            }
+            if ($action === 'scan-cancel') {
+                $r = $svc->cancel($project_id, $runId);
+                $answered = true;
+                return $r;
+            }
             if ($action === 'scan-findings') {
                 // One keyset page of a finished run's findings (B5). The cursor,
                 // the page size and the filter are handed over as sent; the

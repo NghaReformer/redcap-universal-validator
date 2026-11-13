@@ -5524,7 +5524,17 @@ class UniversalValidator extends AbstractExternalModule
         // that nothing fails silently, and the old empty catch hid exactly the
         // diagnosis this bug needed. The client still fails open (never traps a
         // save) and the post-save audit remains the net.
-        if (ModeRegistry::rulesNeed($config['rules'], 'transport')) {
+        //
+        // ON A SURVEY, ONLY FOR A RULE THAT ANSWERS SURVEYS (FRM-8). The
+        // module object also carries the framework's log(), which
+        // enable-no-auth-logging in config.json opens to respondents (the
+        // flag is needed: without it log() throws for a survey save and the
+        // audit's findings are lost). A lookup rule without "surveys":true
+        // asks nothing on a survey, so its page gets no module object.
+        $needsTransport = $context === 'survey'
+            ? ModeRegistry::rulesNeedOnSurvey($config['rules'], 'transport')
+            : ModeRegistry::rulesNeed($config['rules'], 'transport');
+        if ($needsTransport) {
             $why = null;
             try {
                 if (is_callable([$this, 'initializeJavascriptModuleObject'])) {
@@ -11440,11 +11450,17 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function uvLookupIndexCron($cronInfo = [])
     {
+        // This cron runs on every installation, whatever is switched on, so it
+        // also keeps the module log from growing without end (FRM-11).
+        $this->pruneOperationalLog();
         try {
             $idx = $this->lookupIndex();
             if ($idx === null) return 'the lookup index is turned off here; nothing to do';
             $r = $idx->maintain(time() + self::LOOKUP_CRON_SECONDS);
             // The lookups build a large field themselves only while no cron runs.
+            // Written on every pass on purpose: it is the one sign a lookup has
+            // that a cron is alive (LookupIndex::CRON_GRACE), and it is one
+            // settings row updated in place, so nothing grows.
             $this->setSystemSetting(self::LOOKUP_CRON_AT, (string) time());
             return sprintf('lookup index: %d field(s) built, %d dropped, %d waiting, %d left for the next run',
                 $r['built'], $r['dropped'], $r['waiting'], $r['left']);
@@ -11605,8 +11621,12 @@ class UniversalValidator extends AbstractExternalModule
             if (empty($health['ok'])) {
                 // Reported, never repaired on a timer. A migration nobody chose
                 // is the thing installScanSchema is careful not to do either.
-                $this->log('scan-cron-skipped', ['what' => (string) $what,
-                    'why' => isset($health['why']) ? (string) $health['why'] : 'schema not ready']);
+                // Said when the reason is new and once a day while it lasts,
+                // not on every pass (FRM-11).
+                $why = isset($health['why']) ? (string) $health['why'] : 'schema not ready';
+                if ($this->cronSaysAgain('skipped-' . $what, $why)) {
+                    $this->log('scan-cron-skipped', ['what' => (string) $what, 'why' => $why]);
+                }
                 return 'the scan tables are not ready; nothing was done';
             }
             $key = 'scan-cron-state-' . $what;
@@ -11620,7 +11640,10 @@ class UniversalValidator extends AbstractExternalModule
                 // since a save is the last thing a pass does.
                 $at = $this->getSystemSetting(self::SCAN_DISABLED_AT);
                 if (is_numeric($at) && (int) $at >= $began) return;
-                $this->setSystemSetting($key, json_encode($state));
+                // An idle pass ends where it began: no write then (FRM-11).
+                $json = json_encode($state);
+                if ($json === (string) $this->getSystemSetting($key)) return;
+                $this->setSystemSetting($key, $json);
             };
             $sys = $this->scanSystemPolicy();
             $m = new Scan\ScanMaintenance(new Scan\ModuleDb($this), [
@@ -11642,7 +11665,12 @@ class UniversalValidator extends AbstractExternalModule
                 Scan\ScanMaintenance::budgetFor($max > 0 ? $max : self::SCAN_CRON_MAX_RUN_TIME));
             $save($r['state']);
             $out = $r['out'];
-            $this->log('scan-cron', array_merge(['what' => (string) $what], $out));
+            // A pass that found nothing to do writes no row (FRM-11): the two
+            // crons wrote 120 a day on an idle server, for ever. REDCap's own
+            // cron history keeps the summary returned below for every pass.
+            if (self::cronDidWork($out)) {
+                $this->log('scan-cron', array_merge(['what' => (string) $what], $out));
+            }
             $bits = [];
             foreach ($out as $k => $v) $bits[] = $k . '=' . $v;
             return $what . ': ' . implode(', ', $bits);
@@ -11657,6 +11685,105 @@ class UniversalValidator extends AbstractExternalModule
                 Faults::swallow($ignored, 'UniversalValidator::scanMaintenance');
             }
             return $what . ': failed, logged to the module log';
+        }
+    }
+
+    /** The counts of a maintenance pass that say what it looked at, not what it did. */
+    const CRON_VISIT_COUNTS = ['projects'];
+
+    /**
+     * Whether a maintenance pass's counts say it did anything: any count
+     * above zero, or anything that is not a count. The counts of what it
+     * only looked at (CRON_VISIT_COUNTS) do not make a pass worth a log row.
+     */
+    private static function cronDidWork(array $out)
+    {
+        foreach ($out as $k => $v) {
+            if (in_array($k, self::CRON_VISIT_COUNTS, true)) continue;
+            if (is_bool($v)) { if ($v) return true; continue; }
+            if (is_numeric($v)) { if ((float) $v != 0.0) return true; continue; }
+            if ($v !== null && $v !== '' && $v !== []) return true;
+        }
+        return false;
+    }
+
+    /** Seconds before a cron repeats a log line that says the same as its last. */
+    const CRON_SAY_AGAIN_AFTER = 86400;
+
+    /**
+     * Whether a cron should write a line it writes on every pass while a
+     * condition lasts: true when $text differs from what it last said under
+     * $topic, or that was CRON_SAY_AGAIN_AFTER seconds ago. The memory is one
+     * system setting per topic, written only when this answers true. When it
+     * cannot be read or written the line is written, as before.
+     */
+    private function cronSaysAgain($topic, $text)
+    {
+        try {
+            $key = 'cron-said-' . preg_replace('/[^a-z0-9-]/', '-', strtolower((string) $topic));
+            $mark = hash('sha256', (string) $text);
+            $now = time();
+            $last = json_decode((string) $this->getSystemSetting($key), true);
+            if (is_array($last) && isset($last[0], $last[1]) && $last[0] === $mark
+                    && is_int($last[1]) && $now - $last[1] < self::CRON_SAY_AGAIN_AFTER && $last[1] <= $now) {
+                return false;
+            }
+            $this->setSystemSetting($key, json_encode([$mark, $now]));
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::cronSaysAgain');
+        }
+        return true;
+    }
+
+    /**
+     * The module log entries that say how the module ran, not what it found:
+     * a cron pass, a skipped pass, a counter that could not be kept, a page
+     * that got no transport, the places a request caught an exception.
+     * pruneOperationalLog() removes those older than OPERATIONAL_LOG_DAYS.
+     *
+     * NEVER A FINDING. invalid-id-saved, uvalidate-justified,
+     * uvalidate-not-evaluated, uvalidate-unconfigurable, uvalidate-audit-error,
+     * the lookup-into-another-project lines and the scan's own audit entries
+     * are the project's record of its data and are kept until an
+     * administrator removes them; the audit also reads them back so that a
+     * standing problem is logged once (loggedAlready).
+     */
+    const OPERATIONAL_LOG_MESSAGES = ['scan-cron', 'scan-cron-skipped', 'scan-cron-failed', 'scan-cron-state-unreadable',
+        'uvalidate-faults', 'uvalidate-no-unique-transport', 'uvalidate-page-error', 'uv-throttle-storage-unavailable'];
+
+    /** Days an operational entry is kept. */
+    const OPERATIONAL_LOG_DAYS = 90;
+
+    /** System setting, not in config.json: when pruneOperationalLog() last ran. */
+    const LOG_PRUNED_AT = 'log-pruned-at';
+
+    /**
+     * Once a day, remove the operational entries (OPERATIONAL_LOG_MESSAGES)
+     * older than OPERATIONAL_LOG_DAYS from the module log (FRM-11). Nothing
+     * removed them before, so the log of a busy installation only grew.
+     * Through the framework's removeLogs(), which only ever touches this
+     * module's entries; where the framework has none, nothing is removed.
+     * Never thrown: it runs inside a cron.
+     *
+     * @return ?bool true when a removal ran, false when it failed, null when it was not due
+     */
+    private function pruneOperationalLog()
+    {
+        try {
+            $now = time();
+            $last = $this->getSystemSetting(self::LOG_PRUNED_AT);
+            if (is_numeric($last) && (int) $last <= $now && $now - (int) $last < 86400) return null;
+            if (!is_callable([$this, 'removeLogs'])) return null;
+            // The mark first: a removal that fails is tried again tomorrow, not every five minutes.
+            $this->setSystemSetting(self::LOG_PRUNED_AT, (string) $now);
+            $marks = implode(', ', array_fill(0, count(self::OPERATIONAL_LOG_MESSAGES), '?'));
+            $before = date('Y-m-d H:i:s', $now - self::OPERATIONAL_LOG_DAYS * 86400);
+            $this->removeLogs('message in (' . $marks . ') and timestamp < ?',
+                array_merge(self::OPERATIONAL_LOG_MESSAGES, [$before]));
+            return true;
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::pruneOperationalLog');
+            return false;
         }
     }
 
