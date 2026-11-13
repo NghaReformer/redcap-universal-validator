@@ -11575,14 +11575,37 @@ class UniversalValidator extends AbstractExternalModule
         // table (UNQ-7, PRF-2): getData then builds those records only, and a
         // miss needs no export at all. [false] when neither can be read
         // ($via says which may be tried), and the export below answers.
-        $fromTable = function ($via) use ($pid, $field, $also, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $params, $scope, $event_id) {
+        //
+        // The table and the index are read by the module, so they name the
+        // records of every Data Access Group. getData may leave out the ones
+        // of other groups for a user who is in one (UNQ-2): a record it does
+        // not hand back is compared from its rows in the data table
+        // (collisionBeyondReach), so a value another site holds is a
+        // duplicate here too, and that record is named to nobody.
+        $fromTable = function ($via) use ($pid, $field, $need, $also, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $params, $scope, $event_id) {
+            $eventOnly = ($scope === 'event' && $event_id) ? $event_id : null;
             $cand = $this->collisionCandidates($pid, $target[$field], array_merge([$field], $also), $marks, $fold,
-                                               $excludeRecord, ($scope === 'event' && $event_id) ? $event_id : null, $via);
+                                               $excludeRecord, $eventOnly, $via, $codes);
             if ($cand === null) return [false];
             if (!$cand) return [true, null];
             $data = \REDCap::getData($params + ['records' => $cand]);
             if (!is_array($data)) return [true, false];
-            return [true, self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also)];
+            $hit = self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+            if ($hit !== null) return [true, $hit];
+            $seen = [];
+            foreach ($data as $rec => $node) {
+                if (is_array($node)) $seen[(string) $rec] = true;
+            }
+            $unseen = array_values(array_filter($cand, function ($r) use ($seen) { return !isset($seen[$r]); }));
+            if (!$unseen) return [true, null];
+            return [true, $this->collisionBeyondReach($pid, $unseen, $need, $also, $target, $keys, $marks, $fold, $currentDag, $codes, $eventOnly)];
+        };
+        // Where neither the table nor the index can be read, the exports
+        // below are all there is, and for a user in a group they may hold
+        // that group's records only. A miss is then not settled, except
+        // under "dag", which looks in that one group anyway.
+        $settle = function ($r) use ($pid, $scope, $groupId) {
+            return ($r === null && $scope !== 'dag' && $this->callerInGroup($pid, $groupId)) ? false : $r;
         };
         // Signed-in callers and the save audit start there. A survey asks the
         // lookup index first, outside the read budget: it reads the records
@@ -11634,11 +11657,104 @@ class UniversalValidator extends AbstractExternalModule
         $shared = $this->sharedCollisionRead($params);
         if ($shared !== null) {
             if ($shared === false) return false;
-            return $this->collisionInShared($shared, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+            return $settle($this->collisionInShared($shared, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also));
         }
         $data = \REDCap::getData($params);
         if (!is_array($data)) return false;
-        return self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+        return $settle(self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also));
+    }
+
+    /**
+     * Whether the person this request acts for is in a Data Access Group, so
+     * that REDCap::getData may hand back that group's records only. $groupId
+     * is the group the framework named for the caller, when it named one. A
+     * request with no user (a survey, a job) is in none; rights that cannot
+     * be read count as in one, so nothing is called unused on a read that
+     * may not have seen it.
+     */
+    private function callerInGroup($pid, $groupId = null)
+    {
+        if ($groupId !== null && $groupId !== '') return true;
+        if ($this->currentUsername() === null) return false;
+        $rights = $this->userRightsIn($pid);
+        return $rights === null || $rights['group'] !== null;
+    }
+
+    /**
+     * findCollision's answer over $records, which hold the value (the data
+     * table or the lookup index named them) and which REDCap::getData did
+     * not hand back: records of another Data Access Group than the user's,
+     * or deleted a moment ago (UNQ-2). The same comparison (collisionIn),
+     * over nodes built from their rows in the data table (FieldValues::
+     * rowsOf), each with its group from its "__GROUPID__" row. A hit carries
+     * 'beyond' => true: the record is one REDCap did not show this caller,
+     * and the live answer names neither it nor the field the value is in.
+     *
+     * A rule with no "with" tests one value, so every row is a context of
+     * its own. A composite key needs the entry each row belongs to: a row of
+     * an instrument that repeats in its event, or of an event that repeats,
+     * is an instance over the event's other rows, as getData arranges them.
+     * False (not settled) when the rows, a group's name under "dag", or for
+     * a composite key the repeating layout or the dictionary cannot be read.
+     */
+    private function collisionBeyondReach($pid, array $records, array $need, array $also, array $target, array $keys, array $marks, $fold, $currentDag, array $codes, $eventId)
+    {
+        $fv = $this->fieldValues();
+        $rows = $fv->rowsOf($pid, array_merge($need, $also), $records, $eventId);
+        $groups = $rows === null ? null : $fv->rowsOf($pid, ['__GROUPID__'], $records);
+        if ($rows === null || $groups === null) return false;
+        if (!$rows) return null;
+        // "record IN (...)" goes by the table's collation: only the records named count.
+        $want = array_flip(array_map('strval', $records));
+        $dagOf = [];
+        foreach ($groups as $g) {
+            if (!isset($want[$g[0]]) || $g[3] === '') continue;
+            $name = ScanPageView::dagNameOf($g[3]);
+            if ($name !== null) $dagOf[$g[0]] = $name;
+            elseif ($currentDag !== null) return false;
+        }
+        $composite = count($need) > 1;
+        $rep = $composite ? $this->repeatingMap($pid) : null;
+        $dd = $composite ? $this->dataDictionary($pid) : null;
+        if ($composite && (!is_array($rep) || !is_array($dd))) return false;
+        $nodes = [];
+        $n = 0;
+        foreach ($rows as $r) {
+            list($rec, $evt, $f, $v, $inst) = $r;
+            if (!isset($want[$rec])) continue;
+            $dag = isset($dagOf[$rec]) ? ['redcap_data_access_group' => $dagOf[$rec]] : [];
+            if (!$composite) {
+                $nodes[$rec]['repeat_instances'][$evt][''][++$n] = [$f => $v] + $dag;
+                continue;
+            }
+            $bucket = self::repeatBucketOf($rep, $evt, isset($dd[$f]['form_name']) ? (string) $dd[$f]['form_name'] : '');
+            if ($bucket === false) return false;
+            if (!isset($nodes[$rec][$evt])) $nodes[$rec][$evt] = $dag;
+            if ($bucket === null) $nodes[$rec][$evt][$f] = $v;
+            else $nodes[$rec]['repeat_instances'][$evt][$bucket][$inst][$f] = $v;
+        }
+        $hit = self::collisionIn($nodes, $target, $keys, $marks, $fold, $currentDag, null, $codes, $also);
+        return $hit === null ? null : $hit + ['beyond' => true];
+    }
+
+    /**
+     * Where getData puts a row of a field of $form in event $evt, by the
+     * project's repeating map $rep (repeatingMap): null for the event's own
+     * row, '' for an instance of an event that repeats as a whole, the form
+     * name for an instance of an instrument that repeats there. False when
+     * the field's form is not known and the event has repeating instruments.
+     */
+    private static function repeatBucketOf(array $rep, $evt, $form)
+    {
+        if (!isset($rep[$evt])) return null;
+        $node = $rep[$evt];
+        if (!is_array($node)) return '';
+        foreach ($node as $name => $_) {
+            if (!is_string($name) || $name === '') return '';
+        }
+        if (!$node) return null;
+        if ($form === '') return false;
+        return isset($node[$form]) ? $form : null;
     }
 
     /**
@@ -11651,18 +11767,21 @@ class UniversalValidator extends AbstractExternalModule
      * field in the data table (Scan\FieldValues); 'index' the index alone;
      * 'table' the data table alone. Both answer the same records.
      */
-    private function collisionCandidates($pid, $value, array $fields, array $marks, $fold, $excludeRecord, $eventId, $via = 'any')
+    private function collisionCandidates($pid, $value, array $fields, array $marks, $fold, $excludeRecord, $eventId, $via = 'any', array $codes = [])
     {
         $keyOf = [];
         foreach ($fields as $f) $keyOf[$f] = Logic::lookupKey($value, $fold, isset($marks[$f]) ? $marks[$f] : null);
-        $accept = function ($f, $v) use ($keyOf, $value, $fold, $marks) {
+        // A saved Missing Data Code is no duplicate (collisionIn), so a row
+        // that holds one names no candidate.
+        $accept = function ($f, $v) use ($keyOf, $value, $fold, $marks, $codes) {
             if (!isset($keyOf[$f])) return false;
-            if ($v === $value) return true;
+            if ($v === $value) return !($codes && self::isMissingCode($v, $codes));
             $k = $keyOf[$f];
             // A text key is the trimmed, folded value: a shorter stored
             // value cannot reach it.
             if ($k[0] === '=' && strlen($v) < strlen($k) - 1) return false;
-            return Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) === $k;
+            if (Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) !== $k) return false;
+            return !($codes && self::isMissingCode(Logic::lookupTrim($v), $codes));
         };
         $recs = $via === 'table' ? null : $this->indexedRecords($pid, $fields, $marks, $value, $eventId, $accept);
         if ($recs === null && $via !== 'index') $recs = $this->wholeFieldRecords($pid, $fields, $eventId, $accept);

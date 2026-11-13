@@ -53,6 +53,12 @@ namespace ExternalModules {
             if (strpos($sql, 'SELECT data_table FROM redcap_projects') !== false) {
                 return empty($GLOBALS['__NO_TABLE']) ? [['redcap_data']] : [];
             }
+            // The rows of records REDCap did not hand back (FieldValues::rowsOf).
+            if (strpos($sql, 'SELECT record, event_id, field_name, `value`, instance FROM redcap_data') !== false) {
+                if (!empty($GLOBALS['__NO_TABLE'])) return false;
+                $GLOBALS['__RAW_READS'][] = $sql;
+                return \REDCap::rawRows($sql, $params);
+            }
             // The named records' rows (FieldValues::recordsAmong, after the
             // lookup index named them in the --index run).
             if (strpos($sql, 'FROM redcap_data WHERE project_id = ? AND record IN (') !== false) {
@@ -139,6 +145,47 @@ namespace {
             }
             return $out;
         }
+        /** The unique group name a record node carries, or ''. */
+        public static function groupOf(array $node) {
+            foreach ($node as $ek => $row) {
+                if ($ek !== 'repeat_instances' && isset($row['redcap_data_access_group'])) return (string) $row['redcap_data_access_group'];
+            }
+            return '';
+        }
+        /**
+         * The data table's rows of the named records and fields, as
+         * FieldValues::rowsOf reads them: [record, event_id, field_name,
+         * value, instance]. A record's group is its "__GROUPID__" row.
+         */
+        public static function rawRows($sql, array $params) {
+            preg_match('/record IN \(([?, ]*)\) AND field_name IN \(([?, ]*)\)/', $sql, $m);
+            $nr = substr_count($m[1], '?');
+            $nf = substr_count($m[2], '?');
+            $want = array_flip(array_map('strval', array_slice($params, 1, $nr)));
+            $fields = array_flip(array_slice($params, 1 + $nr, $nf));
+            $event = strpos($sql, 'AND event_id = ?') !== false ? (int) $params[count($params) - 1] : null;
+            $out = [];
+            $put = function ($rec, $evt, $row, $inst) use (&$out, $fields, $event) {
+                if ($event !== null && (int) $evt !== $event) return;
+                foreach ((array) $row as $f => $v) {
+                    if (isset($fields[$f]) && !is_array($v) && (string) $v !== '') $out[] = [(string) $rec, (string) $evt, $f, (string) $v, $inst];
+                }
+            };
+            foreach (self::$data as $rec => $node) {
+                if (!isset($want[(string) $rec])) continue;
+                $gid = array_search(self::groupOf($node), self::$groups, true);
+                if ($gid !== false && isset($fields['__GROUPID__']) && $event === null) $out[] = [(string) $rec, '351', '__GROUPID__', (string) $gid, null];
+                foreach ($node as $ek => $row) {
+                    if ($ek !== 'repeat_instances') { $put($rec, $ek, $row, null); continue; }
+                    foreach ((array) $row as $evt => $byInstr) {
+                        foreach ((array) $byInstr as $byInst) {
+                            foreach ((array) $byInst as $inst => $irow) $put($rec, $evt, $irow, (int) $inst === 1 ? null : (int) $inst);
+                        }
+                    }
+                }
+            }
+            return $out;
+        }
         public static function getData($p) {
             $filtered = isset($p['filterLogic']) && $p['filterLogic'] !== '';
             if ($filtered) self::$calls['filtered']++;
@@ -183,6 +230,9 @@ namespace {
                     }
                     if (!$ok) continue;
                 }
+                // __CONFINE: REDCap hands a user in a Data Access Group that
+                // group's records only (UNQ-2 of 2026-11-13).
+                if (!empty($GLOBALS['__CONFINE']) && self::groupOf($node) !== $GLOBALS['__CONFINE']) continue;
                 $out[$rec] = $node;
             }
             return $out;
@@ -620,6 +670,101 @@ namespace {
     check('table: the save audit finds the duplicate (got ' . json_encode($bad) . ')', in_array('u_plain@4', $bad, true));
     check('table: ...with no export of the project (got ' . json_encode(\REDCap::$calls) . ')', !$TABLE || \REDCap::$calls['full'] === 0);
     \REDCap::$events = [351 => 'enrolment_arm_1'];
+
+    // ---- 6) a value another Data Access Group holds (UNQ-2 of 2026-11-13) --------------
+    // REDCap hands a user in a group that group's records only (__CONFINE).
+    // Uniqueness is a fact of the project: the value is a duplicate, and the
+    // record that holds it is named to nobody.
+    \REDCap::$groups = [11 => 'site_a', 12 => 'site_b'];
+    \REDCap::$rights = ['coord' => ['forms' => ['reg' => '1', 'lab' => '1']],
+                        'alice' => ['forms' => ['reg' => '1', 'lab' => '1'], 'group_id' => 11]];
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'spec' => uvf('reg', '@UVUNIQUE={"blockSave":"hard"}')];
+    $X = [
+        '1' => [351 => ['record_id' => '1', 'spec' => 'A1', 'redcap_data_access_group' => 'site_a']],
+        '2' => [351 => ['record_id' => '2', 'spec' => 'B7', 'redcap_data_access_group' => 'site_b']],
+        '3' => [351 => ['record_id' => '3', 'spec' => 'C3', 'redcap_data_access_group' => 'site_a']],
+    ];
+    $GLOBALS['__CONFINE'] = 'site_a';
+    $GLOBALS['__RAW_READS'] = [];
+    $r = ask(mk($X, 'alice'), 'spec', ['spec' => 'B7'], '1', 'reg', 351, 'alice', 11);
+    if ($TABLE) {
+        check('other group: a value site_b holds is "already used" for a user of site_a (got ' . json_encode($r) . ')',
+            ($r['used'] ?? null) === true);
+        check('other group: ...and the record is not named', array_key_exists('record', $r) && $r['record'] === null && !isset($r['field']));
+        check('other group: ...read from the rows of that one record', count($GLOBALS['__RAW_READS']) === 2);
+    } else {
+        check('other group, no data table: a miss on a confined export is "could not check" (got ' . json_encode($r) . ')',
+            ($r['unknown'] ?? null) === true && !array_key_exists('used', $r));
+    }
+    $r = ask(mk($X, 'alice'), 'spec', ['spec' => 'c3'], '1', 'reg', 351, 'alice', 11);
+    check('other group: a value of the user\'s own group is used, and its record named',
+        ($r['used'] ?? null) === true && ($r['record'] ?? null) === '3');
+    $r = ask(mk($X, 'alice'), 'spec', ['spec' => 'Z9'], '1', 'reg', 351, 'alice', 11);
+    check('other group: a value nobody holds is free (got ' . json_encode($r) . ')',
+        $TABLE ? ($r['used'] ?? null) === false : ($r['unknown'] ?? null) === true);
+    $X2 = $X;
+    $X2['1'][351]['spec'] = 'B7';
+    $m = mk($X2, 'alice');
+    $m->redcap_save_record(149, '1', 'reg', 351, 11, null, null, 1);
+    if ($TABLE) {
+        $rows = logged($m, 'invalid-id-saved');
+        check('other group: the save audit logs the duplicate (got ' . count($rows) . ')', count($rows) === 1);
+        check('other group: ...about the saved record only', strpos(json_encode($m->logCalls), '"2"') === false);
+    } else {
+        check('other group, no data table: the audit says it could not compare, and logs no pass',
+            logged($m, 'invalid-id-saved') === [] && strpos(json_encode(logged($m, 'uvalidate-unconfigurable')), 'could not be read') !== false);
+    }
+    // A user in no group is handed every record, and told which one.
+    $GLOBALS['__CONFINE'] = null;
+    $r = ask(mk($X, 'coord'), 'spec', ['spec' => 'B7'], '1', 'reg', 351, 'coord', null);
+    check('no group: the record is named as before', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '2');
+    $GLOBALS['__CONFINE'] = 'site_a';
+
+    // "scope":"dag" looks in the record's own group only.
+    \REDCap::$dictionary['spec'] = uvf('reg', '@UVUNIQUE={"scope":"dag"}');
+    $r = ask(mk($X, 'alice'), 'spec', ['spec' => 'B7'], '1', 'reg', 351, 'alice', 11);
+    check('other group, "scope":"dag": the value of site_b is no duplicate in site_a (got ' . json_encode($r) . ')', ($r['used'] ?? null) === false);
+
+    // An "also" field of a record in another group: used, the field not named.
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'scan_id' => uvf('reg'), 'spec' => uvf('reg', '@UVUNIQUE={"also":["scan_id"]}')];
+    $XA = $X;
+    $XA['2'][351]['scan_id'] = 'K-5';
+    $r = ask(mk($XA, 'alice'), 'spec', ['spec' => 'k-5'], '1', 'reg', 351, 'alice', 11);
+    check('other group, "also": used, with neither record nor field (got ' . json_encode($r) . ')',
+        $TABLE ? (($r['used'] ?? null) === true && $r['record'] === null && !isset($r['field'])) : ($r['unknown'] ?? null) === true);
+
+    // A composite key: the other group's record is compared entry by entry.
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'site' => uvf('reg'), 'spec' => uvf('reg', '@UVUNIQUE={"with":["site"]}')];
+    \REDCap::$repeating = [];
+    $XW = [
+        '1' => [351 => ['record_id' => '1', 'spec' => 'A1', 'site' => '1', 'redcap_data_access_group' => 'site_a']],
+        '2' => [351 => ['record_id' => '2', 'spec' => 'B7', 'site' => '2', 'redcap_data_access_group' => 'site_b']],
+    ];
+    if ($TABLE) {
+        $r = ask(mk($XW, 'alice'), 'spec', ['spec' => 'B7', 'site' => '2'], '1', 'reg', 351, 'alice', 11);
+        check('other group, "with": the same value and site is used (got ' . json_encode($r) . ')', ($r['used'] ?? null) === true && $r['record'] === null);
+        $r = ask(mk($XW, 'alice'), 'spec', ['spec' => 'B7', 'site' => '1'], '1', 'reg', 351, 'alice', 11);
+        check('other group, "with": the same value at another site is free (got ' . json_encode($r) . ')', ($r['used'] ?? null) === false);
+        // the tagged field on a repeating instrument: each instance over the event's row
+        \REDCap::$dictionary = ['record_id' => uvf('reg'), 'site' => uvf('reg'), 'spec' => uvf('lab', '@UVUNIQUE={"with":["site"]}')];
+        \REDCap::$repeating = [351 => ['lab' => '']];
+        $XR = [
+            '1' => [351 => ['record_id' => '1', 'site' => '1', 'redcap_data_access_group' => 'site_a']],
+            '2' => [351 => ['record_id' => '2', 'site' => '2', 'redcap_data_access_group' => 'site_b'],
+                    'repeat_instances' => [351 => ['lab' => [1 => ['spec' => 'R1'], 2 => ['spec' => 'R2']]]]],
+        ];
+        $r = ask(mk($XR, 'alice'), 'spec', ['spec' => 'R2', 'site' => '2'], '1', 'lab', 351, 'alice', 11);
+        check('other group, "with", repeating instrument: instance 2 at the same site is used (got ' . json_encode($r) . ')', ($r['used'] ?? null) === true);
+        $r = ask(mk($XR, 'alice'), 'spec', ['spec' => 'R2', 'site' => '1'], '1', 'lab', 351, 'alice', 11);
+        check('other group, "with", repeating instrument: at another site it is free', ($r['used'] ?? null) === false);
+        // the layout cannot be read: not settled, never "free"
+        \REDCap::$repeating = null;
+        $r = ask(mk($XR, 'alice'), 'spec', ['spec' => 'R2', 'site' => '2'], '1', 'lab', 351, 'alice', 11);
+        check('other group, "with", layout unread: "could not check" (got ' . json_encode($r) . ')', ($r['unknown'] ?? null) === true);
+    }
+    \REDCap::$repeating = null;
+    $GLOBALS['__CONFINE'] = null;
+    \REDCap::$groups = [];
 
     echo "unique_scope_php: $n checks, $fail failure(s)" . ($TABLE ? ($INDEX ? ' through the lookup index' : '') : ' without the data table') . "\n";
     if ($TABLE && !$INDEX) {

@@ -301,8 +301,10 @@ trait LiveLookups
             $recOut = null;
             $fieldOut = null;
             if ($isAuthenticated && !$isSurvey) {
-                $recOut = $col['record'];
-                if ($group_id !== null && $group_id !== '') {
+                // A record REDCap did not hand this caller (findCollision
+                // compared it from the data table, UNQ-2) is named to nobody.
+                $recOut = empty($col['beyond']) ? $col['record'] : null;
+                if ($recOut !== null && $group_id !== null && $group_id !== '') {
                     // A DAG-bound user may learn THAT the value is used, but a
                     // record id outside their DAG is not theirs to see.
                     $userDag = ScanPageView::dagNameOf($group_id);
