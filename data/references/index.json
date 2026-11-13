@@ -8,6 +8,7 @@
       "license": "GPL-3.0",
       "from": "https://github.com/WorldHealthOrganization/anthro",
       "commit": "b776d8a12b1c97369c748b561159fd2ec4f4db58",
+      "licenseFile": "who/LICENSE",
       "notes": "who/README.md"
     },
     "who2007": {
@@ -16,6 +17,7 @@
       "license": "GPL-3.0-or-later",
       "from": "https://github.com/WorldHealthOrganization/anthroplus",
       "commit": "7cfcdb39026e9a55de55732bc3cf14c82261bcf7",
+      "licenseFile": "who/LICENSE",
       "notes": "who/README.md"
     }
   },

@@ -1435,8 +1435,11 @@ final class GrowthReference
 
     /**
      * The standard normal distribution function, lower tail. W. J. Cody's
-     * rational Chebyshev approximation (ACM TOMS Algorithm 715) as R computes
-     * pnorm(), step for step, with the same constants and cut-offs. Results
+     * rational Chebyshev approximation (Cody 1969, Mathematics of Computation
+     * 23, 631-637; the ANORM routine of ACM TOMS Algorithm 715, 1993) as R
+     * computes pnorm(), step for step, with the same constants and cut-offs.
+     * R is under the GPL; data/NOTICE.md says what that leaves the owner to
+     * settle for this function and normalQuantile() (RNG-4). Results
      * agree with R 4.6.1 to 1e-15 relative, a few units in the last place,
      * because exp() and the order of rounding differ between builds; below
      * x = -37.5193, where R 4.6 returns subnormal numbers, this returns 0.
@@ -1509,8 +1512,9 @@ final class GrowthReference
 
     /**
      * The quantile of the standard normal distribution: the z-score below
-     * which a share $p of children lie. Wichura's AS241 (PPND16) as R computes
-     * qnorm(), with the same constants and branches, agreeing with R 4.6.1 to
+     * which a share $p of children lie. Wichura's AS241 (PPND16: Wichura 1988,
+     * Applied Statistics 37, 477-484) as R computes qnorm(), with the same
+     * constants and branches (see data/NOTICE.md), agreeing with R 4.6.1 to
      * 1e-15 relative (R 4.3 and later add an asymptotic branch for tails far
      * beyond the 0.1 to 99.9 percentiles a rule names); -INF at 0, INF at 1,
      * NAN outside 0 to 1. Twin: QRID_growthNormalQuantile;

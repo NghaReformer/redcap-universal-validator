@@ -100,6 +100,33 @@ foreach (G::catalog(null)['references'] as $id => $e) {
 }
 check('bundled tables: every row passes the full check, and the trusted reading gives the same floats (differs: '
     . json_encode($differs) . ')', $differs === [] && count(G::catalog(null)['references']) >= 12);
+// RNG-4: the WHO tables are not under the module's MIT licence, and every copy
+// says so. Each rows script (js/growth) names its table's source and licence in
+// its first lines, data/NOTICE.md lists each source, and the licence text is there.
+$bundledIndex = json_decode((string) file_get_contents(G::bundledDir() . '/index.json'), true);
+$noticeText = (string) @file_get_contents(dirname(G::bundledDir()) . '/NOTICE.md');
+$unmarked = [];
+foreach (G::catalog(null)['references'] as $id => $e) {
+    $src = isset($bundledIndex['sources'][$e['source'] ?? '']) ? $bundledIndex['sources'][$e['source']] : [];
+    $rel = G::rowsFile($e);
+    $head = $rel === null ? '' : (string) file_get_contents(dirname(__DIR__) . '/' . $rel, false, null, 0, 1200);
+    $head = (string) substr($head, 0, (int) strpos($head, '*/'));
+    $ok = isset($src['license'], $src['from'], $src['licenseFile'], $src['publisher'])
+        && is_file(G::bundledDir() . '/' . $src['licenseFile'])
+        && strpos($head, "not under the module's MIT licence") !== false
+        && strpos($head, $src['license'] . ': data/references/' . $src['licenseFile']) !== false
+        && strpos($head, $src['from']) !== false && strpos($head, $src['publisher']) !== false
+        && strpos($noticeText, $src['from']) !== false && strpos($noticeText, (string) ($src['commit'] ?? '')) !== false
+        && strpos($noticeText, '`' . $id . '`') !== false;
+    if (!$ok) $unmarked[] = $id;
+}
+check('licence: every bundled table\'s rows script and data/NOTICE.md name its source and licence (missing: ' . json_encode($unmarked) . ')',
+    $unmarked === [] && strpos($noticeText, 'data/references/who/LICENSE') !== false);
+$whoReadme = (string) file_get_contents(G::bundledDir() . '/who/README.md');
+// RNG-5: the WHO notes said the module does not correct for lying or standing, which "measured" does
+check('who/README.md: says the lying or standing correction is applied with "measured"',
+    strpos($whoReadme, 'The module does not apply two adjustments') === false && strpos($whoReadme, '`"measured"`') !== false
+    && isset(G::entry('who-lhfa')['position'], G::entry('who-wfl')['position'], G::entry('who-wfh')['position']));
 // RNG-3: the folder an administrator names is a folder on this server. A name
 // PHP would open as a stream is refused before anything is opened: "ftp://"
 // made every catalog read wait on a connection, "phar://" opens an archive.

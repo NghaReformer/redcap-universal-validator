@@ -3347,7 +3347,9 @@ function QRID_growthValueAtText(ref, sex, x, z, places, scale){
   return QRID_growthUnitsText(n, places);
 }
 /* The standard normal distribution function, lower tail: Cody's algorithm 715
-   as R's pnorm() computes it, with the same constants and cut-offs; agrees
+   (Cody 1969, Mathematics of Computation 23, 631-637; ACM TOMS 19, 1993) as
+   R's pnorm() computes it, with the same constants and cut-offs (R is under
+   the GPL: data/NOTICE.md); agrees
    with R 4.6.1 to 1e-15 relative, and gives 0 below x = -37.5193. Twin of
    GrowthReference::normalCdf; tests/growth_normal_golden.json pins both. */
 var QRID_NORM_A = [2.2352520354606839287, 161.02823106855587881, 1067.6894854603709582, 18154.981253343561249,
@@ -3394,9 +3396,11 @@ function QRID_growthNormalCdf(x){
   }
   return x > 0 ? 1 : 0;
 }
-/* The quantile of the standard normal distribution: Wichura's AS241 as R's
-   qnorm() computes it, with the same constants and branches, agreeing with
-   R 4.6.1 to 1e-15 relative; -Infinity at 0, Infinity at 1, NaN outside.
+/* The quantile of the standard normal distribution: Wichura's AS241 (PPND16:
+   Wichura 1988, Applied Statistics 37, 477-484) as R's qnorm() computes it,
+   with the same constants and branches (R is under the GPL: data/NOTICE.md),
+   agreeing with R 4.6.1 to 1e-15 relative; -Infinity at 0, Infinity at 1,
+   NaN outside.
    Twin of GrowthReference::normalQuantile. */
 function QRID_growthNormalQuantile(p){
   if(p !== p || p < 0 || p > 1) return NaN;
