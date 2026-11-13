@@ -486,7 +486,7 @@ check('extractTagsFor keeps token values for other tags',
 $d = AnnotationRules::extractTagsDetailed("@UVREQUIRED=[a]='1' and [b]='2' @UVREQUIRED=[c]='3'", '@UVREQUIRED', 'condition');
 check('extractTagsDetailed: two condition values, offsets right',
     array_column($d, 'value') === ["[a]='1' and [b]='2'", "[c]='3'"] && $d[0]['error'] === null && $d[1]['error'] === null);
-check('Logic::parsePrefix: no condition at all', Logic::parsePrefix('hello world') === ['length' => 0, 'continues' => false, 'hint' => null]);
+check('Logic::parsePrefix: no condition at all', Logic::parsePrefix('hello world') === ['length' => 0, 'continues' => false, 'hint' => null, 'extra' => null]);
 // "&&", "||", "&", "|", "!" and "not [field]" after a complete condition go on
 // with it: refused, never cut, and "&&"/"||"/"!" name the word to write.
 foreach ([
@@ -513,6 +513,71 @@ $long = "[a]='1' " . str_repeat('x ', 40000);
 $t0 = microtime(true);
 $p = Logic::parsePrefix($long);
 check('Logic::parsePrefix: an 80 KB line is read in well under a second', $p['length'] === 7 && microtime(true) - $t0 < 0.5);
+// AST-1: text after an unquoted condition that is neither more of a condition
+// nor a note in plain words refuses the rule. It was dropped, and the shorter
+// rule enforced: "[a] <= [b] * 2" checked "[a] <= [b]".
+foreach ([
+    '@UVASSERT=[a] <= [b] * 2'                         => '"* 2"',
+    '@UVASSERT=[a] >= [b] + 7'                         => '"+ 7"',
+    '@UVASSERT=[a] <= [b] - [c]'                       => '"- [c]"',
+    '@UVASSERT=[a] <= [b] , [a] >= 0'                  => '", [a] >= 0"',
+    '@UVASSERT=[a] <= [b] xor [a] >= 0'                => '"xor [a] >= 0"',
+    '@UVASSERT=[a] <= [b] if [c] = 1'                  => '"if [c] = 1"',
+    '@UVASSERT=[a] <= [b] blockSave=hard'              => '"blockSave=hard"',
+    '@UVASSERT=[a] <= [b] ([c] = 1)'                   => '"([c] = 1)"',
+    '@UVASSERT=[a] <= [b] (2)'                         => '"(2)"',
+    '@UVASSERT=[a] <= [b] 2 visits'                    => '"2 visits"',
+    "@UVREQUIRED=[a]='1' + [b]='2'"                    => '"+ [b]=\'2\'"',
+    "@UVREQUIRED=[a]='1' , [b]='2' @HIDDEN"            => '", [b]=\'2\'"',
+    "@UVREQUIRED=[a]='1' needed when [b] is set"       => '"needed when [b] is set"',
+    "@UVREQUIRED=[a]='1' 'quoted'"                     => '"\'quoted\'"',
+] as $ann => $want) {
+    $f = AnnotationRules::parseAllTags($ann);
+    check('AST-1: ' . json_encode($ann) . ' is refused, naming ' . $want,
+        isset($f[0]['error']) && strpos($f[0]['error'], 'followed by ' . $want) !== false && strpos($f[0]['error'], 'in quotes') !== false
+        && !isset($f[0]['assert']) && !isset($f[0]['when']));
+}
+foreach ([
+    "@UVREQUIRED=[a]='1' Needed once consent is given",
+    "@UVREQUIRED=[a]='1' (see the SOP, part 2)",
+    "@UVREQUIRED=[a]='1' \xC3\x80 remplir au d\xC3\xA9pistage",
+    "@UVREQUIRED=[a]='1' patient's end @HIDDEN",
+    "@UVREQUIRED=[a]='1' @HIDDEN @DEFAULT='[x] = 2'",
+    "@UVREQUIRED=[a]='1'\n* a bullet on the next line\n+ 7 more",
+    "@UVREQUIRED=[a]='1'   ",
+] as $ann) {
+    $f = AnnotationRules::parseAllTags($ann);
+    check('AST-1: a note in plain words, the next tag or the next line is still not part of the rule: ' . json_encode($ann),
+        !isset($f[0]['error']) && $f[0]['when'] === "[a]='1'");
+}
+$f = AnnotationRules::parseAllTags("@UVREQUIRED=[a]='1' \xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9\xC3\xA9 = 1");
+check('AST-1: the refused text is cut at a whole character', isset($f[0]['error']) && json_encode($f[0]['error']) !== false);
+$d = AnnotationRules::extractTagsDetailed("@UVASSERT=[a] <= [b] * 2 @UVASSERT=[c]>0", '@UVASSERT', 'condition');
+check('AST-1: a refused value does not hide the next tag', count($d) === 2 && $d[0]['error'] !== null && $d[1] === ['value' => '[c]>0', 'error' => null]);
+// AST-3: the line is lexed and parsed once. Each word boundary used to parse
+// the prefix again from its start: 486 characters took 45 ms, and one
+// annotation of 120 such tags 4.7 s.
+$cond = substr(str_repeat('1=1 or ', 70), 0, 486);
+$cond = preg_replace('/ or *$/', '', $cond);
+$p = Logic::parsePrefix($cond);
+check('AST-3: a condition at the length cap is read whole', $p['length'] === strlen($cond) && !$p['continues'] && $p['extra'] === null);
+$ann = str_repeat('@UVASSERT=' . $cond . "\n", 120);
+$t0 = microtime(true);
+$f = AnnotationRules::parseAllTags($ann);
+$took = microtime(true) - $t0;
+check('AST-3: 120 unquoted tags of 480 characters each parse in well under a second (' . round($took * 1000) . ' ms)',
+    count($f) === 120 && !isset($f[0]['error']) && $f[119]['assert'] === $cond && $took < 1.0);
+$real = "[visit_date] >= [enrol_date] and [visit_date] <= [exit_date] and ([arm] = '1' or [arm] = '2') and [age] >= 18";
+$p = Logic::parsePrefix($real . ' and');
+check('AST-3: the longest complete condition before a dangling "and" is found', $p['length'] === strlen($real) && $p['continues']);
+$p = Logic::parsePrefix("[a]='1' or ([b]='2' and");
+check('AST-3: an unfinished parenthesis leaves the condition before it', $p['length'] === 7 && $p['continues']);
+$p = Logic::parsePrefix("[a]='1' and [b]='2'xyz");
+check('AST-3: a condition never ends inside a word', $p['length'] === 7 && $p['continues']);
+$p = Logic::parsePrefix("[a]='x\ny' and [b]='2'\nnext line");
+check('AST-3: a quoted value may hold a line break', $p['length'] === 21 && !$p['continues']);
+$p = Logic::parsePrefix(str_repeat("[a]='1' and ", 21) . "[a]='1'");
+check('AST-3: the condition stops before the reference past the limit', $p['length'] === 20 * 12 - 5 && $p['continues']);
 // Only a mode flagged "bareValue":"condition" reads a condition whole; any
 // other mode keeps one word, even when the words make a condition.
 check('extractTagsDetailed: a token mode reads one word of a condition-shaped value',

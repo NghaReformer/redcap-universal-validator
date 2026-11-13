@@ -225,6 +225,8 @@ logic**:
 One condition may mix `and`, `or` and `not`. `not` binds tightest, then `and`,
 then `or`, as in REDCap; parentheses change the grouping. An unquoted
 `@UVASSERT` or `@UVREQUIRED` condition is read whole, up to the end of the line or the next action tag.
+Text after it on that line is a note only when it is plain words; anything else (`* 2`, `, [a] >= 0`,
+`if [c] = 1`) is a configuration error, not a rule cut short.
 
 Semantics worth knowing before relying on it:
 

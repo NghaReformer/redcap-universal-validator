@@ -911,7 +911,9 @@ assert.
 
 The quotes are optional. An unquoted condition is read whole, up to the end of the line
 or the next action tag, as for [`@UVREQUIRED`](#level-4--compound-conditions):
-`@UVASSERT=[end_date]>=[start_date] or [end_date]=''` checks both halves.
+`@UVASSERT=[end_date]>=[start_date] or [end_date]=''` checks both halves. Arithmetic is
+not read, quoted or not: `@UVASSERT=[dose] <= [max_dose] * 2` is a configuration error
+that quotes `* 2`, where earlier releases checked `[dose] <= [max_dose]` alone.
 
 ### Level 2 — confirm-a-value
 
@@ -1051,10 +1053,15 @@ records:
 ```
 
 Earlier releases stopped the unquoted form at the first space and checked only
-`[consent]='1'`. Text after a complete condition is still ignored as a note. Text that
-goes on with `and`, `or`, `not (` or `not [`, a comparison, or one of `&&`, `||`, `&`,
-`|` and `!`, but does not finish the condition, is refused, since the module cannot tell
-where the condition ends. For `&&`, `||` and `!` the error also names the word to write:
+`[consent]='1'`. Text after a complete condition, on the same line, is still ignored as
+a note when it is plain words: it starts with a letter, or `(` and a letter, and holds
+no `[`, `]`, `{`, `}`, `=`, `<` or `>`. Text that goes on with `and`, `or`, `not (` or
+`not [`, a comparison, or one of `&&`, `||`, `&`, `|` and `!`, but does not finish the
+condition, is refused, since the module cannot tell where the condition ends. For `&&`,
+`||` and `!` the error also names the word to write. Any other text after the condition
+(arithmetic, a comma, a function, a word followed by a `[field]` or a comparison) is
+refused too, and the error quotes it. Earlier releases dropped it and checked the
+shorter condition:
 
 ```text invalid
 # refused: put the whole condition in quotes
@@ -1062,6 +1069,12 @@ where the condition ends. For `&&`, `||` and `!` the error also names the word t
 
 # refused: uses "&&" — write "and" instead
 @UVREQUIRED=[consent]='1' && [site]<>'9'
+
+# refused: followed by ", [site]<>'9'"
+@UVREQUIRED=[consent]='1' , [site]<>'9'
+
+# refused: followed by "if [site] = 9"
+@UVREQUIRED=[consent]='1' if [site] = 9
 ```
 
 An unquoted condition ends with its line. A next line that starts with `and`, `or` or

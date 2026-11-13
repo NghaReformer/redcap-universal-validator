@@ -236,7 +236,8 @@ class AnnotationRules
      * non-JSON value ends: 'token' (at the first space, the default) or
      * 'condition' (the whole condition, for the tags whose bare value IS one —
      * see Logic::parsePrefix). A condition that goes on past the point where it
-     * can be read gets an error instead of being cut short.
+     * can be read, or that is followed by text which is not a note in plain
+     * words, gets an error instead of being cut short.
      *
      * A tag starts the annotation or follows whitespace, or the closing quote,
      * brace or parenthesis of another tag's value; inside @IF(...) it may also
@@ -307,12 +308,17 @@ class AnnotationRules
                 ? 'has a quoted value that ends at its second ' . $read['quoteCut'][0] . ', and "' . $read['quoteCut'][1]
                     . '" follows it. A value in ' . $read['quoteCut'][0] . '...' . $read['quoteCut'][0] . ' cannot hold that quote mark:'
                     . ' use the other one inside it, or give the tag its JSON form.'
+                : (isset($read['extra'])
+                    ? 'reads as the condition "' . $read['value'] . '" followed by "' . $read['extra'] . '", which is neither part of '
+                        . 'a condition the module reads nor a note in plain words, so the rule is not cut short there. Put the whole '
+                        . 'condition in quotes, e.g. ' . $eg . ' Arithmetic and functions are not read; a note is words only, with '
+                        . 'no [field], =, < or >.'
                 : (!$read['continues'] ? null
                 : (isset($read['hint'])
                     ? 'reads as the condition "' . $read['value'] . '" followed by more of a condition, which ' . $read['hint']
                         . ' Then put the whole condition in quotes, e.g. ' . $eg
                     : 'reads as the condition "' . $read['value'] . '" followed by more of a condition — put the whole condition in quotes, e.g. '
-                        . $eg)))];
+                        . $eg))))];
             // Advance PAST the consumed value so tag-like text inside a value
             // (e.g. a pattern containing "@UVALIDATE") is never re-read as a
             // second tag. Quoted values also consumed their two quote marks.
@@ -452,7 +458,9 @@ class AnnotationRules
 
      * value — one token, or with $bare 'condition' the longest condition.
      * Returns ['value', 'length' => bytes consumed, 'continues' => bool], plus
-     * 'hint' (Logic::parsePrefix) when a condition goes on with "&&", "||" or "!".
+     * 'hint' (Logic::parsePrefix) when a condition goes on with "&&", "||" or "!",
+     * and 'extra' when text follows it that is neither more of a condition nor
+     * a note in plain words (AST-1).
      */
     private static function readValue($rest, $bare = 'token')
     {
@@ -499,7 +507,7 @@ class AnnotationRules
             $p = Logic::parsePrefix($rest);
             if ($p['length'] > 0) {
                 return ['value' => substr($rest, 0, $p['length']), 'length' => $p['length'], 'continues' => $p['continues'],
-                        'hint' => $p['hint']];
+                        'hint' => $p['hint'], 'extra' => $p['extra']];
             }
             // nothing parses: keep the first token, so the parser reports the
             // condition's own error, as before

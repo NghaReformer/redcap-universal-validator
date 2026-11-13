@@ -270,36 +270,50 @@ class Logic
      * tags whose bare value IS a condition (@UVREQUIRED=[a]='1' and [b]='2').
      * A value used to end at the first space, so everything after "and" was
      * silently dropped. Reading stops at the end of the line, or at a word that
-     * starts with "@" (the next action tag), outside quotes; a note written
-     * after the condition is therefore still ignored. A condition that ends
+     * starts with "@" (the next action tag), outside quotes; a note in plain
+     * words written after the condition is still ignored. A condition that ends
      * its line and whose next line starts as a condition goes on is treated
      * as going on (continues below).
      *
-     * Returns ['length' => n, 'continues' => bool, 'hint' => string|null]. n is
-     * the byte length of the longest prefix, ending at a word boundary, that
-     * parses as a complete condition (0 when none does). continues is true
-     * when the text after it goes on as a condition would: "and", "or", "not"
-     * before a [field] or "(", a comparison operator, or "&", "|" or "!". The
-     * reader then cannot tell where the designer meant the condition to end,
-     * and the caller refuses the rule instead of guessing. hint is the
-     * lexer's advice when it goes on with "&&", "||" or "!" ('uses "&&" —
-     * write "and" instead.'), so the refusal names the word to write. A note
-     * after the condition that starts with any other word ("not needed at
-     * screening") is still a note. Prefixes are parsed with the qualified
-     * option only to find the boundary; the rule's own options apply when the
-     * value is checked. No prefix longer than MAX_EXPR_LEN is tried, since
-     * none can parse, which keeps a long annotation line linear. Annotations
-     * are parsed on the server only, so this has no JavaScript twin.
+     * Returns ['length' => n, 'continues' => bool, 'hint' => string|null,
+     * 'extra' => string|null]. n is the byte length of the longest prefix,
+     * ending at a word boundary, that parses as a complete condition (0 when
+     * none does). continues is true when the text after it goes on as a
+     * condition would: "and", "or", "not" before a [field] or "(", a
+     * comparison operator, or "&", "|" or "!". The reader then cannot tell
+     * where the designer meant the condition to end, and the caller refuses
+     * the rule instead of guessing. hint is the lexer's advice when it goes on
+     * with "&&", "||" or "!" ('uses "&&" — write "and" instead.'), so the
+     * refusal names the word to write.
+     *
+     * Text on the condition's own line that does not go on that way is a note
+     * only when it reads as plain words (plainNote): "not needed at
+     * screening", "(see the SOP)". Anything else is handed back as extra, its
+     * first characters, and the caller refuses the rule: "[a] <= [b] * 2" was
+     * read as "[a] <= [b]" and that shorter rule enforced, and so were
+     * "[a] >= [b] + 7", "[a] <= [b] , [a] >= 0" and "[a] <= [b] if [c] = 1"
+     * (AST-1).
+     *
+     * The line is lexed once and its tokens parsed once: a complete condition
+     * ends after any top-level term of the and/or chain, so the last such end
+     * at a word boundary is the answer. Each prefix used to be parsed again
+     * from its start, which made a long condition cost the square of its
+     * length (AST-3). Tokens are read with the qualified option only to find
+     * the boundary; the rule's own options apply when the value is checked.
+     * Nothing past MAX_EXPR_LEN characters is lexed, since no condition is
+     * longer. Annotations are parsed on the server only, so this has no
+     * JavaScript twin.
      */
     public static function parsePrefix($text)
     {
         $text = (string) $text;
         $n = strlen($text);
-        $ends = [];
+        $lead = strspn($text, " \t");
+        $limit = min($n, $lead + self::MAX_EXPR_LEN);
         $quote = null;
         $inWord = false;
         $i = 0;
-        for (; $i < $n; $i++) {
+        for (; $i < $limit; $i++) {
             $ch = $text[$i];
             if ($quote !== null) {
                 if ($ch === $quote) $quote = null;
@@ -307,7 +321,6 @@ class Logic
             }
             if ($ch === "\n" || $ch === "\r") break;
             if ($ch === ' ' || $ch === "\t") {
-                if ($inWord) $ends[] = $i;
                 $inWord = false;
                 continue;
             }
@@ -315,26 +328,59 @@ class Logic
             $inWord = true;
             if ($ch === '"' || $ch === "'") $quote = $ch;
         }
-        if ($inWord) $ends[] = $i;
+        // As parseText reads it: tab, CR and LF (inside a quoted value) are
+        // spaces, and a character outside printable ASCII ends what can parse.
+        $s = strtr(substr($text, 0, $i), "\t\r\n", '   ');
+        if (preg_match('/[^\x20-\x7E]/', $s, $m, PREG_OFFSET_CAPTURE)) $s = substr($s, 0, $m[0][1]);
+        $tokens = [];
+        $ends = [];
+        self::lex($s, ['qualified' => true], $tokens, $ends);
+        // a token the lexer refused after reading it has no end
+        $st = ['t' => array_slice($tokens, 0, count($ends)), 'p' => 0];
         $best = 0;
-        $lead = strspn($text, " \t");
-        foreach ($ends as $e) {
-            if ($e - $lead > self::MAX_EXPR_LEN) break;
-            // parseText, not parse(): the prefixes are throwaway texts and would
-            // push the rule conditions out of the bounded memo.
-            if (self::parseText(substr($text, 0, $e), ['qualified' => true])['ok']) $best = $e;
+        while (true) {
+            $r = self::parseNot($st, 0);
+            if (isset($r['error'])) break;
+            $e = $ends[$st['p'] - 1];
+            if ($e >= $n || strpos(" \t\r\n", $text[$e]) !== false) $best = $e;
+            if (!self::peekKw($st, 'and') && !self::peekKw($st, 'or')) break;
+            $st['p']++;
         }
         $after = $best > 0 ? ltrim(substr($text, $best), " \t") : '';
         // A condition that ends its line may go on at the start of the next
         // one ("[a]='1'" then "and [b]='2'"): that is read as going on too.
-        if ($after !== '' && ($after[0] === "\n" || $after[0] === "\r")) $after = ltrim($after, " \t\r\n");
+        $sameLine = $after !== '' && $after[0] !== "\n" && $after[0] !== "\r";
+        if (!$sameLine) $after = ltrim($after, " \t\r\n");
         $continues = $best > 0 && preg_match('/^(?:(?:and|or)\b|not\s*[\[(]|[=<>!&|])/i', $after) === 1;
         $hint = null;
         if ($continues && preg_match('/^(?:&&?|\|\|?|!(?!=))/', $after, $m)) {
             $lex = self::lex($m[0]);
             $hint = isset($lex['error']) ? $lex['error'] : null;
         }
-        return ['length' => $best, 'continues' => $continues, 'hint' => $hint];
+        $extra = null;
+        if ($sameLine && !$continues) {
+            // the note runs to the end of the line or to the next action tag
+            $line = substr($after, 0, strcspn($after, "\r\n"));
+            if (preg_match('/(?:^|[ \t])@/', $line, $m, PREG_OFFSET_CAPTURE)) $line = substr($line, 0, $m[0][1]);
+            $line = rtrim($line, " \t");
+            if ($line !== '' && !self::plainNote($line)) {
+                $extra = preg_match('/^.{1,24}/su', $line, $m) ? $m[0] : preg_replace('/[^\x20-\x7E]/', '?', substr($line, 0, 24));
+            }
+        }
+        return ['length' => $best, 'continues' => $continues, 'hint' => $hint, 'extra' => $extra];
+    }
+
+    /**
+     * Whether the text after an unquoted condition reads as a note: it starts
+     * with a letter, or "(" and a letter, and holds no "[", "]", "{", "}",
+     * "=", "<" or ">". Text that starts with a digit, a sign, a comma or a
+     * quote, or that names a [field] or compares something, may be the rest
+     * of a condition the dialect does not read (arithmetic, a function, a
+     * word such as "xor" or "if"), so it is never dropped as a note (AST-1).
+     */
+    private static function plainNote($line)
+    {
+        return preg_match('/^\(?[A-Za-z\x80-\xFF]/', $line) === 1 && strpbrk($line, '[]{}=<>') === false;
     }
 
     private static function parseText($expr, array $opts)
@@ -720,14 +766,21 @@ class Logic
      * Tokenize a normalized expression. Returns ['tokens'=>[...]] or
      * ['error'=>string]. Tokens: ['ref', field, codeOrNull] | ['lit', string]
      * | ['op', op] | ['kw', and|or|not] | ['('] | [')'].
+     *
+     * $tokens and $ends, when asked for, also hold what was read before an
+     * error: the tokens, and for each the offset just past it in $s. A token
+     * refused after it was read (the reference past MAX_REFS) has no end.
      */
-    private static function lex($s, array $opts = [])
+    private static function lex($s, array $opts = [], &$tokens = null, &$ends = null)
     {
         $tokens = [];
+        $ends = [];
         $n = strlen($s);
         $refs = 0;
         $i = 0;
         while ($i < $n) {
+            // every branch below moves $i past the token it pushes before it loops
+            if (count($ends) < count($tokens)) $ends[] = $i;
             $ch = $s[$i];
             if ($ch === ' ') { $i++; continue; }
             if (!empty($opts['qualified']) && ($ch === '[' || $ch === '{')) {
@@ -798,6 +851,7 @@ class Logic
             if ($ch === '!') return ['error' => 'uses "!" — write "not" instead, or "<>" for "not equal".'];
             return ['error' => 'contains an unexpected character "' . $ch . '".'];
         }
+        if (count($ends) < count($tokens)) $ends[] = $i;
         return ['tokens' => $tokens];
     }
 

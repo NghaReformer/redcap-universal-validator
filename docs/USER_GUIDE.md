@@ -623,13 +623,19 @@ character for character, so `00123` does not confirm `123`.
 
 The condition of `@UVASSERT` and `@UVREQUIRED` may be written without quotes:
 `@UVREQUIRED=[consent]='1' and [site]<>'9'` is read whole, up to the end of the line
-or the next action tag. Text after a complete condition is ignored as a note. If that
-text goes on with `and`, `or`, `not (` or `not [`, a comparison, or one of `&&`, `||`,
-`&`, `|` and `!`, and does not finish the condition, the rule is refused with "put the
-whole condition in quotes"; for `&&`, `||` and `!` the error also names the word to
-write. An unquoted condition ends with its line, so a next line that starts the same
-way is refused too: quote a condition that runs over two lines. Earlier releases
-stopped an unquoted condition at the first space.
+or the next action tag. Text after a complete condition on the same line is ignored as
+a note only when it is plain words: it starts with a letter, or `(` and a letter, and
+holds no `[`, `]`, `{`, `}`, `=`, `<` or `>` (`not needed at screening`,
+`(see the SOP)`). If that text goes on with `and`, `or`, `not (` or `not [`, a
+comparison, or one of `&&`, `||`, `&`, `|` and `!`, and does not finish the condition,
+the rule is refused with "put the whole condition in quotes"; for `&&`, `||` and `!`
+the error also names the word to write. Any other text is refused the same way and the
+error quotes it: `@UVASSERT=[dose] <= [max_dose] * 2` is a configuration error, where
+earlier releases checked `[dose] <= [max_dose]` and said nothing. The same holds for
+`+ 7`, `- [c]`, `, [a] >= 0`, `xor [a] >= 0`, `if [c] = 1` and `blockSave=hard` after a
+condition. An unquoted condition ends with its line, so a next line that starts with
+`and`, `or` or another of those words is refused too: quote a condition that runs over
+two lines. Earlier releases stopped an unquoted condition at the first space.
 
 **Behavior worth knowing.**
 
