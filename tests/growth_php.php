@@ -17,6 +17,12 @@
  * Run:  php tests/growth_php.php
  */
 
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require_once __DIR__ . '/../php/Logic.php';
 require_once __DIR__ . '/../php/GrowthReference.php';
 require_once __DIR__ . '/../php/GrowthOutputs.php';

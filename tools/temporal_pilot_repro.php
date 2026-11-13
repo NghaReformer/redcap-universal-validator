@@ -38,6 +38,12 @@
  *   UV_DB_NAME=uv_test php -d extension=mysqli tools/temporal_pilot_repro.php
  */
 
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require_once __DIR__ . '/../php/Scan/Schema.php';
 require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
 require_once __DIR__ . '/../php/Scan/ScanPhase.php';

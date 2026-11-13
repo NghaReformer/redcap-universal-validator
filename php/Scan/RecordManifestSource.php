@@ -996,6 +996,10 @@ final class RecordManifestSource
         // Anything else - the column is there, the catalogue does not list
         // the table, or cannot be read - leaves the table unknown, and every
         // caller refuses on null rather than reading the wrong one.
+        //
+        // REDCap's own answer first, where it has one (FRM-16).
+        $named = self::dataTableByApi($pid);
+        if ($named !== null) return $named;
         try {
             $r = $db->select('SELECT data_table FROM redcap_projects WHERE project_id = ?', [$pid]);
         } catch (\Throwable $e) {
@@ -1009,6 +1013,25 @@ final class RecordManifestSource
         if ($t === '') return self::defaultDataTable($db);
         // A name that is not a data table's is not a reason to read redcap_data.
         return preg_match('/^redcap_data[0-9]*\z/', $t) ? $t : null;
+    }
+
+    /**
+     * The project's data table as REDCap::getDataTable() names it, or null
+     * when this REDCap has no such method (it came with the several data
+     * tables), it throws, or its answer is not a data table's name. Null
+     * sends dataTable() on to its own read of redcap_projects, so nothing
+     * depends on the method being there.
+     */
+    private static function dataTableByApi($pid)
+    {
+        if (!is_callable(['\REDCap', 'getDataTable'])) return null;
+        try {
+            $t = \REDCap::getDataTable((int) $pid);
+        } catch (\Throwable $e) {
+            \INSPIRE\UniversalValidator\Faults::swallow($e, 'RecordManifestSource::dataTableByApi');
+            return null;
+        }
+        return (is_string($t) && preg_match('/^redcap_data[0-9]*\z/', $t)) ? $t : null;
     }
 
     /** `redcap_data`, proved to exist with the columns a walk reads, or null. */

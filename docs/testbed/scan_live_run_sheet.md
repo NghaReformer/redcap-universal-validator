@@ -225,8 +225,8 @@ Each cron runs when REDCap's cron runner finds it due.
 - `uv_scan_expire_values` runs every hour.
 
 To see a pass, wait for it, or have the server administrator run REDCap's
-`cron.php` once the cron is due. The module log shows each pass as a
-`scan-cron` entry.
+`cron.php` once the cron is due. The module log shows each pass that changed
+something as a `scan-cron` entry; a pass with nothing to do writes none.
 
 | # | Action | Expect |
 |---|---|---|

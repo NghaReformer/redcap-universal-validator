@@ -12,13 +12,16 @@
 *.md   text eol=lf
 *.yml  text eol=lf
 
-# Development-only trees stay out of `git archive` — the release package must
-# contain exactly the module directory REDCap installs (checked by the CI
-# "package" job). Tests and docs ship on purpose: they are user-facing, and the
-# README tells an administrator how to run the suites on their own server.
+# Development-only trees stay out of `git archive`: the release package holds
+# what a REDCap server needs and nothing else, because REDCap serves every file
+# of a module folder to whoever asks for its URL. The CI "package" job and
+# tests/package_contents_js.cjs check the archive against
+# tools/package_rules.json. The user-facing guides in docs/ ship; the tests do
+# not, and are run from a checkout of the repository (FRM-1).
 .github        export-ignore
 reports        export-ignore
 tools          export-ignore
+tests          export-ignore
 .gitattributes export-ignore
 .gitignore     export-ignore
 # The project website, the assistant notes, plans, the flier and the graph
@@ -27,7 +30,12 @@ site           export-ignore
 CLAUDE.md      export-ignore
 .graphifyignore export-ignore
 PLAN-*.md      export-ignore
-# Tests the release tooling in tools/, which does not ship either.
-tests/release_version_js.cjs export-ignore
 *.pdf          export-ignore
 /*temporal*    export-ignore
+# Release notes before 1.10.0, the slide deck, the development diagram, a
+# superseded plan and the live test sheets with their fixtures (FRM-15).
+CHANGELOG-ARCHIVE.md export-ignore
+docs/testbed   export-ignore
+docs/user-guide-deck.html export-ignore
+docs/architecture-diagram.html export-ignore
+docs/event-instance-reference-plan-original.md export-ignore

@@ -68,7 +68,13 @@ validate identically here, in Excel, and in the browser (same verified engine).
   project-scoped hash is (HMAC-SHA-256 with a module-held secret), configurable
   per project down to logging nothing. When the `log-values` setting cannot be
   read, or holds a value this version does not know, the log uses the strict
-  mode (`none`): the record ID as its keyed hash and no value. A keyed hash is
+  mode (`none`): the record ID as its keyed hash and no value. In the `none`
+  and `off` modes the log's own record column follows the mode too: the module
+  writes the record's hash there, or `[withheld]` where an entry has no hash,
+  so that REDCap does not fill the column with the record being viewed. A page
+  hook that fails leaves a `uvalidate-page-error` entry and a notice on the
+  data-entry form; the form opens without the module's checks and the audit
+  after the save still runs. A keyed hash is
   pseudonymization, not anonymity: treat the module log as identifying data in
   access and retention policies. The audit trims a value the way the browser
   does and checks values with characters outside printable ASCII too. Where
@@ -1802,7 +1808,7 @@ cell.
 
 Two crons keep the scan's tables bounded. Each pass works in slices for a
 quarter of its run-time limit, carries on where the last pass stopped, and
-writes a `scan-cron` entry to the module log.
+writes a `scan-cron` entry to the module log when it changed something.
 
 - `uv_scan_reap_abandoned` runs every 15 minutes. It ends a run that has made
   no progress for `scan-system-stale-run-hours` hours (24 by default) as
@@ -2088,6 +2094,13 @@ on PHP 7.4, 8.1 and 8.3 (the declared floor is exercised, not just stated),
 release-shaped package to verify its layout. If either engine drifts, CI fails.
 See [`tests/README.md`](tests/README.md).
 
+The suites are in the repository, not in the release archive. The archive holds
+only what a REDCap server needs, because REDCap serves every file of a module
+folder by URL; `tools/package_rules.json` lists what it must not hold and CI
+checks the built archive against it. Each PHP script under `tests/`, `tools/`
+and `data/` also answers a web request with 404, for a server that holds a git
+checkout instead of the archive. To run the suites, clone the repository.
+
 ## Install
 
 See [`docs/INSTALL.md`](docs/INSTALL.md), or the
@@ -2180,6 +2193,8 @@ node tests/a11y_dom_js.cjs    # field DOM contract (a11y, debounce, survey, read
 node tests/config_notice_js.cjs     # page-level config-error notice; a config of another configShape is not read
 node tests/dispatch_notice_js.cjs   # dispatcher config-error routing
 node tests/gen_pooled_fixture.cjs   # regenerate pooled_fixture.json after a parser change
+node tests/package_contents_js.cjs  # the release archive holds no test, tool or development file
+php  tests/cli_guard_php.php        # every PHP script under tests/, tools/ and data/ refuses a web request
 ```
 
 `js/engine.js` is vendored from the `qrcode_generation` repo with a set of
@@ -2191,13 +2206,25 @@ checklist in [`docs/TESTING.md`](docs/TESTING.md).
 
 ## Where this fits
 
-This is the free, open-source client of an open-core system: it catches typos in
-the form for anyone, and the paid server features (central ID minting, printable
-QR label sheets, pooled multi-site audit) live behind a hosted API the module can
-call. The module works fully on its own without any of that.
+The module is complete on its own. It makes no outbound call: every check runs
+in the browser or on the REDCap server, and nothing is sent anywhere else. It
+checks IDs and does not issue them, so it works with whatever issues yours
+(a label printer, a registry, a spreadsheet), as long as that uses one of the
+module's check-character algorithms or a pattern.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+The module's code is under the MIT licence, see [`LICENSE`](LICENSE).
+
+The WHO growth tables are not. The files in
+[`data/references/who/`](data/references/who/) and the copies of them the
+browser loads from `js/growth/` are the LMS tables of the WHO `anthro` and
+`anthroplus` R packages, copyright World Health Organization, under the GNU
+General Public License version 3 (`anthroplus`: version 3 or later). They stay
+under that licence, whose text is
+[`data/references/who/LICENSE`](data/references/who/LICENSE); the sources and
+commits are in [`data/references/who/README.md`](data/references/who/README.md).
+The module reads them as data. If you redistribute the module, keep those
+files, their README and that licence together.
 
 For complete, copyable region/site dropdown rules, see [the region/site annotation](docs/region-site-choices-example.txt). The [action-tag examples](docs/action_tag_validation_examples.md) cover single/pooled `alternates`, autocomplete choice filtering, cross-event references, and repeating-instrument matching.

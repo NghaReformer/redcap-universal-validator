@@ -175,12 +175,103 @@ and when the module is enabled or a new version installed while it is on.
 survey uniqueness throttle uses it. So are the four tables of the value index
 of the live lookups (`uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync`,
 `uv_lookup_record`), which the README's "Lookups on large projects: the value
-index" describes.
+index" describes, unless that index is turned off.
+
+### Every table the module creates, and when
+
+The module's own tables number 17 at most, all prefixed `uv_`. It writes to no table of
+REDCap's, and creates none during data entry: a table is created only when an
+administrator enables the module, installs a new version or saves the module's
+system settings. Every statement is `CREATE TABLE IF NOT EXISTS`.
+
+| Tables | Created | What they hold |
+|---|---|---|
+| `uv_rate_bucket` | Always | A counter per project and minute that limits `@UVUNIQUE` and `@UVEXISTS` lookups from surveys and into other projects. No value, no record. While it cannot be created or written, lookups from a survey are refused (the page shows nothing and the save goes through). |
+| `uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record` | Unless *Live lookups: turn OFF the value index* is checked | The value index. Empty until a project uses `@UVUNIQUE` or `@UVEXISTS`. A key is a keyed hash of a saved value (HMAC-SHA-256 with the module's secret and the project id) beside the record that holds it. |
+| The scan's other twelve | Only with `scan-system-enable-durable` on | Scan runs, findings and their audit rows. |
+
+To keep the module from creating anything but the counter table, check
+*Live lookups: turn OFF the value index* before or right after enabling it and
+leave `scan-system-enable-durable` off. A database user with no `CREATE` grant
+gets no table: the module still validates in the browser and audits after each
+save, the lookups read the data table, and lookups from surveys are refused.
+
+### What stays when the module is disabled
+
+- **Disabled in one project:** that project's rows of the value index are
+  deleted, its running scan is stopped, and the module log gets
+  `lookup-index-project-cleared`. Stored scan findings stay until their
+  retention days pass.
+- **Disabled on the server:** every running scan is stopped. Nothing is
+  deleted unless the system setting *delete every table this module created
+  ... when the module is disabled* (`scan-system-drop-tables-on-disable`) is
+  checked. It is off by default, so that disabling and enabling again loses
+  no scan. With it checked, all the module's tables are dropped.
+- **To remove the tables by hand** after disabling without that setting, drop
+  every table whose name starts with `uv_` in the list above.
+- The module's project and system settings and its log entries are kept by
+  REDCap as for any module, in `redcap_external_module_settings` and
+  `redcap_external_modules_log`.
+
+### What the module removes from its own log
+
+Once a day the `uv_lookup_index` cron removes the module's operational log
+entries older than 90 days: the cron entries (`scan-cron`, `scan-cron-skipped`,
+`scan-cron-failed`, `scan-cron-state-unreadable`) and the entries that say a
+request went wrong (`uvalidate-faults`, `uvalidate-page-error`,
+`uvalidate-no-unique-transport`, `uv-throttle-storage-unavailable`). It never
+removes what a project relies on: `invalid-id-saved` and the other findings of
+the save audit, the reasons given under `@UVJUSTIFY`, and the scan's audit
+entries stay until an administrator removes them. On a REDCap whose framework
+has no `removeLogs()` nothing is removed.
+
+### Upgrading to 2.5.0: the value index is rebuilt
+
+Up to 2.4.0 a key of the value index was a plain MD5 of the value. From this
+version it is a keyed hash. No table changes. The old keys stop being read at
+once, the `uv_lookup_index` cron deletes them at its next pass (every 5
+minutes) and builds each field again when a lookup next asks for it. Until a
+field is built the lookups read the data table, as they do on a new
+installation.
 
 The module's database user needs a plain `CREATE` grant to make them and
 `ALTER` to upgrade them. `CREATE TEMPORARY TABLES`, `CREATE VIEW` and
 `CREATE ROUTINE` do not suffice; the scan page's health check says so by name
 if the grant is missing.
+
+### REDCap internals this module reads
+
+Wherever REDCap has a documented method the module uses it: `REDCap::getData`,
+`getDataDictionary`, `getRecordIdField`, `getEventNames`, `getGroupNames`,
+`getUserRights`, `getInstrumentEventMappings`, `getRepeatingFormsEvents` and
+`saveData`, and the framework's `query`, `log`, `queryLogs` and settings
+methods. What follows has no documented method, or none that is fast enough
+on a large project, so the module reads it directly. Every statement is a
+`SELECT` with bound values; the module writes to no `redcap_` table. A REDCap
+upgrade that renames one of these is what would break the feature named
+beside it, and each read fails towards "not checked", never towards a wrong
+answer.
+
+| What is read | Used by | Why not a method |
+|---|---|---|
+| `redcap_metadata` (`misc`, counted for one project) | Every form and survey page | One indexed count says whether any field carries a module tag, so a project with no rule skips the dictionary read. |
+| `redcap_projects` (`data_table`, `log_event_table`) | Validation scan, value index, live lookups, `@UVWRITEONCE`, `@UVWINDOW` | `REDCap::getDataTable()` and `REDCap::getLogEventTable()` are asked first where the REDCap has them. The column is read only when they give no usable answer. The name is checked against `redcap_data[0-9]*` or `redcap_log_event[0-9]*` before it is used. |
+| `redcap_data` and its numbered siblings | Validation scan, `@UVUNIQUE`, `@UVEXISTS`, value index | `REDCap::getData` loads whole records. A duplicate check over 400,000 records needs one indexed read of one field. |
+| `redcap_record_list`, `redcap_record_counts` | Validation scan | The list and count of records, a page at a time. |
+| `redcap_log_event` and its numbered siblings (`data_values`, `pk`, `ts`, `user`, `event`, `description`) | Validation scan (what changed since a run began), `@UVWRITEONCE` (the first saved value), `@UVWINDOW` rules against today (when a value was saved) | REDCap has no method for "what was this field's earlier value", "when was it saved" or "which records changed after this log entry". The module parses `data_values` in the format REDCap writes (`field = 'value'`, one per line). |
+| `redcap_user_rights`, `redcap_user_roles`, `redcap_user_information` | `@UVWRITEONCE` roles | Which role a user holds in the project, by role name. |
+| `redcap_data_access_groups` | Validation scan | The group a scan is confined to. |
+| `redcap_locking_data`, `redcap_locking_records` | Returned values (`@UVRANGE`, `@UVEXISTS` outputs) | The page does not fill returned fields on a locked form or record. |
+| `new \Project($pid)`, `$GLOBALS['Proj']` | Events, forms and repeating instruments of the project | The project object REDCap itself builds for the request; read, never changed. |
+| `$GLOBALS['super_user']` | Scan page | Whether the viewer is an administrator, where the framework's user object does not say. |
+
+Two more things an administrator may want to know. The value index writes its
+own tables with `INSERT ... ON DUPLICATE KEY UPDATE ... VALUES()`, which MySQL
+8.0.20 marks as deprecated and still runs; the replacement syntax does not
+exist in MariaDB or MySQL 5.7, which REDCap also supports. And the returned
+values of `@UVRANGE` and `@UVEXISTS` are written with `REDCap::saveData` from
+inside the `redcap_save_record` hook; the module marks its own save so that it
+does not run again for it.
 
 ### A schema change blocks the request that makes it
 
@@ -325,7 +416,8 @@ says planning could not finish.
 The module declares three crons, which REDCap's own cron runner calls, so
 the server's REDCap cron has to be running. The scan's two do nothing while
 `scan-system-enable-durable` is off; while the tables are not ready a pass does
-nothing and logs `scan-cron-skipped`. The third keeps the value index of the
+nothing and logs `scan-cron-skipped`, once for each reason and once a day while
+it lasts. The third keeps the value index of the
 live lookups (README, "Lookups on large projects: the value index") and runs
 whether the scan is on or not.
 
@@ -339,8 +431,10 @@ A pass uses a quarter of its longest run, reads the projects with scan data
 500 to a statement, works in bounded slices, and saves where it stopped so the
 next pass carries on from there. A project whose step fails is logged as
 `scan-cron-step-failed` and tried again next pass; the pass goes on to the next
-project. Each pass ends with a `scan-cron` entry in the module log, which
-counts what it did. Pressing Start also ends an abandoned run of its own
+project. A pass that changed something, stopped early or had a failure ends
+with a `scan-cron` entry in the module log, which counts what it did; a pass
+that found nothing to do writes no entry, and REDCap's own cron history has its
+one-line summary. Pressing Start also ends an abandoned run of its own
 project at once, so a project never waits for the reap cron to scan again.
 
 Run retention is `scan-run-retention-days` per project (90 days by default,

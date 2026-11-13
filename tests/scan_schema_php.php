@@ -19,6 +19,12 @@
  */
 
 namespace {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
     // Schema names the two vocabularies a retired run is written in, so
     // that the upgrade cannot drift from what the rest of the module means
     // by 'expired' and 'terminal'. Loading them here makes that dependency

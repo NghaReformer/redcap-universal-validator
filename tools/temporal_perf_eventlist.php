@@ -7,6 +7,12 @@
  * memo, so the walk repeats for every host context of the save.
  * Usage: php tools/temporal_perf_eventlist.php [events] [tokens] [instances]
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/temporal_perf_harness.php';
 $E = (int)($argv[1] ?? 200); $T = (int)($argv[2] ?? 2900); $n = (int)($argv[3] ?? 500);
 $forms = ['record_id'=>'fa','a_val'=>'fa','c_val'=>'fc'];

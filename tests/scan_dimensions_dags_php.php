@@ -18,6 +18,12 @@
  */
 
 namespace {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
     class REDCap {
         public static $groups = false;
         public static function getGroupNames($unique = false, $groupId = null) { return self::$groups; }

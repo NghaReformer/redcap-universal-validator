@@ -4,6 +4,12 @@
  * Prints the raw inspire-validator-config JSON for several rule shapes so the
  * reviewer can see exactly which saved values / derived facts reach a public page.
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/temporal_sec_harness.php';
 
 function dump($label, $p) {

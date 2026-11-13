@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator\Scan;
 
+require_once __DIR__ . '/../Faults.php';
+
 /**
  * The one question ScanWorker asks a fence.
  *
@@ -174,6 +176,16 @@ final class SourceFence implements RecordVersions, ChangeLog
      */
     public static function resolveTable(ScanDb $db, $pid)
     {
+        // REDCap's own answer first, where it has one (FRM-16). The same
+        // allowlist: an answer that is not a log table's name is not used.
+        if (is_callable(['\REDCap', 'getLogEventTable'])) {
+            try {
+                $named = \REDCap::getLogEventTable((int) $pid);
+                if (is_string($named) && preg_match('/^redcap_log_event[0-9]*\z/', $named)) return $named;
+            } catch (\Throwable $e) {
+                \INSPIRE\UniversalValidator\Faults::swallow($e, 'SourceFence::resolveTable');
+            }
+        }
         $r = $db->select('SELECT log_event_table FROM redcap_projects WHERE project_id = ?', [$pid]);
         $tbl = isset($r[0][0]) ? (string) $r[0][0] : '';
         if ($tbl === '' || !preg_match('/^redcap_log_event[0-9]*\z/', $tbl)) return null;

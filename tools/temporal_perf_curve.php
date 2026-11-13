@@ -4,6 +4,12 @@
  * render for one record with n repeat instances on the host form, per rule shape.
  * Usage: php tools/temporal_perf_curve.php [n1,n2,...] [shape-filter]
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/temporal_perf_harness.php';
 
 $ns = isset($argv[1]) ? array_map('intval', explode(',', $argv[1])) : [100, 1000, 5000];

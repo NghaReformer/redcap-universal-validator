@@ -28,6 +28,12 @@
  */
 
 namespace ExternalModules {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
     class AbstractExternalModule {
         /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
         public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
@@ -526,7 +532,7 @@ namespace {
     $m = mod($DICT, $data(['wt_why' => 'scale recalibrated']), $FULL, ['log-values' => 'none']);
     $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 1);
     $j = logged($m, 'uvalidate-justified');
-    check('log-values none: the justified entry has no value and no record id', $j && !isset($j[0]['value']) && !isset($j[0]['record'])
+    check('log-values none: the justified entry has no value and no record id', $j && !isset($j[0]['value']) && isset($j[0]['record_hmac']) && $j[0]['record'] === $j[0]['record_hmac']
         && $j[0]['justified_by'] === 'wt_why');
 
     // Missing Data Codes that cannot be read: no value can be told apart from a code, so nothing is justified.

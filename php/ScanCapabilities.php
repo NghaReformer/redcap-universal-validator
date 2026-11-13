@@ -457,10 +457,10 @@ final class ScanCapabilities
      * table-name rule are what produced the disagreement in the first place.
      * The delegation is guarded because this file must keep loading on its own:
      * tests/scan_capabilities_php.php requires ScanCapabilities.php and nothing
-     * else, and UniversalValidator.php requires this file BEFORE the Scan/*
-     * classes. class_exists() is called with autoload disabled on purpose — the
-     * question is whether the module's own require block has run, and a probe
-     * is not a place to trigger somebody else's autoloader.
+     * else. The module reads its classes on first use (php/Autoload.php, FRM-4),
+     * so the two Scan classes are asked for through that loader when the
+     * module has registered it, and with autoload disabled when it has not: a
+     * probe is not a place to trigger somebody else's autoloader.
      *
      * `redcap_data` remains the documented fallback, which is what shipped and
      * what REDCap still installs by default. If it is the wrong answer here the
@@ -476,8 +476,9 @@ final class ScanCapabilities
      */
     private static function dataTableFor($module, $pid)
     {
-        if (class_exists('INSPIRE\UniversalValidator\Scan\RecordManifestSource', false)
-                && class_exists('INSPIRE\UniversalValidator\Scan\ModuleDb', false)
+        $own = class_exists(__NAMESPACE__ . '\\Autoload', false);
+        if (class_exists('INSPIRE\UniversalValidator\Scan\RecordManifestSource', $own)
+                && class_exists('INSPIRE\UniversalValidator\Scan\ModuleDb', $own)
                 && is_object($module) && is_callable([$module, 'query'])) {
             try {
                 $t = Scan\RecordManifestSource::dataTable(new Scan\ModuleDb($module), $pid);

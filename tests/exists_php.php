@@ -25,6 +25,12 @@
  */
 
 namespace ExternalModules {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
     class AbstractExternalModule {
         /** The legacy one-request scan (tests/support/scan_facade.php, QUA-3). */
         public function scanProject(...$a) { return \INSPIRE\UniversalValidator\scan_project($this, ...$a); }
@@ -899,7 +905,10 @@ namespace {
     $bucket = isset($m->rateBuckets['149|' . $tier2]) ? $m->rateBuckets['149|' . $tier2] : 0;
     check('survey budget: ...and its narrowed read was counted (got ' . $bucket . ')', $bucket === 1);
     $m = mod(null); $m->queryThrows = true;
-    check('survey budget: a counter that cannot be kept refuses the read (fail closed)', (askSurvey($m, 'res_s', ['res_s' => 'SP-404'])['state'] ?? null) === 'unknown');
+    // No counter at all: the survey throttle refuses first (FRM-5), before the read budget is asked.
+    $r = askSurvey($m, 'res_s', ['res_s' => 'SP-404']);
+    check('survey budget: a counter that cannot be kept refuses the read (fail closed)',
+        !in_array($r['state'] ?? null, ['found', 'not-found'], true) && (($r['state'] ?? null) === 'unknown' || isset($r['error'])) && fullReads() === 0);
     $m = mod(); $m->rateBuckets['149|' . $tier2] = 10000;
     check('survey budget: staff are not on it', (ask($m, 'res_spec', ['res_spec' => 'SP-404'])['state'] ?? null) === 'not-found');
 

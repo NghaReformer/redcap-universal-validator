@@ -1,6 +1,12 @@
 <?php
 /** End-to-end opt-in event/repeat regression tests with field-filtering reads. */
 namespace ExternalModules {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
     class AbstractExternalModule {
         public $logCalls = []; public $subSettings = []; public $projectSettings = [];
         public $systemSettings = []; public $projectIdReturn = null;

@@ -1,5 +1,11 @@
 <?php
 /** Shared helpers for the temporal_sem_* repro scripts (red-team, not production). */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require_once __DIR__ . '/../php/AddressResolver.php';
 require_once __DIR__ . '/../php/TemporalRules.php';
 require_once __DIR__ . '/../php/TemporalLogic.php';

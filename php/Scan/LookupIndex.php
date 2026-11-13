@@ -17,8 +17,15 @@ use INSPIRE\UniversalValidator\Logic;
  * lookup through this index reads one key.
  *
  * WHAT IT HOLDS. uv_lookup_key has a row per (project, field, key, record),
- * where the key is the MD5 of Logic::lookupKey(value, letter case folded, the
- * field's number mark). Folding always gives a superset of a lookup that keeps
+ * where the key is a KEYED hash of Logic::lookupKey(value, letter case folded,
+ * the field's number mark): the first 16 bytes of an HMAC-SHA-256 made with
+ * the module's secret and the project id (FRM-7). Up to key version 1 it was
+ * a plain MD5 of the value, which anyone who can read the table can test
+ * guesses against (a phone number, a national id), beside the record that
+ * holds it; the module's log has never stored a value that way. A caller
+ * passes the secret as the option "keySecret". Without one the index answers
+ * nothing and builds nothing, and the lookups read the data table.
+ * Folding always gives a superset of a lookup that keeps
  * letter case, and a hash that collides only adds a record. So the records
  * this class returns are a SUPERSET of the records that hold the value, and
  * the caller confirms them against the data table rows of those records
@@ -78,8 +85,14 @@ use INSPIRE\UniversalValidator\Logic;
  */
 final class LookupIndex
 {
-    /** Bump when Logic::lookupKey changes what a value's key is. */
-    const KEY_VERSION = 1;
+    /**
+     * Bump when Logic::lookupKey changes what a value's key is, or how the
+     * key is hashed. 2: a keyed hash in place of MD5 (FRM-7). A field's spec
+     * starts with this number and the secret's id (specHead), so the keys of
+     * another version or another secret stop answering at once, are cleared
+     * by the next cron pass (maintain) and are built again when a lookup asks.
+     */
+    const KEY_VERSION = 2;
     /** Seconds the log is read back behind the newest position. */
     const OVERLAP = 3600;
     /** A (time, position, count) sample is kept at most this often. */
@@ -131,11 +144,14 @@ final class LookupIndex
     private $sources = [];
     /** @var array log table => bool: an index leads with `ts` */
     private $tsIndexed = [];
+    /** @var string|null the secret the keys are hashed with, null when the caller has none */
+    private $secret;
 
     /**
      * @param object $module anything with the framework's query($sql, $params)
      * @param array $options 'liveBuildRows' => int, in place of LIVE_BUILD_ROWS;
-     *                       'cronAt' => int, when the cron last ran
+     *                       'cronAt' => int, when the cron last ran;
+     *                       'keySecret' => string, what the keys are hashed with (FRM-7)
      */
     public function __construct($module, array $options = [])
     {
@@ -143,6 +159,8 @@ final class LookupIndex
         $this->db = new ModuleDb($module);
         $this->liveBuildRows = isset($options['liveBuildRows']) ? (int) $options['liveBuildRows'] : self::LIVE_BUILD_ROWS;
         $this->cronAt = isset($options['cronAt']) ? (int) $options['cronAt'] : 0;
+        $this->secret = (isset($options['keySecret']) && is_string($options['keySecret']) && strlen($options['keySecret']) >= self::SECRET_MIN)
+            ? $options['keySecret'] : null;
     }
 
     /**
@@ -156,6 +174,8 @@ final class LookupIndex
     {
         $pid = (int) $pid;
         if ($pid <= 0 || !$fieldMarks || !is_object($this->module) || !is_callable([$this->module, 'query'])) return null;
+        // No secret to hash with: no key can be made or matched (FRM-7).
+        if ($this->secret === null) return null;
         try {
             $src = $this->sources($pid);
             if ($src === null) return null;
@@ -186,12 +206,22 @@ final class LookupIndex
     {
         $out = ['built' => 0, 'dropped' => 0, 'waiting' => 0, 'left' => 0];
         if (!is_object($this->module) || !is_callable([$this->module, 'query'])) return $out;
+        // Without the secret nothing can be built, and nothing is dropped
+        // either: a secret that cannot be read for one pass must not cost
+        // every project its index.
+        if ($this->secret === null) return $out;
         $now = time();
+        // A field keyed another way (an older key version, the MD5 keys of
+        // version 1 among them, or another secret) is listed too, and dropped
+        // below with its keys ($mark === false), so no such key outlives the
+        // next pass (FRM-7). LEFT() compares bytes, so no value is a pattern.
+        $head = $this->specHead() . '|';
         $todo = $this->db->select('SELECT project_id, field_name, spec, asked_at FROM ' . Schema::table('lookup_field') . '
             WHERE wanted_at > 0 OR asked_at < ? OR (ready = 1 AND building_at = 0 AND built_at < ?)
-               OR (building_at > 0 AND building_at < ?)
+               OR (building_at > 0 AND building_at < ?) OR LEFT(spec, ?) <> ?
             ORDER BY wanted_at = 0, wanted_at, built_at LIMIT 500',
-            [$now - self::UNUSED_AFTER, $now - (self::REBUILD_AFTER - self::REFRESH_BEFORE), $now - self::BUILD_STALE]);
+            [$now - self::UNUSED_AFTER, $now - (self::REBUILD_AFTER - self::REFRESH_BEFORE), $now - self::BUILD_STALE,
+             strlen($head), $head]);
         foreach ($todo as $i => $t) {
             if (time() >= $until) {
                 $out['left'] = count($todo) - $i;
@@ -201,7 +231,7 @@ final class LookupIndex
             $field = (string) $t[1];
             try {
                 $src = $this->sources($pid);
-                $mark = self::markOf((string) $t[2]);
+                $mark = $this->markOf((string) $t[2]);
                 if (!$this->lock($pid, self::CRON_LOCK_WAIT)) {
                     $out['waiting']++;
                     continue;
@@ -280,7 +310,7 @@ final class LookupIndex
         $age = $cron ? self::REBUILD_AFTER - self::REFRESH_BEFORE : self::REBUILD_AFTER;
         foreach ($fieldMarks as $f => $mark) {
             $f = (string) $f;
-            $spec = self::spec($mark);
+            $spec = $this->spec($mark);
             $st = isset($states[$f]) ? $states[$f] : null;
             $answers = $st !== null && $st['ready'] && $st['spec'] === $spec;
             $building = $st !== null && self::building($st, $now);
@@ -374,7 +404,7 @@ final class LookupIndex
                 $row['meta'] = $win['meta'];
             }
         }
-        $kept = $reset ? [] : self::keptOf($states, $now);
+        $kept = $reset ? [] : $this->keptOf($states, $now);
         $overflow = false;
         $read = function ($a, $b) use (&$overflow, $kept, $pid, $src) {
             if (!$kept || $overflow) return;
@@ -509,8 +539,8 @@ final class LookupIndex
             if ($buf) $this->insertKeys($pid, $field, $buf, $gen);
             $buf = [];
         };
-        $ok = (new FieldValues($this->module))->eachRow($pid, $field, null, function ($rec, $evt, $value) use (&$buf, $mark, $flush) {
-            $buf[bin2hex($rec) . ':' . self::keyHex($value, $mark)] = true;
+        $ok = (new FieldValues($this->module))->eachRow($pid, $field, null, function ($rec, $evt, $value) use (&$buf, $mark, $flush, $pid) {
+            $buf[bin2hex($rec) . ':' . $this->keyHex($pid, $value, $mark)] = true;
             if (count($buf) >= self::INSERT_ROWS) $flush();
         });
         if (!$ok) return false;
@@ -569,7 +599,7 @@ final class LookupIndex
                 if (!isset($row[2]) || $row[2] === null) continue;
                 $f = (string) $row[1];
                 if (!array_key_exists($f, $kept)) continue;
-                $want[bin2hex((string) $row[0])][$f][self::keyHex((string) $row[2], $kept[$f]['mark'])] = true;
+                $want[bin2hex((string) $row[0])][$f][$this->keyHex($pid, (string) $row[2], $kept[$f]['mark'])] = true;
             }
             $recHex = array_keys($want);
             $have = [];     // "recordHex:field:keyHex" => generation
@@ -734,12 +764,12 @@ final class LookupIndex
      *
      * @return array field => ['mark' => ?string, 'gen' => int]
      */
-    private static function keptOf(array $states, $now)
+    private function keptOf(array $states, $now)
     {
         $out = [];
         foreach ($states as $f => $st) {
             if (!$st['ready'] && !self::building($st, $now)) continue;
-            $mark = self::markOf($st['spec']);
+            $mark = $this->markOf($st['spec']);
             if ($mark !== false) $out[$f] = ['mark' => $mark, 'gen' => $st['gen']];
         }
         return $out;
@@ -781,7 +811,7 @@ final class LookupIndex
         $params = [$pid];
         foreach ($fieldMarks as $f => $mark) {
             $or[] = '(field_name = ? AND key_hash = UNHEX(?))';
-            array_push($params, (string) $f, self::keyHex($value, $mark));
+            array_push($params, (string) $f, $this->keyHex($pid, $value, $mark));
         }
         $out = [];
         foreach ($this->db->select('SELECT DISTINCT HEX(record) FROM ' . Schema::table('lookup_key')
@@ -809,23 +839,92 @@ final class LookupIndex
         }
     }
 
-    /** What a field's keys were built with: this class's key version and the field's number mark. */
-    private static function spec($mark)
+    /** The shortest secret taken: the module's is 64 hex characters. */
+    const SECRET_MIN = 32;
+
+    /**
+     * What a spec of $secret starts with: the key version and an id of the
+     * secret, 8 hex characters of a hash that says nothing else about it. A
+     * secret that changed is another id, so keys made with the old one stop
+     * answering; they could never match a key made with the new one, and an
+     * index that still answered would say "not found" of every value.
+     */
+    public static function specHeadOf($secret)
     {
-        return self::KEY_VERSION . '|' . (($mark === 'point' || $mark === 'comma') ? $mark : 'text');
+        return self::KEY_VERSION . '.' . substr(hash('sha256', 'uv-lookup-key-id|' . (string) $secret), 0, 8);
     }
 
-    /** The number mark a spec of this key version stands for (null for text), or false for another version. */
-    private static function markOf($spec)
+    /** What a field's keys are built with under $secret: specHeadOf() and the field's number mark. */
+    public static function specOf($secret, $mark)
+    {
+        return self::specHeadOf($secret) . '|' . (($mark === 'point' || $mark === 'comma') ? $mark : 'text');
+    }
+
+    /**
+     * The key of $value in project $pid under $secret, as 32 hex characters:
+     * the first 16 bytes of HMAC-SHA-256 over the value's lookup key (letter
+     * case folded), keyed with the secret and the project id. The same value
+     * has another key in another project, and no key can be worked out
+     * without the secret.
+     */
+    public static function keyOf($secret, $pid, $value, $mark)
+    {
+        return substr(hash_hmac('sha256',
+            Logic::lookupKey((string) $value, true, ($mark === 'point' || $mark === 'comma') ? $mark : null),
+            (string) $secret . '|lookup|' . (int) $pid), 0, 32);
+    }
+
+    /** specHeadOf() for this object's secret. Only called with one (candidates, maintain). */
+    private function specHead()
+    {
+        return self::specHeadOf($this->secret);
+    }
+
+    /** What a field's keys were built with: the key version, the secret's id and the field's number mark. */
+    private function spec($mark)
+    {
+        return self::specOf($this->secret, $mark);
+    }
+
+    /** The number mark a spec of this key version and secret stands for (null for text), or false for any other. */
+    private function markOf($spec)
     {
         $p = explode('|', (string) $spec, 2);
-        if (count($p) !== 2 || $p[0] !== (string) self::KEY_VERSION) return false;
+        if (count($p) !== 2 || $p[0] !== $this->specHead()) return false;
         return $p[1] === 'text' ? null : $p[1];
     }
 
-    /** The hex MD5 of $value's lookup key, letter case folded. */
-    private static function keyHex($value, $mark)
+    /** keyOf() for this object's secret. */
+    private function keyHex($pid, $value, $mark)
     {
-        return md5(Logic::lookupKey((string) $value, true, ($mark === 'point' || $mark === 'comma') ? $mark : null));
+        return self::keyOf($this->secret, $pid, $value, $mark);
+    }
+
+    /**
+     * Everything the index holds for $pid: its keys, its fields, its records'
+     * positions and its sync row (FRM-7). Called when the module is disabled
+     * in the project, so no hash of a value stays behind for a project that
+     * no longer uses the module. Needs no secret. The keys go a page at a
+     * time. True when every statement ran.
+     */
+    public function forgetProject($pid)
+    {
+        $pid = (int) $pid;
+        if ($pid <= 0 || !is_object($this->module) || !is_callable([$this->module, 'query'])) return false;
+        try {
+            foreach (['lookup_key', 'lookup_record'] as $t) {
+                do {
+                    $this->db->exec('DELETE FROM ' . Schema::table($t) . ' WHERE project_id = ? LIMIT ' . self::DELETE_ROWS, [$pid]);
+                } while ($this->db->affected() >= self::DELETE_ROWS);
+            }
+            foreach (['lookup_field', 'lookup_sync'] as $t) {
+                $this->db->execNoCount('DELETE FROM ' . Schema::table($t) . ' WHERE project_id = ?', [$pid]);
+            }
+            unset($this->rows[$pid], $this->sources[$pid]);
+            return true;
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'LookupIndex::forgetProject');
+            return false;
+        }
     }
 }

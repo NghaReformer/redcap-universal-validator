@@ -726,9 +726,10 @@ final class Schema
     /**
      * The lookup index's tables.
      *
-     * uv_lookup_key: one row per (project, field, key, record). The key is the
-     * MD5 of the value's lookup key, so a value of any length fits and two keys
-     * that collide only add a record the caller confirms. Record ids and field
+     * uv_lookup_key: one row per (project, field, key, record). The key is 16
+     * bytes of a keyed hash of the value's lookup key (LookupIndex::keyOf; a
+     * plain MD5 up to key version 1, FRM-7), so a value of any length fits and
+     * two keys that collide only add a record the caller confirms. Record ids and field
      * names are VARBINARY: compared as bytes, as the data table's rows are
      * matched, and a record id of 100 characters can take 400 bytes. `gen` is
      * the build that wrote the key, so a rebuild can clear the keys it did not

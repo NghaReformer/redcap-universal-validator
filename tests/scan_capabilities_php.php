@@ -32,6 +32,12 @@
  */
 
 namespace ExternalModules {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
     class AbstractExternalModule {
         public $queries = [];
         /** Rows to hand back, keyed by a substring of the SQL. */
@@ -101,6 +107,23 @@ namespace {
         public static function getGroupNames($u = false, $g = null) { return ''; }
         public static function getData($p) { return []; }
         public static function getDataDictionary($pid, $f = 'array') { return []; }
+        // FRM-16: REDCap's own names for a project's tables. null is what the
+        // other checks in this file run with: no answer, so the module's own
+        // read of redcap_projects decides, as on a REDCap without the methods.
+        public static $dataTable = null;
+        public static $logTable = null;
+        public static $tableThrows = false;
+        public static $tableAsked = [];
+        public static function getDataTable($pid = null) {
+            self::$tableAsked[] = ['data', $pid];
+            if (self::$tableThrows) throw new \RuntimeException('simulated');
+            return self::$dataTable;
+        }
+        public static function getLogEventTable($pid = null) {
+            self::$tableAsked[] = ['log', $pid];
+            if (self::$tableThrows) throw new \RuntimeException('simulated');
+            return self::$logTable;
+        }
     }
 
     require_once __DIR__ . '/../php/ScanCapabilities.php';
@@ -526,6 +549,8 @@ namespace {
     class GateDb {
         /** What redcap_projects.data_table holds; null means the column does not exist. */
         public $dataTable = null;
+        /** What redcap_projects.log_event_table holds. */
+        public $logTable = 'redcap_log_event';
         /** table name => its columns. A table not listed here does not exist. */
         public $tables = [];
         /** table name => how many record rows it answers a walk with. */
@@ -545,6 +570,7 @@ namespace {
                 foreach ($this->tables[$t] as $c) $out[] = [$c];
                 return $out;
             }
+            if (strpos($sql, 'log_event_table') !== false) return [[$this->logTable]];
             if (strpos($sql, 'data_table') !== false) {
                 // An older build has no such column, and a failed query is an
                 // answer where a version number would only be a claim.
@@ -682,6 +708,92 @@ namespace {
         $named->dataTable = 'redcap_data2';
         $named->tables = $blip->tables;
         check('rv5a-1 control: a name REDCap gives is used', $MS::dataTable($mdb($named), PID) === 'redcap_data2');
+
+        // FRM-16: the data table and the log table are asked of REDCap's own
+        // methods first, and the module's read of redcap_projects is what is
+        // left when REDCap has no answer. The same allowlists hold either way.
+        require_once __DIR__ . '/../php/Scan/SourceFence.php';
+        $SF = '\INSPIRE\UniversalValidator\Scan\SourceFence';
+        $read = function (\GateDb $g, $col) {
+            foreach ($g->sql as $q) if (strpos($q, 'SELECT ' . $col . ' FROM redcap_projects') !== false) return true;
+            return false;
+        };
+        $fresh = function () use ($blip) {
+            $g = new \GateDb();
+            $g->dataTable = 'redcap_data2';
+            $g->tables = $blip->tables;
+            return $g;
+        };
+        \REDCap::$tableAsked = [];
+        \REDCap::$dataTable = 'redcap_data3';
+        $g = $fresh();
+        check('FRM-16: the data table REDCap::getDataTable() names is used, for this project, with no read of redcap_projects',
+            $MS::dataTable($mdb($g), PID) === 'redcap_data3' && !$read($g, 'data_table')
+            && \REDCap::$tableAsked === [['data', PID]]);
+        foreach (['redcap_data; DROP TABLE x', "redcap_data2\n", '', false, 7, 'redcap_log_event'] as $bad) {
+            \REDCap::$dataTable = $bad;
+            $g = $fresh();
+            check('FRM-16: an answer that is not a data table\'s name is not used, and the module reads the column (' . json_encode($bad) . ')',
+                $MS::dataTable($mdb($g), PID) === 'redcap_data2' && $read($g, 'data_table'));
+        }
+        \REDCap::$dataTable = 'redcap_data3';
+        \REDCap::$tableThrows = true;
+        $g = $fresh();
+        check('FRM-16: a getDataTable() that throws leaves the module\'s own read to decide',
+            $MS::dataTable($mdb($g), PID) === 'redcap_data2' && $read($g, 'data_table'));
+        \REDCap::$tableThrows = false;
+        \REDCap::$dataTable = null;
+
+        $logDb = function ($name) {
+            $g = new \GateDb();
+            $g->logTable = $name;
+            return $g;
+        };
+        $canLog = property_exists('GateDb', 'logTable');
+        if ($canLog) {
+            \REDCap::$logTable = 'redcap_log_event9';
+            $g = $logDb('redcap_log_event4');
+            check('FRM-16: the log table REDCap::getLogEventTable() names is used, with no read of redcap_projects',
+                $SF::resolveTable($mdb($g), PID) === 'redcap_log_event9' && !$read($g, 'log_event_table'));
+            foreach (['redcap_log_event; DROP', "redcap_log_event2\n", '', null, 'redcap_data'] as $bad) {
+                \REDCap::$logTable = $bad;
+                $g = $logDb('redcap_log_event4');
+                check('FRM-16: an answer that is not a log table\'s name is not used (' . json_encode($bad) . ')',
+                    $SF::resolveTable($mdb($g), PID) === 'redcap_log_event4' && $read($g, 'log_event_table'));
+            }
+            \REDCap::$logTable = 'redcap_log_event9';
+            \REDCap::$tableThrows = true;
+            $g = $logDb('redcap_log_event4');
+            check('FRM-16: a getLogEventTable() that throws leaves the module\'s own read to decide',
+                $SF::resolveTable($mdb($g), PID) === 'redcap_log_event4');
+            \REDCap::$tableThrows = false;
+            \REDCap::$logTable = null;
+        }
+        check('FRM-16: the log table checks ran', $canLog);
+        // The docs list what is read without a public method, and both of the above.
+        $install = (string) file_get_contents(__DIR__ . '/../docs/INSTALL.md');
+        $at = strpos($install, '### REDCap internals this module reads');
+        $section = $at === false ? '' : substr($install, $at, (int) strpos($install, "\n## ", $at) - $at);
+        $missing = [];
+        foreach (['redcap_metadata', 'redcap_projects', 'redcap_data', 'redcap_record_list', 'redcap_record_counts',
+                  'redcap_log_event', 'data_values', 'redcap_user_rights', 'redcap_user_roles', 'redcap_user_information',
+                  'redcap_data_access_groups', 'redcap_locking_data', 'redcap_locking_records', '\\Project',
+                  "\$GLOBALS['Proj']", "\$GLOBALS['super_user']", 'getDataTable', 'getLogEventTable', 'VALUES()', 'saveData'] as $name) {
+            if (strpos($section, $name) === false) $missing[] = $name;
+        }
+        check('FRM-16: docs/INSTALL.md lists every REDCap internal the module reads (missing: ' . json_encode($missing) . ')',
+            $at !== false && $missing === []);
+        // ...and names no table the shipped PHP does not read, nor misses one it does.
+        $shipped = '';
+        foreach (array_merge([__DIR__ . '/../UniversalValidator.php'], glob(__DIR__ . '/../php/*.php'), glob(__DIR__ . '/../php/Scan/*.php'),
+                             glob(__DIR__ . '/../pages/*.php')) as $f) {
+            $shipped .= file_get_contents($f);
+        }
+        preg_match_all('/\b(?:FROM|JOIN)\s+(redcap_[a-z_]*[a-z])/', $shipped, $tm);
+        $undocumented = [];
+        foreach (array_unique($tm[1]) as $t) if (strpos($section, '`' . $t . '`') === false) $undocumented[] = $t;
+        check('FRM-16: every REDCap table a shipped statement names is in that list (not: ' . json_encode($undocumented) . ')',
+            count(array_unique($tm[1])) >= 8 && $undocumented === []);
     }
 
     // COMPAT-1: the extensions the module calls without a guard.

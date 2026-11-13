@@ -24,6 +24,12 @@
  */
 
 namespace ExternalModules {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
     class AbstractExternalModule {
         public $logCalls = []; public $subSettings = []; public $projectSettings = [];
         public $systemSettings = []; public $projectIdReturn = null;
@@ -42,7 +48,16 @@ namespace ExternalModules {
         public function getSystemSetting($k) {
             return isset($this->systemSettings[$k]) ? $this->systemSettings[$k] : null;
         }
-        public function setSystemSetting($k, $v) { $this->systemSettings[$k] = $v; }
+        /** Every system setting key written, in order. */
+        public $systemWrites = [];
+        public function setSystemSetting($k, $v) { $this->systemSettings[$k] = $v; $this->systemWrites[] = $k; }
+        /** Every removeLogs() call: [where, params]. */
+        public $removed = [];
+        public $removeThrows = false;
+        public function removeLogs($sql, $params = []) {
+            if ($this->removeThrows) throw new \RuntimeException('simulated removeLogs failure');
+            $this->removed[] = [$sql, $params];
+        }
         /** For each project setting written, how many statements had run before it. */
         public $projectSettingAt = [];
         public function setProjectSetting($k, $v, $pid = null) {
@@ -231,8 +246,35 @@ check('reap: the stale project it names is reaped through the store, by its own 
     count($named) === 1 && $named[0][1][0] === 42);
 check('reap: the slots above the limit are looked for on every pass (W1-N1)',
     count($m->sent(['SELECT slot_no FROM ' . Schema::table('scan_worker_slot'), 'slot_no > ?'])) === 1);
-$logged = $m->logged('scan-cron');
-check('reap: logged as scan-cron, naming the pass and carrying the counts',
+// The counts of a pass, read from its one-line summary ("reap: a=1, b=0").
+// A pass that changed nothing writes no scan-cron row (FRM-11), so the
+// summary is where such a pass is seen.
+$countsOf = function ($out) {
+    $c = [];
+    foreach (explode(', ', (string) substr((string) $out, strpos((string) $out, ': ') + 2)) as $bit) {
+        $kv = explode('=', $bit, 2);
+        if (count($kv) === 2) $c[$kv[0]] = (int) $kv[1];
+    }
+    return $c;
+};
+$counted = $countsOf($out);
+check('reap: the summary names the pass and carries the counts, and a pass that changed nothing writes no row',
+    strpos($out, 'reap: ') === 0 && array_key_exists('runs_expired', $counted)
+    && array_key_exists('superseded', $counted) && array_key_exists('slots_removed', $counted)
+    && $counted['projects'] === 1 && $m->logged('scan-cron') === []);
+// the same pass with a run to expire is logged, with its counts
+$m2 = new UniversalValidator();
+$m2->systemSettings = ['scan-system-enable-durable' => '1', 'scan-system-stale-run-hours' => '6'];
+$m2->tables = $tables;
+$inner2 = $census([[42, 1, 0, null, 'locations']]);
+$m2->responder = function ($sql, $params) use ($inner2, $RUN) {
+    // one idle worker place above the limit, which the pass removes
+    if (strpos($sql, 'SELECT slot_no FROM ' . Schema::table('scan_worker_slot')) !== false && strpos($sql, 'slot_no > ?') !== false) return [[9]];
+    return $inner2($sql, $params);
+};
+$m2->uvScanReapCron(['cron_max_run_time' => '300']);
+$logged = $m2->logged('scan-cron');
+check('reap: a pass that did something is logged as scan-cron, naming the pass and carrying the counts (got ' . json_encode($logged) . ')',
     count($logged) === 1 && $logged[0]['what'] === 'reap' && array_key_exists('runs_expired', $logged[0])
     && array_key_exists('superseded', $logged[0]) && array_key_exists('slots_removed', $logged[0]));
 check('reap: the summary is a one-liner for the cron table', is_string($out) && strpos($out, 'reap:') === 0);
@@ -384,6 +426,164 @@ $threw = false;
 try { $out = $m->uvLookupIndexCron(); } catch (\Throwable $e) { $threw = true; }
 check('lookup cron: a database failure does not escape, and comes back as a summary',
     !$threw && is_string($out) && stripos($out, 'could not read') !== false);
+
+// ---- 8a) FRM-11: an idle cron writes no log row, and old operational rows are removed ----
+// Both scan crons wrote a scan-cron row on every pass (120 a day with nothing
+// to do) and nothing ever removed a module log row.
+$idle = function () use ($tables, $census) {
+    $m = new UniversalValidator();
+    $m->systemSettings = ['scan-system-enable-durable' => '1'];
+    $m->tables = $tables;
+    $none = $census([]);
+    // nothing changed: the stub's ROW_COUNT() answers 3 unless told otherwise
+    $m->responder = function ($sql, $params) use ($none) {
+        return stripos($sql, 'ROW_COUNT()') !== false ? [[0]] : $none($sql, $params);
+    };
+    return $m;
+};
+$m = $idle();
+$out1 = $m->uvScanReapCron(['cron_max_run_time' => '300']);
+$out2 = $m->uvScanExpireValuesCron(['cron_max_run_time' => '300']);
+check('FRM-11: a pass with nothing to do writes no scan-cron row (got ' . json_encode($m->logged('scan-cron')) . ')',
+    $m->logged('scan-cron') === [] && is_string($out1) && strpos($out1, 'reap:') === 0 && is_string($out2));
+$writes = count($m->systemWrites);
+$m->uvScanReapCron(['cron_max_run_time' => '300']);
+$m->uvScanExpireValuesCron(['cron_max_run_time' => '300']);
+check('FRM-11: and a second idle pass of each writes no setting either (wrote ' . json_encode(array_slice($m->systemWrites, $writes)) . ')',
+    count($m->systemWrites) === $writes && $m->logged('scan-cron') === []);
+// the tables missing: said once, then once a day, and again when the reason changes
+$m = new UniversalValidator();
+$m->systemSettings = ['scan-system-enable-durable' => '1'];
+$m->tables = [];
+for ($i = 0; $i < 3; $i++) $m->uvScanReapCron();
+check('FRM-11: a pass skipped for the same reason is logged once, not on every pass',
+    count($m->logged('scan-cron-skipped')) === 1);
+$m->uvScanExpireValuesCron();
+check('FRM-11: ...once for each cron', count($m->logged('scan-cron-skipped')) === 2);
+$said = json_decode($m->systemSettings['cron-said-skipped-reap'], true);
+$m->systemSettings['cron-said-skipped-reap'] = json_encode([$said[0], time() - UniversalValidator::CRON_SAY_AGAIN_AFTER - 1]);
+$m->uvScanReapCron();
+check('FRM-11: ...and again after a day', count($m->logged('scan-cron-skipped')) === 3);
+$m->systemSettings['cron-said-skipped-reap'] = json_encode([str_repeat('0', 64), time()]);
+$m->uvScanReapCron();
+check('FRM-11: ...and at once when the reason is another', count($m->logged('scan-cron-skipped')) === 4);
+$m->systemSettings['cron-said-skipped-reap'] = json_encode([$said[0], time() + 99999]);
+$m->uvScanReapCron();
+check('FRM-11: a remembered time in the future does not silence it', count($m->logged('scan-cron-skipped')) === 5);
+
+// the retention of operational rows
+$m = new UniversalValidator();
+$m->systemSettings = ['lookup-index-system-off' => '1'];
+$m->uvLookupIndexCron();
+check('FRM-11: the lookup cron removes old operational rows, with the index off too', count($m->removed) === 1);
+list($where, $bound) = $m->removed[0];
+$ops = UniversalValidator::OPERATIONAL_LOG_MESSAGES;
+check('FRM-11: by message and age, every value bound',
+    $where === 'message in (' . implode(', ', array_fill(0, count($ops), '?')) . ') and timestamp < ?'
+    && array_slice($bound, 0, count($ops)) === $ops
+    && abs(strtotime(end($bound)) - (time() - UniversalValidator::OPERATIONAL_LOG_DAYS * 86400)) < 5);
+// What a project relies on is never in the list: the findings, the reasons,
+// the audit's own entries and every scan entry but the cron's.
+$kept = ['invalid-id-saved', 'uvalidate-justified', 'uvalidate-not-evaluated', 'uvalidate-unconfigurable',
+    'uvalidate-audit-error', 'scan-schema-migrate', 'scan-cron-step-failed', 'lookup-index-project-cleared'];
+check('FRM-11: no finding, reason or audit entry is in the list', array_intersect($kept, $ops) === []
+    && UniversalValidator::OPERATIONAL_LOG_DAYS >= 30);
+$src = file_get_contents(__DIR__ . '/../UniversalValidator.php') . file_get_contents(__DIR__ . '/../php/LiveLookups.php')
+    . file_get_contents(__DIR__ . '/../php/ScanRuns.php');
+$unknown = [];
+foreach ($ops as $o) {
+    // once in the list itself, and at least once where it is written
+    if (substr_count($src, "'" . $o . "'") < 2) $unknown[] = $o;
+}
+check('FRM-11: every message in the list is one the module writes (not: ' . json_encode($unknown) . ')', $unknown === []);
+$m->uvLookupIndexCron();
+$m->uvLookupIndexCron();
+check('FRM-11: once a day, not on every pass', count($m->removed) === 1);
+$m->systemSettings[UniversalValidator::LOG_PRUNED_AT] = (string) (time() - 86401);
+$m->uvLookupIndexCron();
+check('FRM-11: and again the next day', count($m->removed) === 2);
+$m = new UniversalValidator();
+$m->systemSettings = [];
+$m->removeThrows = true;
+$threw = false;
+try { $out = $m->uvLookupIndexCron(); } catch (\Throwable $e) { $threw = true; }
+$m->uvLookupIndexCron();
+check('FRM-11: a removal that fails does not stop the cron, and is not tried again until tomorrow',
+    !$threw && strpos($out, 'lookup index:') === 0 && isset($m->systemSettings[UniversalValidator::LOG_PRUNED_AT])
+    && $m->removed === []);
+
+// ---- 8b) FRM-7 and FRM-6: the index's secret, a disabled project, which tables are made ----
+$m = new UniversalValidator();
+$m->systemSettings = [];
+$m->uvLookupIndexCron();
+$headAsked = false;
+foreach ($m->bound as $b) {
+    if (strpos($b[0], 'FROM uv_lookup_field') !== false && strpos($b[0], 'LEFT(spec, ?) <> ?') !== false) {
+        $head = end($b[1]);
+        $headAsked = is_string($head) && preg_match('/^' . \INSPIRE\UniversalValidator\Scan\LookupIndex::KEY_VERSION . '\.[0-9a-f]{8}\|$/', $head) === 1
+            && $b[1][count($b[1]) - 2] === strlen($head);
+    }
+}
+check('FRM-7: the cron lists the fields keyed under another version or secret, by this secret\'s id', $headAsked);
+check('FRM-7: the secret is the module\'s own, made when there was none',
+    isset($m->systemSettings['log-hmac-key']) && strlen($m->systemSettings['log-hmac-key']) === 64
+    && $head === \INSPIRE\UniversalValidator\Scan\LookupIndex::specHeadOf($m->systemSettings['log-hmac-key']) . '|');
+check('FRM-7: no statement carries the secret', strpos(json_encode($m->bound), $m->systemSettings['log-hmac-key']) === false);
+
+// the module disabled in a project: the project's index rows go, whatever the scan's switch says
+foreach ([[], ['lookup-index-system-off' => '1']] as $sys) {
+    $m = new UniversalValidator();
+    $m->systemSettings = $sys;
+    $threw = false;
+    try { $m->redcap_module_project_disable('v1', 149); } catch (\Throwable $e) { $threw = true; }
+    $cleared = [];
+    foreach ($m->bound as $b) {
+        if (preg_match('/^DELETE FROM (uv_lookup_\w+) WHERE project_id = \?/', $b[0], $mm) && $b[1] === [149]) $cleared[$mm[1]] = true;
+    }
+    ksort($cleared);
+    check('FRM-7: project disable clears the project\'s rows of the four index tables' . ($sys ? ' (index turned off)' : '')
+        . ' (got ' . json_encode(array_keys($cleared)) . ')',
+        !$threw && array_keys($cleared) === ['uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync']);
+    $said = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'lookup-index-project-cleared'; }));
+    check('FRM-7: ...and says so in the log', count($said) === 1 && (int) $said[0][1]['project_id'] === 149 && $said[0][1]['cleared'] === '1');
+}
+$m = new UniversalValidator();
+$m->queryThrows = true;
+$threw = false;
+try { $m->redcap_module_project_disable('v1', 149); } catch (\Throwable $e) { $threw = true; }
+$said = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'lookup-index-project-cleared'; }));
+check('FRM-7: a clear that fails does not fail the disable, and is logged as not cleared',
+    !$threw && count($said) === 1 && $said[0][1]['cleared'] === '0');
+$m = new UniversalValidator();
+$m->redcap_module_project_disable('v1', 0);
+check('FRM-7: no project, nothing cleared', $m->sql === []);
+
+// which tables the three administrator actions make with the scan off (FRM-6)
+$made = function ($m) {
+    $t = [];
+    foreach ($m->sql as $q) if (preg_match('/^CREATE TABLE IF NOT EXISTS (uv_\w+)/', $q, $mm)) $t[$mm[1]] = true;
+    ksort($t);
+    return array_keys($t);
+};
+$FIVE = ['uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync', 'uv_rate_bucket'];
+foreach (['redcap_module_system_enable' => ['v1'], 'redcap_module_system_change_version' => ['v2', 'v1'],
+          'redcap_module_save_configuration' => [null]] as $hook => $args) {
+    $m = new UniversalValidator();
+    $m->systemSettings = [];
+    $m->$hook(...$args);
+    check("FRM-6: $hook with the scan off makes the counter table and the four index tables, and no other (got " . json_encode($made($m)) . ')',
+        $made($m) === $FIVE);
+    $m = new UniversalValidator();
+    $m->systemSettings = ['lookup-index-system-off' => '1'];
+    $m->$hook(...$args);
+    check("FRM-6: $hook with the value index turned off makes the counter table alone (got " . json_encode($made($m)) . ')',
+        $made($m) === ['uv_rate_bucket']);
+}
+$m = new UniversalValidator();
+$m->redcap_module_save_configuration(149);
+check('FRM-6: saving a project\'s settings makes no table', $made($m) === []);
+check('FRM-6: the module owns ' . count(Schema::tables()) . ' tables: these five and the scan\'s twelve',
+    count(Schema::tables()) === 17 && array_diff(array_map(function ($t) { return Schema::table($t); }, ['rate_bucket', 'lookup_key', 'lookup_field', 'lookup_sync', 'lookup_record']), Schema::tables()) === []);
 
 // ---- 9) the budget, and the cursor between passes ---------------------------
 //
@@ -691,10 +891,9 @@ $m = new UniversalValidator();
 $m->systemSettings = $on + [UniversalValidator::SCAN_DISABLED_AT => (string) (time() - 100)];
 $m->tables = $tables;
 $m->responder = $census([[42, 1, 0, null, '']]);
-$m->uvScanReapCron();
-$cl = $m->logged('scan-cron');
+$cl = $countsOf($m->uvScanReapCron());
 check('stop marker: an earlier disable stops no pass of the enable after it',
-    count($cl) === 1 && $cl[0]['stopped'] === 0 && $cl[0]['projects'] === 1);
+    isset($cl['stopped'], $cl['projects']) && $cl['stopped'] === 0 && $cl['projects'] === 1);
 
 // rv10a2-4: a disable that drops the tables lands while a pass works the
 // first of 300 projects in its census page (the reviewer's

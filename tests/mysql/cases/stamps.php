@@ -17,6 +17,12 @@
  * (the as_of column), from the write to the read.
  */
 
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 use INSPIRE\UniversalValidator\ValueStamps;
 use INSPIRE\UniversalValidator\Scan\Schema;
 use INSPIRE\UniversalValidator\Scan\SqlScanStore;

@@ -34,6 +34,12 @@
  * Run:  php tests/growth_curve_php.php
  */
 
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require_once __DIR__ . '/../php/GrowthCurve.php';
 
 use INSPIRE\UniversalValidator\GrowthCurve as GC;

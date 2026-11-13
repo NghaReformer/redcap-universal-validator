@@ -30,6 +30,12 @@
  */
 
 namespace ExternalModules {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
     if (isset($argv[1])) {
         class AbstractExternalModule {
             public $PREFIX = 'universal_validator';

@@ -6,6 +6,12 @@
  * endpoint answers "not a checkable field"; when active it answers used/free.
  * The response therefore encodes the protected Boolean for anyone allowed to call it.
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/temporal_sec_harness.php';
 
 function setup($bOpen) {

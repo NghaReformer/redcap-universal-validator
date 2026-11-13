@@ -42,6 +42,12 @@
  */
 
 namespace {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -58,7 +64,7 @@ namespace {
         return ['AbstractExternalModule' => [
             'getJavascriptModuleObjectName', 'getProjectId', 'getProjectSetting',
             'getProjectStatus', 'getSubSettings', 'getSystemSetting', 'getUrl', 'getUser',
-            'initializeJavascriptModuleObject', 'isModuleEnabled', 'log', 'queryLogs', 'setProjectSetting',
+            'initializeJavascriptModuleObject', 'isModuleEnabled', 'log', 'queryLogs', 'removeLogs', 'setProjectSetting',
             'setSystemSetting',
         ]];
     }
@@ -316,6 +322,10 @@ namespace {
                     $ok = isset($pool[$want]) || isset($pool['__callstatic']);
                 }
                 if ($ok && $call['kind'] !== 'parent' && isset($pool[$want]) && $pool[$want] === 'framework') {
+                    $framed[$want] = true;
+                }
+                // The module's own log() hands each entry on with parent::log() (FRM-2).
+                if ($ok && $call['kind'] === 'parent' && $parent[$want] === 'framework') {
                     $framed[$want] = true;
                 }
                 if (!$ok) {

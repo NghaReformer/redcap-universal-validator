@@ -694,6 +694,35 @@ final class ModeRegistry
         return false;
     }
 
+    /**
+     * Whether a rule answers survey respondents: its mode's opt-in key, named
+     * "<mode>Surveys" (uniqueSurveys, existsSurveys), is set on the rule or
+     * on one of its branches.
+     */
+    public static function surveyOptIn(array $rule)
+    {
+        $key = self::modeOfType(isset($rule['type']) ? $rule['type'] : '') . 'Surveys';
+        if (!empty($rule[$key])) return true;
+        foreach ((isset($rule['branches']) && is_array($rule['branches'])) ? $rule['branches'] : [] as $b) {
+            if (is_array($b) && !empty($b[$key])) return true;
+        }
+        return false;
+    }
+
+    /**
+     * rulesNeed() for a survey page: only a live rule that answers survey
+     * respondents counts. The page of a rule that does not is inert there
+     * (the engine asks nothing), so it needs no transport (FRM-8).
+     */
+    public static function rulesNeedOnSurvey(array $rules, $what)
+    {
+        foreach ($rules as $r) {
+            if (!is_array($r) || !empty($r['configError'])) continue;
+            if (self::needs(self::modeOfType(isset($r['type']) ? $r['type'] : ''), $what) && self::surveyOptIn($r)) return true;
+        }
+        return false;
+    }
+
     /** The findings method of a mode (a UniversalValidator method name). */
     public static function evaluator($mode)
     {
@@ -850,7 +879,10 @@ final class ModeRegistry
         $fn = (isset($scan['detailDerive']) && is_string($scan['detailDerive'])) ? $scan['detailDerive'] : '';
         if (!preg_match('/^([A-Za-z]\w*)::([A-Za-z]\w*)$/D', $fn, $m)) return [];
         $cls = __NAMESPACE__ . '\\' . $m[1];
-        if (!class_exists($cls, false) || !is_callable([$cls, $m[2]])) return [];
+        // The class is one of this module's, read on first use (php/Autoload.php)
+        // when the module loaded this file, and already loaded or absent when
+        // a test loaded it alone.
+        if (!class_exists($cls, class_exists(__NAMESPACE__ . '\\Autoload', false)) || !is_callable([$cls, $m[2]])) return [];
         $out = call_user_func([$cls, $m[2]], $rule);
         $clean = [];
         if (is_array($out)) foreach ($out as $k => $v) if (is_string($k) && is_scalar($v)) $clean[$k] = (string) $v;

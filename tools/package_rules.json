@@ -1,0 +1,32 @@
+{
+  "_comment": "What the release archive may not hold. tools/package_contents.cjs reads this, the CI package job runs it on the unzipped archive, and tests/package_contents_js.cjs runs it on `git archive` of the working tree. Each entry of refuse is a regular expression on a path relative to the module folder, with forward slashes. php_allowed lists the only places a .php file may ship; text_refuse lists strings no shipped text file may hold.",
+  "refuse": [
+    { "pattern": "^tests/", "why": "test scripts run over HTTP from the module folder (FRM-1)" },
+    { "pattern": "^tools/", "why": "build and measurement tools" },
+    { "pattern": "^reports/", "why": "review and deployment reports" },
+    { "pattern": "^site/", "why": "the project website" },
+    { "pattern": "^graphify-out/", "why": "the knowledge graph" },
+    { "pattern": "(^|/)\\.[^/]+", "why": "repository and editor dot files" },
+    { "pattern": "^CLAUDE\\.md$", "why": "assistant notes" },
+    { "pattern": "^PLAN-[^/]*\\.md$", "why": "plans" },
+    { "pattern": "^CHANGELOG-ARCHIVE\\.md$", "why": "release notes before 1.10.0, 271 KB (FRM-15)" },
+    { "pattern": "^docs/testbed/", "why": "live test run sheets and their fixtures (FRM-15)" },
+    { "pattern": "^docs/user-guide-deck\\.html$", "why": "a 706 KB slide deck (FRM-15)" },
+    { "pattern": "^docs/architecture-diagram\\.html$", "why": "a development diagram that loads fonts from a CDN (FRM-15)" },
+    { "pattern": "^docs/event-instance-reference-plan-original\\.md$", "why": "a superseded plan (FRM-15)" },
+    { "pattern": "\\.pdf$", "why": "fliers and slide exports" },
+    { "pattern": "\\.(py|R|sh|bat|ps1)$", "why": "scripts no REDCap server runs (FRM-15)" },
+    { "pattern": "(^|/)[^/]*temporal_[^/]*$", "why": "temporary scripts" }
+  ],
+  "php_allowed": [
+    "^UniversalValidator\\.php$",
+    "^php/[A-Za-z]+\\.php$",
+    "^php/Scan/[A-Za-z]+\\.php$",
+    "^pages/[a-z_]+\\.php$",
+    "^data/references/convert\\.php$"
+  ],
+  "text_extensions": ["php", "js", "html", "css", "json", "md", "txt"],
+  "text_refuse": [
+    { "pattern": "https?://fonts\\.(googleapis|gstatic)\\.com", "why": "a page of the module must not load from a font CDN (FRM-15)" }
+  ]
+}

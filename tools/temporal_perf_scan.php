@@ -7,6 +7,12 @@
  * unresolved notes are keyed by rule and by the context's POSITION in its record,
  * with no record id, so the three unfinished records collapse into one note.
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/temporal_perf_harness.php';
 
 $forms = ['record_id'=>'fa','a_val'=>'fa','b_open'=>'fb'];

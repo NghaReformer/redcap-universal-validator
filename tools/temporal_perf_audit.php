@@ -8,6 +8,12 @@
  *     grows by up to 500 identical findings per save (legacy rules log 1).
  * Usage: php tools/temporal_perf_audit.php [n]
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/temporal_perf_harness.php';
 
 $n = (int)($argv[1] ?? 600);
