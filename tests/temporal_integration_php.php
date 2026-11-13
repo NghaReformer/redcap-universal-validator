@@ -382,7 +382,8 @@ namespace {
     $m=$many($own);
     REDCap::$dictionary['key_a']['field_annotation']='@UVASSERT='.json_encode(['assert'=>"[key_a]<>[baseline_arm_1][key_b][2]",'message'=>'key','blockSave'=>'hard']);
     REDCap::$dictionary['a_val']['field_annotation']=tag('[a_val]>[a_val][previous-instance]');
-    $m->projectSettings['qualified-audit-max-contexts']=2;$m->redcap_save_record(PID,'1','fa',1,null,null,null,5);
+    // the limit counts entries, so 1 is the saved entry alone, for both rules (review DLT-3)
+    $m->projectSettings['qualified-audit-max-contexts']=1;$m->redcap_save_record(PID,'1','fa',1,null,null,null,5);
     $fields=[];foreach(invalid($m) as $c)$fields[]=$c[1]['field'].'@'.$c[1]['instance'];sort($fields);
     check('P4: every rule\'s saved entry comes before any other entry (got '.json_encode($fields).')',$fields===['a_val@5','key_a@5']);
     $m=temporal('[a_val]<{matched}',['matched'=>['field'=>'b_open','event'=>'baseline_arm_1','match'=>['key_b'=>'[key_a]']]]);

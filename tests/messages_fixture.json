@@ -346,6 +346,23 @@
       "survey": {"catalogue": "This value is much lower than before. Please check it.", "engine": "This value fell by 10 kg (14.3%) from 70 kg. Allowed: a change of at most 5 kg.", "parity": "differs"}
     },
     {
+      "key": "delta/not-a-number",
+      "rule": {"type": "delta", "fields": ["weight"], "deltaVs": "[w0]", "deltaVsOp": ["ref", "w0", null], "deltaVsLabel": "[w0]", "deltaMax": "5", "deltaUnit": "kg", "deltaText": "a change of at most 5 kg", "deltaUnvalidated": true},
+      "finding": {"type": "delta", "reason": "not-a-number", "field": "weight"},
+      "form": {"values": {"w0": "70", "weight": "700kg"}, "field": "weight"},
+      "staff":  {"catalogue": "The value is not a number, so its change cannot be checked.", "engine": "This is not a number.", "parity": "differs"},
+      "survey": {"catalogue": "This is not a number.", "engine": "This is not a number.", "parity": "same"}
+    },
+    {
+      "key": "delta/too-long",
+      "rule": {"type": "delta", "fields": ["weight"], "deltaVs": "[w0]", "deltaVsOp": ["ref", "w0", null], "deltaVsLabel": "[w0]", "deltaMax": "5", "deltaUnit": "kg", "deltaText": "a change of at most 5 kg"},
+      "finding": {"type": "delta", "reason": "too-long", "field": "weight"},
+      "form": null,
+      "formAbsent": "The form says \"This number is too long to compare.\" for a number of more than 4,096 digits, which this fixture does not write out; tests/delta_dom_js.cjs holds that case.",
+      "staff":  {"catalogue": "The number is too long to compare with an earlier value.", "engine": null},
+      "survey": {"catalogue": "This number is too long.", "engine": null}
+    },
+    {
       "key": "delta/*",
       "rule": {"type": "delta", "fields": ["weight"]},
       "finding": {"type": "delta", "reason": "delta", "field": "weight"},

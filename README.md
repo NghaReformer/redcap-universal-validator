@@ -1154,7 +1154,9 @@ and flags a change larger than its limit:
   or instance need event and instance references on. `max` limits the change in
   the field's unit and `maxPct` as a percent of the earlier value; give one or
   both. `direction` (`both`, `up` or `down`) says which changes the limits
-  apply to. Optional `unit`, `when`, `message`, `blockSave`.
+  apply to. `previous` (`nearest`, the default, or `adjacent`) says which
+  entry a previous event or instance is. Optional `unit`, `when`, `message`,
+  `blockSave`.
 - **Number fields:** Text fields with no, integer or number validation
   (including comma decimals), calc fields and sliders. The `vs` field must
   hold numbers too: a Text field with no, integer or number validation, a calc
@@ -1163,14 +1165,52 @@ and flags a change larger than its limit:
   is `|change| × 100` against `maxPct × |earlier value|`, with no division and
   no rounding. A number with an exponent is written out in full, so `1e80`
   against `1e100` is a real change. A value longer than 4,096 digits written
-  out is reported as too long to compare, never judged. A limit is at most 64
+  out is flagged as too long to compare: a red note under the field that holds
+  the save as `blockSave` says, and reason `too-long` in the audit and the
+  scan. Zeros that pad a number are not digits, so `000…0700` is 700 however
+  many zeros come first. An earlier value that long is a rule problem, not a
+  fault of the value typed. A limit is at most 64
   characters. Long numbers are charged to the record's evaluation budget in
   the audit and the scan. An earlier value of 0 has no percent, so `maxPct`
   does not apply to it; `"maxPct": 0` is refused for that reason (use
   `"max": 0` for "no change").
 - **Nothing to compare with.** A blank value, a blank earlier value and a
   missing data code on either side check nothing. On the first visit or the
-  first instance there is no earlier value.
+  first instance there is no earlier value. A missing data code that is a
+  number (`-99`, `999`) is read as the code wherever it stands: a measurement
+  equal to it is not judged, as the value or as the earlier value, under
+  `hard` too. Choose codes no measurement can take.
+- **What it does not compare.** The limit is on the change between two
+  entries, however long apart they are: there is no limit per day or per
+  week. `vs` names another field or another entry, never the value this same
+  field held before the save, so a correction typed over a saved value is not
+  compared with what it replaced.
+- **Not a number.** On a Text field with number or integer validation REDCap
+  itself refuses `700kg`, so this tag says nothing about it. On a Text field
+  with no validation nothing else does, so the tag flags a value that is not
+  a number (`700kg`, `70,5`, `1 000`, digits of another script) with "This is
+  not a number.", holds the save as `blockSave` says, and logs reason
+  `not-a-number` in the audit and the scan. It does so on a first visit too.
+  Give the field number validation where you can: REDCap then stops the value
+  as it is typed.
+- **The previous value.** `previous-event` and `previous-instance`, and a
+  reference written with `[previous-event-name]` or `[previous-instance]`,
+  compare with the nearest earlier event or instance that holds a value. A
+  missed visit, a deleted instance, a measurement left blank and a missing
+  data code are stepped over, so 70, a missed visit, then 170 is checked
+  against the 70. The events are those of the arm that hold the form, and the
+  instances are those that exist. When the value comes from further back than
+  the entry right before, the note names the event or instance it compared
+  with, the log entry carries it as `vs_found`, and the scan's detail line
+  says "Compared with event 41" or "Compared with instance 1" (the event by
+  its id). A survey page is told neither. A value that is there but is not a
+  number stops the walk and is reported, never stepped over. With an instance
+  as well, as in `[previous-event-name][weight][last-instance]`, the walk goes
+  over the events and reads that instance at each. `"previous":"adjacent"`
+  compares only with the event or instance right before, and checks nothing
+  when that one holds no value; it is refused beside a `vs` that names no
+  previous event or instance. `first-event` and `first-instance` name the
+  first one, whatever it holds.
 - **Checked at every event.** Each entry resolves its shorthand on its own, so
   the tag is checked at every event that holds the form, arm by arm. An event
   shorthand is refused when no arm has two events with the form, or when an
@@ -1248,9 +1288,12 @@ and flags a change larger than its limit:
   with the same `vs` and direction need different `when` conditions.
 - **Audited.** The post-save audit logs `type: delta` with reason `up` or
   `down` and the `vs` it compared with. Saving an earlier visit re-checks the
-  visits that compare with it. A value or an earlier value that is not a number
-  is a rule problem. The Validation scan counts the findings as "Rose more than
-  allowed" or "Fell more than allowed", with the limits in the detail line.
+  visits that compare with it. A value that is not a number is a finding on a
+  Text field with no validation (reason `not-a-number`) and a rule problem on
+  a validated field; an earlier value that is not a number is a rule problem.
+  The Validation scan counts the findings as "Rose more than allowed", "Fell
+  more than allowed", "Not a number" or "Too long to compare", with the limits
+  in the detail line.
   Configure via field annotation only.
 
 ## Values entered once — the `@UVWRITEONCE` tag

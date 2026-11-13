@@ -20,8 +20,11 @@
  *     against a blank earlier value or a Missing Data Code, and reports a
  *     value or an earlier value that is not a number as a rule problem,
  *   - the extended path: the previous event, the first event, a named event
- *     and the previous instance, read from saved data; the first visit and
- *     an event with nothing saved compare with nothing,
+ *     and the previous instance, read from saved data; the previous one is
+ *     the nearest that holds a value (a missed visit, a deleted instance, a
+ *     blank and a Missing Data Code are stepped over, and the finding, the
+ *     page and the scan name the entry compared with) unless the tag says
+ *     "previous":"adjacent"; the first visit compares with nothing,
  *   - the scan finds the same, labels each direction, and writes the
  *     detail line.
  *
@@ -236,6 +239,8 @@ namespace {
         'height'      => f('visit_form', '@UVDELTA={"vs":"[h_screen]","max":0,"direction":"down","unit":"cm"}', 'integer'),
         'free'        => f('visit_form', '@UVDELTA={"vs":"[w_screen]","max":1}', ''),
         'w_vs_free'   => f('visit_form', '@UVDELTA={"vs":"[w_free]","max":1}', 'number'),
+        // a number field that holds text all the same (an import, a validation added later)
+        'num_text'    => f('visit_form', '@UVDELTA={"vs":"[w_screen]","max":1}', 'number'),
         'msg_w'       => f('visit_form', '@UVDELTA={"vs":"[w_screen]","max":1,"message":"Re-weigh."}', 'number'),
         'bad_email'   => f('visit_form', '@UVDELTA={"vs":"[w_screen]","max":1}', 'email'),
         'bad_date'    => f('visit_form', '@UVDELTA={"vs":"[w_screen]","max":1}', 'date_ymd'),
@@ -251,7 +256,7 @@ namespace {
         'record_id' => '2', 'sex' => '1', 'dob' => '2000-01-01', 'w_screen' => '70.0', 'h_screen' => '150',
         'w_src_comma' => '70,0', 'w_free' => 'n/a', 'w_prev' => '60',
         'weight' => '76.5', 'w_same' => '63', 'w_comma' => '72,6', 'w_vs_comma' => '71.5', 'bmi' => '74', 'pain' => '230',
-        'height' => '149', 'free' => 'n/a', 'w_vs_free' => '5', 'msg_w' => '72',
+        'height' => '149', 'free' => 'n/a', 'w_vs_free' => '5', 'num_text' => 'n/a', 'msg_w' => '72',
         'bad_email' => 'x@y', 'bad_date' => '2026-01-01', 'bad_radio' => '5', 'bad_notes' => '5', 'bad_self' => '5',
         'bad_nofield' => '5', 'bad_vsradio' => '5', 'bad_vsdate' => '5', 'bad_short' => '5',
     ];
@@ -335,8 +340,19 @@ namespace {
         (deltaBy($mb)['weight']['reason'] ?? null) === 'up' && !problems($mb, 'weight'));
     $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
         'delta', ['weight' => '1' . str_repeat('0', 4096), 'w_screen' => '1'], [], null, PID, '2', 351, []);
-    check('a value too long to compare: a rule problem that says so (got ' . json_encode($res['unconfigurable']) . ')',
-        ($res['unconfigurable'][0]['why'] ?? '') === 'the value and its "vs" value are too long to compare — field skipped');
+    check('a value too long to compare: a finding that says so, not a rule problem (DLT-4) (got ' . json_encode($res['invalid']) . ')',
+        ($res['invalid'][0]['reason'] ?? null) === 'too-long' && !$res['unconfigurable']);
+    $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
+        'delta', ['weight' => '71', 'w_screen' => '1' . str_repeat('0', 4096)], [], null, PID, '2', 351, []);
+    check('an earlier value too long: the value typed is not at fault, a rule problem that says so (got ' . json_encode($res['unconfigurable']) . ')',
+        !$res['invalid'] && ($res['unconfigurable'][0]['why'] ?? '') === 'the value and its "vs" value are too long to compare — field skipped');
+    $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
+        'delta', ['weight' => str_repeat('0', 5000) . '700', 'w_screen' => '70'], [], null, PID, '2', 351, []);
+    check('a number padded with 5,000 zeros is judged by its digits: 700 from 70 is a rise (DLT-4) (got ' . json_encode($res) . ')',
+        ($res['invalid'][0]['reason'] ?? null) === 'up' && !$res['unconfigurable']);
+    $res = $fdx->invoke(mod($DICT, $DATA, $FULL), ['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[w_screen]', 'deltaMax' => '1'],
+        'delta', ['weight' => '70.5' . str_repeat('0', 5000), 'w_screen' => '70'], [], null, PID, '2', 351, []);
+    check('... and 70.5 with 5,000 zeros after it is within the limit', !$res['invalid'] && !$res['unconfigurable']);
 
     // ---- 3) the page: live, snapshot, withheld --------------------------------------
     $r = ruleFor($p, 'w_same');
@@ -354,6 +370,11 @@ namespace {
     check('a survey: a vs on another form is withheld (got ' . json_encode($r['deltaVsOp'] ?? null) . ')',
         $r && ($r['deltaVsOp'] ?? null) === ['withheld']);
     check('a survey: a vs on the page stays live', (ruleFor($ps, 'w_same')['deltaVsOp'] ?? null) === ['ref', 'w_prev', null]);
+    // DLT-2: a Text field with no validation has nothing else to say its value must be a number.
+    check('a Text field with no validation: the page is told (deltaUnvalidated)', (ruleFor($p, 'free')['deltaUnvalidated'] ?? null) === true
+        && (ruleFor($ps, 'free')['deltaUnvalidated'] ?? null) === true);
+    check('... a validated field, a calc and a slider are not', !array_filter(['weight', 'w_comma', 'bmi', 'pain', 'height', 'num_text'],
+        function ($f) use ($p) { return isset(ruleFor($p, $f)['deltaUnvalidated']); }));
 
     // ---- 4) the post-save audit -------------------------------------------------------
     $m = mod($DICT, $DATA, $FULL);
@@ -368,8 +389,11 @@ namespace {
     check('slider, direction up: 230 is 53% above 150', ($by['pain']['reason'] ?? null) === 'up');
     check('max 0 down: a fall of 1', ($by['height']['reason'] ?? null) === 'down');
     check('message rule: up', ($by['msg_w']['reason'] ?? null) === 'up');
-    check('a value that is not a number: a rule problem, not a finding', !isset($by['free'])
-        && (bool) array_filter(problems($m, 'free'), function ($w) { return strpos($w, 'the saved value is not a number') !== false; }));
+    check('a Text field with no validation, a value that is not a number: a finding (DLT-2) (got ' . json_encode($by['free'] ?? null) . ')',
+        ($by['free']['reason'] ?? null) === 'not-a-number' && $by['free']['value'] === 'n/a' && $by['free']['vs'] === '[w_screen]'
+        && !array_filter(problems($m, 'free'), function ($w) { return strpos($w, 'the saved value') !== false; }));
+    check('a validated field that holds text all the same: a rule problem, not a finding', !isset($by['num_text'])
+        && (bool) array_filter(problems($m, 'num_text'), function ($w) { return strpos($w, 'the saved value is not a number') !== false; }));
     check('an earlier value that is not a number: a rule problem naming the vs', !isset($by['w_vs_free'])
         && (bool) array_filter(problems($m, 'w_vs_free'), function ($w) { return strpos($w, 'the "vs" value [w_free] is not a number') !== false; }));
     check('misconfigured rules log nothing as data', !array_intersect(array_keys($by),
@@ -387,7 +411,11 @@ namespace {
     foreach (['w_screen', 'h_screen', 'w_src_comma', 'w_prev', 'w_free'] as $k) $blank['2'][351][$k] = '';
     $m = mod($DICT, $blank, $FULL);
     $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 1);
-    check('a blank earlier value checks nothing', !deltaBy($m) && !problems($m, 'weight') && !problems($m, 'w_vs_free'));
+    $by = deltaBy($m);
+    check('a blank earlier value checks nothing', !array_diff(array_keys($by), ['free']) && !problems($m, 'weight')
+        && !problems($m, 'w_vs_free') && !problems($m, 'num_text'));
+    check('... but text in an unvalidated field is flagged with nothing to compare with (a first visit)',
+        ($by['free']['reason'] ?? null) === 'not-a-number');
 
     \Project::$codes = "UNK, Unknown\nNASK, Not asked";
     $mdc = $DATA;
@@ -400,6 +428,18 @@ namespace {
         !isset($by['weight']) && !isset($by['bmi']) && !isset($by['msg_w']) && !problems($m, 'weight'));
     check('a Missing Data Code as the value: nothing checked', !isset($by['w_same']) && !problems($m, 'w_same'));
     check('other fields still checked', ($by['height']['reason'] ?? null) === 'down');
+    // DLT-5: a code that is a number is the code wherever it stands, under "hard" too. The
+    // README says so; this pins it. 999 from 70 would be a rise, and 76.5 from 999 a fall.
+    \Project::$codes = "-99, Not done\n999, Unknown";
+    $num = $DATA;
+    $num['2'][351]['weight'] = '999';
+    $num['2'][351]['h_screen'] = '-99';
+    $m = mod($DICT, $num, $FULL);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 1);
+    $by = deltaBy($m);
+    check('a numeric Missing Data Code as the value (999): not judged, no rule problem (DLT-5)', !isset($by['weight']) && !problems($m, 'weight'));
+    check('a numeric Missing Data Code as the earlier value (-99): not judged', !isset($by['height']) && !isset($by['pain']));
+    check('... a number beside it that is no code is judged', ($by['w_same']['reason'] ?? null) === 'up');
     \Project::$codes = '';
 
     // Saving the form that holds the vs re-checks the rule that reads it.
@@ -443,11 +483,13 @@ namespace {
     foreach ($res['violations'] as $v) if ($v['type'] === 'delta') $by[$v['field']] = $v;
     check('scan: the same verdicts (got ' . json_encode(array_map(function ($v) { return $v['reason']; }, $by)) . ')',
         ($by['weight']['reason'] ?? null) === 'up' && ($by['height']['reason'] ?? null) === 'down'
-        && ($by['w_comma']['reason'] ?? null) === 'up' && ($by['bmi']['reason'] ?? null) === 'up' && !isset($by['free']));
+        && ($by['w_comma']['reason'] ?? null) === 'up' && ($by['bmi']['reason'] ?? null) === 'up'
+        && ($by['free']['reason'] ?? null) === 'not-a-number' && !isset($by['num_text']));
     check('scan: misconfigured rules are rule problems, not data', !isset($by['bad_self'])
         && (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('bad_self', $u['fields'], true); }));
-    check('scan: a value that is not a number is a rule problem',
-        (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('free', $u['fields'], true); }));
+    check('scan: text in a validated field is a rule problem, in an unvalidated one it is not',
+        (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('num_text', $u['fields'], true); })
+        && !array_filter($res['unconfigurable'], function ($u) { return in_array('free', $u['fields'], true); }));
 
     $dims = $m->scanDimensions(PID, $res['rules'] ?? null);
     $cols = \INSPIRE\UniversalValidator\ScanColumns::all($dims);
@@ -460,6 +502,11 @@ namespace {
     $row = \INSPIRE\UniversalValidator\ScanColumns::row($by['msg_w'], $dims, $cols);
     check('report: a rule message speaks for it (got ' . json_encode($row['problem'] ?? null) . ')',
         ($row['problem'] ?? '') === 'Re-weigh. Allowed a change of at most 1 from [w_screen].');
+    $row = \INSPIRE\UniversalValidator\ScanColumns::row($by['free'], $dims, $cols);
+    check('report: not a number (got ' . json_encode([$row['issue'] ?? null, $row['problem'] ?? null]) . ')',
+        strpos($row['problem'] ?? '', 'The value is not a number, so its change cannot be checked.') === 0);
+    check('scan labels for a value that cannot be compared', \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('delta', 'not-a-number') === 'Not a number'
+        && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('delta', 'too-long') === 'Too long to compare');
     check('scan labels per direction', \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('delta', 'up') === 'Rose more than allowed'
         && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('delta', 'down') === 'Fell more than allowed'
         && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('delta', 'other') === 'Changed more than allowed');
@@ -568,12 +615,113 @@ namespace {
     check('visit 3: 79 is 1.3% above 78; blanks check nothing (got ' . json_encode(deltaBy($m, 4)) . json_encode(findings($m, 'uvalidate-unconfigurable')) . ')',
         !deltaBy($m, 4) && !findings($m, 'uvalidate-unconfigurable'));
 
+    // ---- DLT-1: the previous event is the nearest earlier one that holds a value ----
+    // 70.0 at visit 1, visit 2 missed, 79.0 at visit 3: 12.9% above visit 1.
     $gap = $LDATA;
     unset($gap['2'][3]);
     $m = mod($LD, $gap, $FULL, $REFS);
     $m->redcap_save_record(PID, '2', 'visit_form', 4, null, null, null, 1);
-    check('visit 3 with nothing saved at visit 2: the previous event is visit 2, blank, so nothing is checked',
-        !isset(deltaBy($m, 4)['weight']) && !findings($m, 'uvalidate-unconfigurable'));
+    $w = deltaBy($m, 4)['weight'] ?? [];
+    check('visit 3 with visit 2 missed: compared with visit 1, and the entry says so (got ' . json_encode($w) . ')',
+        ($w['reason'] ?? null) === 'up' && ($w['vs'] ?? null) === '[previous-event-name][weight]'
+        && ($w['vs_found'] ?? null) === 'visit1_arm_1' && !findings($m, 'uvalidate-unconfigurable'));
+    $m = mod($LD, $LDATA, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 3, null, null, null, 1);
+    check('a value from the event right before names no other entry', isset(deltaBy($m, 3)['weight']) && !isset(deltaBy($m, 3)['weight']['vs_found']));
+    // visit 2 saved, its weight left blank
+    $blank = $LDATA;
+    $blank['2'][3] = ['weight' => '', 'height' => '150', 'visit_form_complete' => '2'];
+    $m = mod($LD, $blank, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 4, null, null, null, 1);
+    check('visit 2 saved with a blank weight: stepped over (got ' . json_encode(deltaBy($m, 4)) . ')',
+        (deltaBy($m, 4)['weight']['vs_found'] ?? null) === 'visit1_arm_1');
+    // visit 2 holds a Missing Data Code: not entered
+    \Project::$codes = "NAVU, Not available\n-99, Missing";
+    $coded = $LDATA;
+    $coded['2'][3]['weight'] = '-99';
+    $m = mod($LD, $coded, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 4, null, null, null, 1);
+    check('visit 2 holds a Missing Data Code: stepped over (got ' . json_encode(deltaBy($m, 4)) . ')',
+        (deltaBy($m, 4)['weight']['reason'] ?? null) === 'up' && (deltaBy($m, 4)['weight']['vs_found'] ?? null) === 'visit1_arm_1');
+    \Project::$codes = '';
+    $m = mod($LD, $coded, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 4, null, null, null, 1);
+    check('... and without the code -99 is a value: 79 is compared with it', (deltaBy($m, 4)['weight']['reason'] ?? null) === 'up'
+        && !isset(deltaBy($m, 4)['weight']['vs_found']));
+    // a value that is there but is no number stops the walk: reported, never stepped over
+    $junk = $LDATA;
+    $junk['2'][3]['weight'] = 'abc';
+    $m = mod($LD, $junk, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 4, null, null, null, 1);
+    check('visit 2 holds text: a rule problem, not a comparison with visit 1 (got ' . json_encode(problems($m, 'weight')) . ')',
+        !isset(deltaBy($m, 4)['weight']) && (bool) array_filter(problems($m, 'weight'), function ($x) { return strpos($x, 'is not a number this rule can read') !== false; }));
+    // nothing earlier holds a value: the first measurement
+    $firstAt3 = $LDATA;
+    unset($firstAt3['2'][3]);
+    $firstAt3['2'][2]['weight'] = '';
+    $m = mod($LD, $firstAt3, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 4, null, null, null, 1);
+    check('no earlier visit holds a weight: nothing to compare with, and no rule problem (got ' . json_encode(deltaBy($m, 4)) . ')',
+        !isset(deltaBy($m, 4)['weight']) && !problems($m, 'weight'));
+    // saving visit 1 re-checks visit 3 across the missed visit
+    $m = mod($LD, $gap, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
+    check('saving visit 1 re-checks visit 3, which compares with it across the missed visit (got ' . json_encode(array_keys(deltaBy($m, 4))) . ')',
+        (deltaBy($m, 4)['weight']['vs_found'] ?? null) === 'visit1_arm_1');
+    // the page: the value of visit 1, and where it was found, for staff only
+    $r = ruleFor(page(mod($LD, $gap, $FULL, $REFS), 'form', '2', 'visit_form', 4), 'weight');
+    check('page at visit 3: the value of visit 1 and its event (got ' . json_encode([$r['deltaVsOp'] ?? null, $r['deltaVsFound'] ?? null]) . ')',
+        $r && ($r['deltaVsOp'] ?? null) === ['lit', '70.0'] && ($r['deltaVsFound'] ?? null) === ['event' => 'visit1_arm_1']
+        && ($r['blockSave'] ?? null) === 'off');
+    $r = ruleFor(page(mod($LD, $LDATA, $FULL, $REFS), 'form', '2', 'visit_form', 4), 'weight');
+    check('page at visit 3 with visit 2 saved: its value, and no other entry named', $r && ($r['deltaVsOp'] ?? null) === ['lit', '78.0'] && !isset($r['deltaVsFound']));
+    $r = ruleFor(page(mod($LD, $gap, $FULL, $REFS), 'survey', '2', 'visit_form', 4), 'weight');
+    check('a survey page is told neither the value nor the event (got ' . json_encode($r) . ')',
+        $r && strpos(json_encode($r), 'visit1_arm_1') === false && strpos(json_encode($r), '70.0') === false && !isset($r['deltaVsFound']));
+    // the page read asks REDCap for every earlier event of the arm, not only the one right before
+    $shape = \INSPIRE\UniversalValidator\TemporalMetadata::load(PID, $LD);
+    $ids = \INSPIRE\UniversalValidator\TemporalRules::eventIds(['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[previous-event-name][weight]', 'deltaMax' => '1'], $shape, 4);
+    sort($ids);
+    check('the events a page at visit 3 reads: every earlier visit (got ' . json_encode($ids) . ')', $ids === [2, 3, 4]);
+    $ids = \INSPIRE\UniversalValidator\TemporalRules::eventIds(['type' => 'delta', 'fields' => ['weight'], 'deltaVs' => '[previous-event-name][weight]', 'deltaMax' => '1',
+        'deltaAdjacent' => true], $shape, 4);
+    sort($ids);
+    check('... and only the one right before for "previous":"adjacent" (got ' . json_encode($ids) . ')', $ids === [3, 4]);
+    // the scan: the same verdict, and the report names the entry
+    $res = mod($LD, $gap, $FULL, $REFS)->scanProject(PID);
+    $hit = null;
+    foreach ($res['violations'] as $v) if ($v['type'] === 'delta' && $v['field'] === 'weight' && (string) $v['event_id'] === '4') $hit = $v;
+    check('scan: visit 3 against visit 1, stored as the event id (got ' . json_encode($hit) . ')', $hit && $hit['reason'] === 'up' && ($hit['asOf'] ?? null) === 'event 2');
+    $sm = mod($LD, $gap, $FULL, $REFS);
+    $dims = $sm->scanDimensions(PID, $res['rules'] ?? null);
+    $cols = \INSPIRE\UniversalValidator\ScanColumns::all($dims);
+    $row = $hit ? \INSPIRE\UniversalValidator\ScanColumns::row($hit, $dims, $cols) : [];
+    check('report: the detail says which entry it was compared with (got ' . json_encode($row['problem'] ?? null) . ')',
+        strpos($row['problem'] ?? '', 'Compared with event 2, the nearest earlier entry that holds a value.') !== false);
+    // "previous":"adjacent": only the event right before, as the tag says
+    $ADJ = $LD;
+    $ADJ['weight'] = f('visit_form', '@UVDELTA={"vs":"previous-event","maxPct":10,"previous":"adjacent"}', 'number_1dp');
+    $m = mod($ADJ, $gap, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 4, null, null, null, 1);
+    check('"previous":"adjacent" with visit 2 missed: nothing is checked, and nothing is a rule problem (got ' . json_encode(deltaBy($m, 4)) . ')',
+        !isset(deltaBy($m, 4)['weight']) && !problems($m, 'weight'));
+    $m = mod($ADJ, $LDATA, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 3, null, null, null, 1);
+    check('"previous":"adjacent" with visit 1 saved: checked as before', (deltaBy($m, 3)['weight']['reason'] ?? null) === 'up');
+    $r = ruleFor(page(mod($ADJ, $gap, $FULL, $REFS), 'form', '2', 'visit_form', 4), 'weight');
+    check('"previous":"adjacent": the page reads the blank of visit 2, and the option stays on the server (got ' . json_encode($r) . ')',
+        $r && empty($r['configError']) && ($r['deltaVsOp'] ?? null) === ['lit', ''] && !isset($r['deltaVsFound']) && !isset($r['deltaAdjacent']));
+    $BADADJ = $LD;
+    $BADADJ['height'] = f('visit_form', '@UVDELTA={"vs":"first-event","max":0,"previous":"adjacent"}', 'integer');
+    $e = ruleFor(page(mod($BADADJ, $LDATA, $FULL, $REFS), 'form', '2', 'visit_form', 3), 'height')['configError'] ?? '';
+    check('"previous" beside a "vs" that names no previous entry: refused (got ' . $e . ')',
+        strpos($e, '"previous" applies to a "vs" that names the previous event or instance') !== false);
+    // DLT-7: the shorthand's name is the server's; no page is sent it
+    $r = ruleFor(page(mod($LD, $LDATA, $FULL, $REFS), 'form', '2', 'visit_form', 3), 'weight');
+    check('the page config does not carry the shorthand name (got ' . json_encode(array_keys($r ?: [])) . ')', $r && !isset($r['deltaVsName']));
+    $r = ruleFor(page(mod($LD, $LDATA, $FULL, $REFS), 'survey', '2', 'visit_form', 3), 'weight');
+    check('... and a survey page names neither the shorthand, the field nor the event (got ' . json_encode($r) . ')',
+        $r && !isset($r['deltaVsName']) && strpos(json_encode($r), 'previous-event') === false);
 
     $res = mod($LD, $LDATA, $FULL, $REFS)->scanProject(PID);
     $hits = [];
@@ -617,6 +765,62 @@ namespace {
     foreach ($res['violations'] as $v) if ($v['type'] === 'delta') $hits[] = $v['field'] . '#' . ($v['instance'] ?? '?') . ':' . $v['reason'];
     sort($hits);
     check('scan: each instance against the one before (got ' . json_encode($hits) . ')', $hits === ['w_first#3:down', 'weight#2:up']);
+
+    // ---- DLT-1: the previous instance is the nearest earlier one that holds a value ----
+    // instance 2 deleted: 170 at instance 3 against 70 at instance 1
+    $DEL = ['2' => [351 => ['record_id' => '2'], 'repeat_instances' => [351 => ['visit_form' => [
+        1 => ['weight' => '70'], 3 => ['weight' => '170']]]]]];
+    $m = mod($RD, $DEL, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 3);
+    $w = deltaBy($m, 351, 3)['weight'] ?? [];
+    check('instance 3 with instance 2 deleted: compared with instance 1 (got ' . json_encode($w) . ')',
+        ($w['reason'] ?? null) === 'up' && ($w['vs_found'] ?? null) === 'instance 1' && !problems($m, 'weight'));
+    $r = ruleFor(page(mod($RD, $DEL, $FULL, $REFS), 'form', '2', 'visit_form', 351, 3), 'weight');
+    check('... and the page reads instance 1 and says so (got ' . json_encode([$r['deltaVsOp'] ?? null, $r['deltaVsFound'] ?? null]) . ')',
+        $r && ($r['deltaVsOp'] ?? null) === ['lit', '70'] && ($r['deltaVsFound'] ?? null) === ['instance' => 1]);
+    // a new instance 4, not saved yet, after a blank instance 3 and a deleted instance 2
+    $NEW = ['2' => [351 => ['record_id' => '2'], 'repeat_instances' => [351 => ['visit_form' => [
+        1 => ['weight' => '70'], 3 => ['weight' => '', 'w_first' => '100']]]]]];
+    $r = ruleFor(page(mod($RD, $NEW, $FULL, $REFS), 'form', '2', 'visit_form', 351, 4), 'weight');
+    check('a new instance after a blank one and a deleted one: instance 1 (got ' . json_encode([$r['deltaVsOp'] ?? null, $r['deltaVsFound'] ?? null]) . ')',
+        $r && ($r['deltaVsOp'] ?? null) === ['lit', '70'] && ($r['deltaVsFound'] ?? null) === ['instance' => 1]);
+    // A run of blanks is walked once per record: instance 5 (blank itself) finds instance 3 past
+    // the blank 4, and instance 6 takes that answer where its own walk reaches instance 4.
+    $LONG = ['2' => [351 => ['record_id' => '2'], 'repeat_instances' => [351 => ['visit_form' => [
+        1 => ['weight' => '70'], 2 => ['weight' => '', 'w_first' => '1'], 3 => ['weight' => '170'],
+        4 => ['weight' => '', 'w_first' => '1'], 5 => ['weight' => '', 'w_first' => '1'], 6 => ['weight' => '190'],
+        8 => ['weight' => '191']]]]]];
+    $res = mod($RD, $LONG, $FULL, $REFS)->scanProject(PID);
+    $hits = [];
+    foreach ($res['violations'] as $v) if ($v['type'] === 'delta' && $v['field'] === 'weight') $hits[] = '#' . $v['instance'] . ':' . $v['reason'] . ':' . ($v['asOf'] ?? '');
+    sort($hits);
+    check('scan: 170 against instance 1, 190 against instance 3, 191 against instance 6 (inside) (got ' . json_encode($hits) . ')',
+        $hits === ['#3:up:instance 1', '#6:up:instance 3']);
+    $m = mod($RD, $LONG, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 1);
+    // A save re-checks the instances whose walk reads the saved one (review DLT-3): instance 3
+    // reads instance 1 past the blank 2; instance 6 stops at instance 3 and never reads 1.
+    check('the save audit agrees with the scan: instance 1 saved re-checks instance 3, which reads it (got ' . json_encode(array_keys(deltaBy($m))) . ')',
+        (deltaBy($m, 351, 3)['weight']['vs_found'] ?? null) === 'instance 1' && !isset(deltaBy($m, 351, 6)['weight'])
+        && !isset(deltaBy($m, 351, 8)['weight']));
+    $m = mod($RD, $LONG, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 3);
+    check('... instance 3 saved: itself, and instance 6, which reads it past the blank 4 and 5; not instance 8',
+        (deltaBy($m, 351, 3)['weight']['vs_found'] ?? null) === 'instance 1' && (deltaBy($m, 351, 6)['weight']['vs_found'] ?? null) === 'instance 3'
+        && !isset(deltaBy($m, 351, 8)['weight']));
+    $m = mod($RD, $LONG, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 4);
+    check('... a blank instance 4 saved: instance 6 walks past it, so it is re-checked', (deltaBy($m, 351, 6)['weight']['vs_found'] ?? null) === 'instance 3'
+        && !isset(deltaBy($m, 351, 3)['weight']));
+    $m = mod($RD, $LONG, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 8);
+    check('... the last instance saved: nothing else is re-checked', !deltaBy($m));
+    $RADJ = $RD;
+    $RADJ['weight'] = f('visit_form', '@UVDELTA={"vs":"previous-instance","max":2,"previous":"adjacent"}', 'number');
+    $m = mod($RADJ, $DEL, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 3);
+    check('"previous":"adjacent" with instance 2 deleted: nothing is checked (got ' . json_encode(deltaBy($m, 351, 3)) . ')',
+        !isset(deltaBy($m, 351, 3)['weight']) && !problems($m, 'weight'));
 
     // An event shorthand on a form that repeats on its own names no instance: refused.
     longitudinal([2 => ['visit_form' => ''], 3 => ['visit_form' => ''], 4 => ['visit_form' => '']]);
@@ -1087,7 +1291,8 @@ namespace {
     $R2ok = $R2; $R2ok['h1']['field_annotation'] = '@UVDELTA={"vs":"[first-event-name][h1][first-instance]","max":1}';
     check('... which is accepted', $errAt($R2ok, 'h1', 'visit_form', 3) === '');
     $m = mod($R2ok, ['2' => [3 => ['h1' => '90'], 'repeat_instances' => [2 => ['visit_form' => [1 => ['h1' => '70'], 2 => ['h1' => '72']]]]]], $FOUR, $REFS);
-    $m->redcap_save_record(PID, '2', 'visit_form', 3, null, null, null, 1);
+    // the first visit's first instance is saved: the entries that read it are re-checked
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
     check('... and compares each entry with the first visit\'s first instance (got ' . json_encode(deltaBy($m)) . ')',
         (deltaBy($m, 3, 1)['h1']['reason'] ?? null) === 'up' && (deltaBy($m, 2, 2)['h1']['reason'] ?? null) === 'up');
     $R2['h1']['field_annotation'] = '@UVDELTA={"vs":"[first-event-name][h1]","max":1}';
@@ -1659,6 +1864,142 @@ namespace {
     check('... fixed, that tag is offered the first event (got ' . json_encode($e) . ')', $e === [$SELF9 . 'first-event".']);
     check('... and the two are accepted together',
         $fieldErrs($X11, 'w9', 'visit_form', 3, '@UVDELTA={"vs":"first-event","max":1} @UVDELTA={"vs":"previous-event","max":5}') === []);
+    // ---- DLT-3: what a save re-checks, and what the context limit counts -----------------
+    // 13 visits of one form, 40 tagged fields: 520 rule and entry pairs, 13 entries.
+    $wide = function ($events, $fields, $tag) {
+        \Project::$isLongitudinal = true;
+        $info = [1 => ['unique_event_name' => 'enrol_arm_1', 'arm_num' => 1]];
+        $forms = [1 => ['enrol_form']];
+        \REDCap::$mappings = [['event_id' => 1, 'form' => 'enrol_form']];
+        for ($i = 2; $i <= $events + 1; $i++) {
+            $info[$i] = ['unique_event_name' => 'visit' . ($i - 1) . '_arm_1', 'arm_num' => 1];
+            $forms[$i] = ['visit_form'];
+            \REDCap::$mappings[] = ['event_id' => $i, 'form' => 'visit_form'];
+        }
+        \Project::$eventInfoAll = $info; \Project::$eventsFormsAll = $forms; \Project::$repeats = [];
+        $dict = ['record_id' => f('enrol_form')];
+        for ($k = 0; $k < $fields; $k++) $dict['w' . $k] = f('visit_form', $tag, 'number');
+        return $dict;
+    };
+    // every visit doubles the one before, so every entry after the first holds a finding
+    $doubling = function ($events, $fields) {
+        $rec = [1 => ['record_id' => '2']];
+        for ($i = 2; $i <= $events + 1; $i++) for ($k = 0; $k < $fields; $k++) $rec[$i]['w' . $k] = (string) (10 * pow(2, $i - 2));
+        return ['2' => $rec];
+    };
+    $incomplete = function ($m) {
+        return count(array_filter(findings($m, 'uvalidate-unconfigurable'), function ($e) { return strpos((string) $e['why'], 'Extended audit incomplete') === 0; }));
+    };
+    $eventsHit = function ($m) {
+        $e = [];
+        foreach (findings($m) as $x) if (($x['type'] ?? '') === 'delta') $e[(int) $x['event_id']] = true;
+        ksort($e);
+        return array_keys($e);
+    };
+    $WD = $wide(13, 40, '@UVDELTA={"vs":"previous-event","maxPct":10}');
+    $WDATA = $doubling(13, 40);
+    $m = mod($WD, $WDATA, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
+    check('DLT-3: 40 fields on 13 visits, the first visit saved: every field of the next visit is re-checked (got ' . count(deltaBy($m, 3)) . ')',
+        count(deltaBy($m, 3)) === 40);
+    check('... and the audit is complete: 13 entries are inside the limit of 500 (got ' . $incomplete($m) . ' notices)', $incomplete($m) === 0);
+    check('... with a value at every visit only the next one reads the saved visit, so only it is re-checked (got ' . json_encode($eventsHit($m)) . ')',
+        $eventsHit($m) === [3]);
+    $m = mod($WD, $WDATA, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 6, null, null, null, 1);
+    check('DLT-3: visit 5 saved: itself and visit 6, no earlier visit and none further on (got ' . json_encode($eventsHit($m)) . ')',
+        $eventsHit($m) === [6, 7] && $incomplete($m) === 0);
+    // visits 6 to 9 left blank: visit 10 walks back over them to visit 5, so it is the one re-checked
+    $GAP = $WDATA;
+    for ($i = 7; $i <= 10; $i++) foreach ($GAP['2'][$i] as $k => $v) $GAP['2'][$i][$k] = '';
+    $m = mod($WD, $GAP, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 6, null, null, null, 1);
+    check('DLT-3: visit 5 saved before four blank visits: visit 10 reads it and is re-checked (got ' . json_encode($eventsHit($m)) . ')',
+        $eventsHit($m) === [6, 11] && count(deltaBy($m, 11)) === 40 && (deltaBy($m, 11)['w0']['vs_found'] ?? null) === 'visit5_arm_1');
+    $m = mod($WD, $GAP, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 8, null, null, null, 1);
+    check('DLT-3: a blank visit saved inside the gap: visit 10 walks past it and is re-checked', $eventsHit($m) === [11]);
+    // walkReads itself, on four visits holding 70, a blank, 80 and 90.
+    $ws = new \INSPIRE\UniversalValidator\ProjectShape([
+        1 => ['name' => 'v1_arm_1', 'arm' => 1, 'order' => 0, 'forms' => ['visit_form'], 'repeats' => [], 'eventRepeats' => false],
+        2 => ['name' => 'v2_arm_1', 'arm' => 1, 'order' => 1, 'forms' => ['visit_form'], 'repeats' => [], 'eventRepeats' => false],
+        3 => ['name' => 'v3_arm_1', 'arm' => 1, 'order' => 2, 'forms' => ['visit_form'], 'repeats' => [], 'eventRepeats' => false],
+        4 => ['name' => 'v4_arm_1', 'arm' => 1, 'order' => 3, 'forms' => ['visit_form'], 'repeats' => [], 'eventRepeats' => false]],
+        ['w' => ['form' => 'visit_form']], true, 'record_id');
+    $wn = [1 => ['w' => '70'], 2 => ['w' => ''], 3 => ['w' => '80'], 4 => ['w' => '90']];
+    $wr = new \INSPIRE\UniversalValidator\AddressResolver($ws, $wn);
+    $prev = ['qref', 'w', null, 'previous-event-name', null];
+    $from = function ($e) { return ['event' => $e, 'instrument' => 'visit_form', 'instance' => 1, 'values' => [], 'unsaved' => false]; };
+    check('walkReads: visit 3 walks past the blank visit 2 and stops on visit 1: it reads both',
+        $wr->walkReads($prev, $from(3), 2, 1) === true && $wr->walkReads($prev, $from(3), 1, 1) === true);
+    check('walkReads: visit 4 stops on visit 3 and reads nothing before it',
+        $wr->walkReads($prev, $from(4), 3, 1) === true && $wr->walkReads($prev, $from(4), 2, 1) === false && $wr->walkReads($prev, $from(4), 1, 1) === false);
+    check('walkReads: no visit reads itself or a later one', $wr->walkReads($prev, $from(2), 2, 1) === false && $wr->walkReads($prev, $from(2), 3, 1) === false);
+    check('walkReads: a reference that does not walk says so (null)', $wr->walkReads(['qref', 'w', null, 'first-event-name', null], $from(3), 1, 1) === null);
+    $wr0 = new \INSPIRE\UniversalValidator\AddressResolver($ws, $wn, 10000, new \INSPIRE\UniversalValidator\ReferenceBudget(0));
+    check('walkReads: a spent budget cannot say, so the entry may read the saved one (true)', $wr0->walkReads($prev, $from(4), 1, 1) === true);
+    $m = mod($WD, $WDATA, $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 14, null, null, null, 1);
+    check('DLT-3: the last visit saved: only itself', $eventsHit($m) === [14] && count(deltaBy($m, 14)) === 40);
+    // "previous":"adjacent" reads one event back, so a save re-checks itself and the next visit alone
+    $WA = $wide(13, 3, '@UVDELTA={"vs":"previous-event","maxPct":10,"previous":"adjacent"}');
+    $m = mod($WA, $doubling(13, 3), $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 6, null, null, null, 1);
+    check('DLT-3: adjacent, visit 5 saved: itself and visit 6 (got ' . json_encode($eventsHit($m)) . ')', $eventsHit($m) === [6, 7]);
+    // the first event: every visit reads it, and no visit reads another
+    $WF = $wide(13, 3, '@UVDELTA={"vs":"first-event","maxPct":10}');
+    $m = mod($WF, $doubling(13, 3), $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 6, null, null, null, 1);
+    check('DLT-3: first-event, visit 5 saved: only itself', $eventsHit($m) === [6]);
+    $m = mod($WF, $doubling(13, 3), $FULL, $REFS);
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
+    check('DLT-3: first-event, the first visit saved: every later visit', $eventsHit($m) === range(3, 14));
+    // The limit counts entries: with 3, the saved entry and two more are judged for every
+    // field, and each field says once that the rest is left to the scan.
+    $m = mod($WF, $doubling(13, 3), $FULL, $REFS);
+    $m->projectSettings['qualified-audit-max-contexts'] = 3;
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
+    check('DLT-3: a limit of 3 entries: three entries judged for all three fields (got ' . json_encode([$eventsHit($m), count(deltaBy($m, 3)), count(deltaBy($m, 4))]) . ')',
+        $eventsHit($m) === [3, 4] && count(deltaBy($m, 3)) === 3 && count(deltaBy($m, 4)) === 3);
+    check('... and each field says once that its audit is incomplete (got ' . $incomplete($m) . ')', $incomplete($m) === 3);
+    $m = mod($WF, $doubling(13, 3), $FULL, $REFS);
+    $m->projectSettings['qualified-audit-max-contexts'] = 13;
+    $m->redcap_save_record(PID, '2', 'visit_form', 2, null, null, null, 1);
+    check('... a limit of 13 entries holds all 13 visits', $eventsHit($m) === range(3, 14) && $incomplete($m) === 0);
+    // ---- DLT-8: a layout check is worked out once per form, not once per field ------------
+    $n8 = 0;
+    $ws->remember('k', function () use (&$n8) { $n8++; return null; });
+    $ws->remember('k', function () use (&$n8) { $n8++; return 'again'; });
+    check('DLT-8: ProjectShape::remember works an answer out once, a null answer too', $n8 === 1
+        && $ws->remember('k', function () { return 'again'; }) === null && $ws->remember('other', function () { return 7; }) === 7);
+    $keptBy = function ($m) {
+        $sp = new \ReflectionProperty(\INSPIRE\UniversalValidator\UniversalValidator::class, 'temporalShapes');
+        $sp->setAccessible(true);
+        $keys = [];
+        foreach ($sp->getValue($m) as $shape) {
+            $kp = new \ReflectionProperty(\INSPIRE\UniversalValidator\ProjectShape::class, 'kept');
+            $kp->setAccessible(true);
+            $keys = array_merge($keys, array_keys($kp->getValue($shape)));
+        }
+        return $keys;
+    };
+    $pick = function (array $keys, $prefix) { return array_values(array_filter($keys, function ($k) use ($prefix) { return strpos($k, $prefix) === 0; })); };
+    $m = mod($WD, $WDATA, $FULL, $REFS);
+    $p8 = page($m, 'form', '2', 'visit_form', 3);
+    check('DLT-8: 40 fields with "previous-event" on one form ask the layout once (got ' . json_encode($pick($keptBy($m), 'deltaShorthand|')) . ')',
+        count($pick($keptBy($m), 'deltaShorthand|')) === 1 && count($pick($keptBy($m), 'deltaReference|')) === 0
+        && ruleFor($p8, 'w0') && empty(ruleFor($p8, 'w0')['configError']) && empty(ruleFor($p8, 'w39')['configError']));
+    $WQ = $wide(13, 40, '@UVDELTA={"vs":"[visit1_arm_1][w0]","maxPct":10}');
+    $m = mod($WQ, $WDATA, $FULL, $REFS);
+    $p8 = page($m, 'form', '2', 'visit_form', 4);
+    check('DLT-8: 40 fields with the same written reference ask the layout once (got ' . count($pick($keptBy($m), 'deltaReference|')) . ')',
+        count($pick($keptBy($m), 'deltaReference|')) === 1 && empty(ruleFor($p8, 'w5')['configError']));
+    // a refusal still names its own field: the answer shared is only that the shorthand fits
+    $WR = $wide(1, 2, '@UVDELTA={"vs":"previous-event","maxPct":10}');
+    $p8 = page(mod($WR, ['2' => [1 => ['record_id' => '2'], 2 => ['w0' => '70', 'w1' => '70']]], $FULL, $REFS), 'form', '2', 'visit_form', 2);
+    check('DLT-8: a shorthand that does not fit is refused on every field of the form (got ' . json_encode(ruleFor($p8, 'w1')['configError'] ?? null) . ')',
+        strpos(ruleFor($p8, 'w0')['configError'] ?? '', '@UVDELTA on "w0": "vs": "previous-event" needs the form on two or more events') === 0
+        && strpos(ruleFor($p8, 'w1')['configError'] ?? '', '@UVDELTA on "w1": "vs": "previous-event" needs the form on two or more events') === 0);
     classic();
     // Extended path: a "vs" the resolver could not read arrives without a
     // value and with the reason, and the evaluator reports it.

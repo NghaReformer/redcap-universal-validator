@@ -226,6 +226,87 @@ function W(extra) {
     !shown(dMsg(env, 'weight')) && save(env) === 'saved');
 }
 
+// ---- 3b) a Text field with no validation: the rule says the value must be a number (DLT-2) ----
+for (const typed of ['700kg', '700,5', '1 000', '７００', '700 ', '0x2BC']) {
+  const w0 = numEl('w0', '70'), w = numEl('weight', typed);
+  const env = boot([w0, w], { rules: [W({ deltaUnvalidated: true })] });
+  const msg = dMsg(env, 'weight');
+  check('no validation, ' + JSON.stringify(typed) + ': red, "This is not a number.", and the save is held (got ' + msg.innerHTML + ')',
+    msg.innerHTML === '&#10007; This is not a number.'
+    && save(env) === 'held' && env.NS.validators.weight.test() === false);
+}
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '700kg');
+  const env = boot([w0, w], { rules: [W({ deltaUnvalidated: true })] });
+  const msg = dMsg(env, 'weight');
+  w.value = '72'; w.fire('change');
+  check('... a number again: the note goes and the form saves', !shown(msg) && save(env) === 'saved');
+  w.value = '700'; w.fire('change');
+  check('... a number past the limit is judged as on any field', /rose by 630 kg/.test(msg.innerHTML) && save(env) === 'held');
+  w.value = ''; w.fire('change');
+  check('... a blank is not judged', !shown(msg) && save(env) === 'saved');
+}
+{
+  const w0 = numEl('w0', ''), w = numEl('weight', '700kg');
+  const env = boot([w0, w], { rules: [W({ deltaUnvalidated: true })] });
+  check('no validation, no earlier value (a first visit): still not a number', dMsg(env, 'weight').innerHTML === '&#10007; This is not a number.'
+    && save(env) === 'held');
+}
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '700kg');
+  const env = boot([w0, w], { rules: [W({ deltaUnvalidated: true, blockSave: 'confirm' })] });
+  check('no validation, blockSave confirm: the save asks', save(env) === 'asked');
+}
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '700kg');
+  const env = boot([w0, w], { rules: [W({ deltaUnvalidated: true, blockSave: 'off' })] });
+  check('no validation, blockSave off: the note shows and the save goes through',
+    dMsg(env, 'weight').innerHTML === '&#10007; This is not a number.' && save(env) === 'saved');
+}
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '700kg');
+  const env = boot([w0, w], { context: 'survey', rules: [W({ deltaUnvalidated: true })] });
+  check('no validation, a survey: the same line, which names no other field (got ' + dMsg(env, 'weight').innerHTML + ')',
+    dMsg(env, 'weight').innerHTML === '&#10007; This is not a number.' && save(env) === 'held');
+}
+{
+  const w = numEl('weight', '700kg');
+  const env = boot([w], { rules: [W({ deltaUnvalidated: true, deltaVsOp: ['withheld'] })] });
+  check('no validation, the earlier value withheld: the value itself is still judged (got ' + dMsg(env, 'weight').innerHTML + ')',
+    dMsg(env, 'weight').innerHTML === '&#10007; This is not a number.');
+  w.value = '700'; w.fire('change');
+  check('... and a number there gets the withheld note, as before', /is not checked on this page/.test(dMsg(env, 'weight').innerHTML)
+    && save(env) === 'saved');
+}
+{
+  const w = numEl('weight', '700kg');
+  const env = boot([w], { rules: [W({ deltaUnvalidated: true, deltaVsOp: ['lit', '70'], blockSave: 'off' })] });
+  check('no validation, an earlier value read when the page opened: the note shows, the save is not held',
+    dMsg(env, 'weight').innerHTML === '&#10007; This is not a number.' && save(env) === 'saved');
+}
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '700kg');
+  const env = boot([w0, w], { missingCodes: ['UNK'], rules: [W({ deltaUnvalidated: true })] });
+  w.value = 'UNK'; w.fire('change');
+  check('no validation: a Missing Data Code is still not judged', !shown(dMsg(env, 'weight')) && save(env) === 'saved');
+}
+// DLT-4: a value too long to compare is said on any field; padding with zeros is not length.
+{
+  const w0 = numEl('w0', '70'), w = numEl('weight', '7'.repeat(4097));
+  const env = boot([w0, w], { rules: [W()] });
+  check('a number of 4,097 digits: red, "too long to compare", the save is held (got ' + dMsg(env, 'weight').innerHTML + ')',
+    dMsg(env, 'weight').innerHTML === '&#10007; This number is too long to compare.' && save(env) === 'held'
+    && env.NS.validators.weight.test() === false);
+  w.value = '0'.repeat(5000) + '700'; w.fire('change');
+  check('700 behind 5,000 zeros is judged as 700 (got ' + dMsg(env, 'weight').innerHTML.slice(0, 80) + ')',
+    /rose by 630 kg/.test(dMsg(env, 'weight').innerHTML) && save(env) === 'held');
+  w.value = '72.5' + '0'.repeat(5000); w.fire('change');
+  check('72.5 with 5,000 zeros after it is within the limit', !shown(dMsg(env, 'weight')) && save(env) === 'saved');
+  w.value = '72'; w0.value = '7'.repeat(4097); w0.fire('change');
+  check('an earlier value too long: an amber note, never a block (got ' + dMsg(env, 'weight').innerHTML + ')',
+    /is not checked: the numbers are too long to compare\./.test(dMsg(env, 'weight').innerHTML) && save(env) === 'saved');
+}
+
 // ---- 4) Missing Data Codes, self, an earlier value that is not a number ----------
 {
   const w0 = numEl('w0', 'UNK'), w = numEl('weight', '90');
@@ -283,6 +364,41 @@ function W(extra) {
     /compared with saved event\/instance values, read when this page was opened/.test(msg.innerHTML)
     && /does not block saving; it is re-checked after the save/.test(msg.innerHTML));
   check('... never blocks', save(env) === 'saved');
+}
+{
+  // DLT-1: the value came from further back than the event right before (a missed visit): the note names the entry.
+  const w = numEl('weight', '80');
+  const env = boot([w], { rules: [W({ deltaVs: '[previous-event-name][weight]', deltaVsOp: ['lit', '70'],
+    deltaVsLabel: 'the previous event', deltaVsFound: { event: 'visit1_arm_1' }, extendedAdvisory: true, blockSave: 'off',
+    snapshotFields: ['saved event/instance values'] })] });
+  const msg = dMsg(env, 'weight');
+  check('a value found across a missed visit: the note says which visit (got ' + msg.innerHTML + ')',
+    /rose by 10 kg \(14\.3%\) from 70 kg \(the nearest earlier value, at visit1_arm_1\)\./.test(msg.innerHTML)
+    && !/\(the previous event\)/.test(msg.innerHTML));
+  check('... and never blocks', save(env) === 'saved');
+}
+{
+  const w = numEl('weight', '80');
+  const env = boot([w], { rules: [W({ deltaVs: '[weight][previous-instance]', deltaVsOp: ['lit', '70'],
+    deltaVsLabel: 'the previous instance', deltaVsFound: { instance: 1 }, extendedAdvisory: true, blockSave: 'off',
+    snapshotFields: ['saved event/instance values'] })] });
+  check('a value found across a deleted instance: the note says which instance (got ' + dMsg(env, 'weight').innerHTML + ')',
+    /from 70 kg \(the nearest earlier value, in instance 1\)\./.test(dMsg(env, 'weight').innerHTML));
+}
+{
+  const w = numEl('weight', '80');
+  const env = boot([w], { rules: [W({ deltaVsOp: ['lit', '70'], deltaVsLabel: 'the previous event', deltaVsFound: { event: '<b>v1</b>' },
+    extendedAdvisory: true, blockSave: 'off' })] });
+  check('the event name is escaped (got ' + dMsg(env, 'weight').innerHTML + ')',
+    /at &lt;b&gt;v1&lt;\/b&gt;\)/.test(dMsg(env, 'weight').innerHTML) && !/<b>v1/.test(dMsg(env, 'weight').innerHTML));
+}
+{
+  // a found key that is not what the server sends is ignored: the rule's own label stands
+  for (const bad of ['visit1_arm_1', { event: '' }, { instance: 0 }, { instance: '2' }, null, []]) {
+    const env = boot([numEl('weight', '80')], { rules: [W({ deltaVsOp: ['lit', '70'], deltaVsLabel: 'the previous event', deltaVsFound: bad,
+      extendedAdvisory: true, blockSave: 'off' })] });
+    check('deltaVsFound ' + JSON.stringify(bad) + ': the label stands', /from 70 kg \(the previous event\)\./.test(dMsg(env, 'weight').innerHTML));
+  }
 }
 {
   // A snapshot never blocks, even when blockSave says hard (a plain-path fold of a value on another form).

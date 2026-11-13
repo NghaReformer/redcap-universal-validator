@@ -287,6 +287,11 @@ text, it follows the language on screen
       that says the check does not block saving, the save goes through, and the module
       log has `type: delta`, `reason: up` for visit 2's event. Saving visit 1
       again logs the same finding for visit 2.
+- [ ] The same tag after a missed visit: with a weight at visit 1, nothing
+      saved at visit 2 and a 15% rise at visit 3, the note at visit 3 ends
+      "(the nearest earlier value, at <visit 1's event name>)" and the log
+      entry has `vs_found` with that event name. With
+      `"previous":"adjacent"` added to the tag, visit 3 shows no note.
 
 ## Server-side safety net (API / import / JS-off)
 

@@ -4116,9 +4116,18 @@ class UniversalValidator extends AbstractExternalModule
      * absent row to blank). A "vs" this context could not resolve is
      * reported, never read as blank, as the assert above is (M-01); so is a
      * saved value, or an earlier one, that is not a number this rule can
-     * read. A "vs" that resolved to the field itself in this same entry (the
+     * read. A value that can never be compared is a finding with its reason:
+     * "not-a-number" in a Text field with no validation (deltaUnvalidated,
+     * review DLT-2), "too-long" for a number past Logic::MAX_PLAIN digits
+     * (DLT-4). A "vs" that resolved to the field itself in this same entry (the
      * extended path's deltaVsValueSelf: [baseline_arm_1][weight] saved on the
      * baseline visit) has nothing to compare with there.
+     *
+     * A previous event or instance is the nearest earlier one that holds a
+     * value (AddressResolver::resolveNearest, review DLT-1). Where that is
+     * further back than the one right before, the extended path says which
+     * (deltaVsFound) and the finding names it: vsFound for the log, vsFoundAt
+     * for the scan, which keeps 16 characters (php/modes.json findingKeys).
      */
     private function findingsDelta(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
     {
@@ -4152,6 +4161,7 @@ class UniversalValidator extends AbstractExternalModule
         // An earlier value marked with a Missing Data Code was not entered.
         if (self::isMissingCode($earlier, $this->missingDataCodes($project_id))) $earlier = '';
         $self = isset($rule['deltaVsValueSelf']) ? $rule['deltaVsValueSelf'] : null;
+        $found = self::deltaFoundKeys(isset($rule['deltaVsFound']) ? $rule['deltaVsFound'] : null);
         // Long numbers pay the record's evaluation budget (Logic::deltaVerdict).
         // The extended audit and the scan start one per record; a save with no
         // event or instance rule has not, and starts it here.
@@ -4164,6 +4174,7 @@ class UniversalValidator extends AbstractExternalModule
             'direction' => isset($rule['deltaDirection']) ? $rule['deltaDirection'] : 'both',
             'decimalComma' => !empty($rule['decimalComma']),
             'earlierComma' => !empty($rule['deltaVsComma']),
+            'strict' => !empty($rule['deltaUnvalidated']),
         ];
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
@@ -4173,6 +4184,13 @@ class UniversalValidator extends AbstractExternalModule
             if ($self === $field) continue;
             $r = Logic::deltaVerdict($spec, (string) $value, $earlier, $charge);
             if ($r['verdict'] === 'ok' || $r['verdict'] === 'inert') continue;
+            if ($r['verdict'] === 'invalid') {
+                // The value itself can never be compared (not a number in an unvalidated
+                // field, or too long): the data's fault, so a finding, not a rule problem.
+                $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'delta', 'type' => 'delta', 'reason' => $r['reason'],
+                    'vs' => $vs];
+                continue;
+            }
             if ($r['verdict'] === 'unknown') {
                 $why = $r['reason'] === 'not-a-number' ? 'the saved value is not a number this rule can read'
                      : ($r['reason'] === 'earlier-not-a-number' ? 'the "vs" value ' . $vs . ' is not a number this rule can read'
@@ -4184,9 +4202,32 @@ class UniversalValidator extends AbstractExternalModule
             // vs: what the value was compared with, so two tags on one field
             // (the previous visit, baseline) log findings that can be told apart.
             $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'delta', 'type' => 'delta', 'reason' => $r['verdict'],
-                'vs' => $vs];
+                'vs' => $vs] + $found;
         }
         return $out;
+    }
+
+    /**
+     * What a @UVDELTA finding says of a value found further back than the
+     * event or instance right before ($at: TemporalRules::compile's
+     * deltaVsFound, ['event' => name, 'eventId' => id] or ['instance' => n]):
+     * vsFound, the event's unique name or "instance n", and vsFoundAt, "event
+     * <id>" or "instance n", left out when it would not fit the scan's
+     * 16-character column. [] when the value came from the one right before.
+     */
+    private static function deltaFoundKeys($at)
+    {
+        if (!is_array($at)) return [];
+        if (isset($at['instance']) && is_int($at['instance'])) {
+            $text = 'instance ' . $at['instance'];
+            $short = $text;
+        } elseif (isset($at['event']) && is_string($at['event']) && $at['event'] !== '') {
+            $text = $at['event'];
+            $short = isset($at['eventId']) && is_string($at['eventId']) ? 'event ' . $at['eventId'] : '';
+        } else {
+            return [];
+        }
+        return ['vsFound' => $text] + ($short !== '' && strlen($short) <= 16 ? ['vsFoundAt' => $short] : []);
     }
 
     /**
@@ -9428,6 +9469,8 @@ class UniversalValidator extends AbstractExternalModule
                     . 'or none (it has "' . $validation . '").', '_tag' => $tag];
             }
             if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $frag['decimalComma'] = true;
+            // Nothing else says this field's value must be a number, so the rule does (DLT-2).
+            if ($validation === '') $frag['deltaUnvalidated'] = true;
         } elseif ($ftype === 'calc') {
             $frag['deltaComputed'] = true;
         }
@@ -9789,6 +9832,17 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function deltaReferenceProblem(ProjectShape $shape, array $op, $form, $vsForm)
     {
+        // The answer depends on the layout and on these parts of the reference alone,
+        // so the fields of one form that write the same reference share it (review DLT-8).
+        $key = 'deltaReference|' . serialize([$op[0], isset($op[3]) ? $op[3] : null, isset($op[4]) ? $op[4] : null, (string) $form, (string) $vsForm]);
+        return $shape->remember($key, function () use ($shape, $op, $form, $vsForm) {
+            return self::deltaReferenceLayout($shape, $op, $form, $vsForm);
+        });
+    }
+
+    /** deltaReferenceProblem(), worked out from the layout. */
+    private static function deltaReferenceLayout(ProjectShape $shape, array $op, $form, $vsForm)
+    {
         $token = $op[0] === 'qref' && isset($op[3]) ? (string) $op[3] : null;
         $sel = $op[0] === 'qref' && isset($op[4]) ? (string) $op[4] : null;
         $relative = in_array($token, ['previous-event-name', 'next-event-name', 'first-event-name', 'last-event-name'], true);
@@ -10119,6 +10173,25 @@ class UniversalValidator extends AbstractExternalModule
      * the refusal says why when one was passed over (deltaHeldNote).
      */
     private static function deltaShorthandProblem(ProjectShape $shape, $short, $form, $name, $taken = [], $direction = 'both', $example = true, &$readable = null, &$advised = null)
+    {
+        // Whether a shorthand fits a form is the layout's to say, the same for every field
+        // of the form, so it is worked out once (review DLT-8). A refusal can name the
+        // field and its other tags, so it is worked out for each field that gets one.
+        $kept = $shape->remember('deltaShorthand|' . serialize([(string) $short, (string) $form]), function () use ($shape, $short, $form, $name) {
+            $read = null;
+            $why = self::deltaShorthandLayout($shape, $short, $form, $name, [], 'both', false, $read);
+            return ['fits' => $why === null, 'readable' => $read];
+        });
+        if ($kept['fits']) {
+            $readable = $kept['readable'];
+            $advised = null;
+            return null;
+        }
+        return self::deltaShorthandLayout($shape, $short, $form, $name, $taken, $direction, $example, $readable, $advised);
+    }
+
+    /** deltaShorthandProblem(), worked out from the layout. */
+    private static function deltaShorthandLayout(ProjectShape $shape, $short, $form, $name, $taken = [], $direction = 'both', $example = true, &$readable = null, &$advised = null)
     {
         $readable = false;
         $advised = null;

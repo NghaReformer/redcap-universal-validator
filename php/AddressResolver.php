@@ -30,6 +30,10 @@ final class AddressResolver
     private $indexes = [];
     /** entered() answers, keyed by row and form. Saved rows never change. */
     private $entered = [];
+    /** Values that say "not entered": the project's Missing Data Codes, code => true (notEntered()). */
+    private $notEntered = [];
+    /** resolveNearest() answers: [walk][slot] => the nearest earlier entry holding a value, or false. */
+    private $nearest = [];
 
     public function __construct(ProjectShape $shape, array $record, $limit = 10000, ?ReferenceBudget $budget = null)
     {
@@ -128,6 +132,137 @@ final class AddressResolver
         }
         if ($selected !== null && $selected < 1) return self::problem('absent');
         return $this->value($ref, $eventId, $target, $selected, $form, $context, $sameBucket);
+    }
+
+    /**
+     * The project's Missing Data Codes (code => true). A value that is one of
+     * them was not entered, so resolveNearest() walks past it as it walks past
+     * a blank.
+     */
+    public function notEntered(array $codes)
+    {
+        $this->notEntered = $codes;
+        return $this;
+    }
+
+    /** Whether a resolved value was entered: not blank as Logic::compare sees blank, and no Missing Data Code. */
+    private function holdsValue(array $r)
+    {
+        return ($r['state'] ?? null) === 'ok' && isset($r['value']) && trim($r['value'], " \t\r\n") !== ''
+            && !Logic::isMissingCode($r['value'], $this->notEntered);
+    }
+
+    /**
+     * resolve(), except that [previous-event-name] and [previous-instance]
+     * name the nearest earlier event or instance that holds a value, not the
+     * one right before whatever it holds (review DLT-1). A missed visit, a
+     * deleted instance or a measurement left blank put a blank in that one
+     * slot, and a rule that compares with "the previous value" then compared
+     * with nothing: 70, a gap, 170 passed. The walk goes back over the events
+     * of the arm that hold the form (ProjectShape::earlierEvents), or over
+     * the instances that exist, and stops at the first value. An entry it
+     * cannot read stops it with that problem, never with a blank.
+     *
+     * The answer is resolve()'s. When the walk went past the slot right
+     * before, it carries 'nearest' => 'event' or 'instance', and its
+     * 'location' says where the value was found. With nothing earlier that
+     * holds a value the answer is that of the slot right before: absent or
+     * blank, the first measurement.
+     *
+     * Another entry is never the asker's own, so what it holds is the saved
+     * value whoever asks: each step's answer is kept per record, and a column
+     * of blanks is walked once, not once per host context.
+     */
+    public function resolveNearest(array $ref, array $context)
+    {
+        $byEvent = ($ref[3] ?? null) === 'previous-event-name';
+        $byInstance = !$byEvent && ($ref[4] ?? null) === 'previous-instance';
+        $first = $this->resolve($ref, $context);
+        if ((!$byEvent && !$byInstance) || $this->holdsValue($first) || !in_array($first['state'], ['ok','absent'], true)) return $first;
+        $field = $this->shape->field($ref[1]);
+        if (!$field || empty($field['form'])) return $first;
+        $form = $field['form'];
+        // The slots to try, nearest first: [id, the reference that names it]. The first is the one just read.
+        $slots = [];
+        if ($byEvent) {
+            $earlier = $this->shape->earlierEvents($context['event'], $form);
+            if ($earlier['state'] !== 'ok') return $first;
+            foreach ($earlier['events'] as $id) {
+                $name = $this->shape->event($id)['name'] ?? null;
+                if (!is_string($name) || $name === '') return $first;
+                $slots[] = [$id, [$ref[0], $ref[1], $ref[2], $name, $ref[4] ?? null]];
+            }
+            // A relative instance counts from the asker's own entry; any other reads the same from anywhere.
+            $relative = in_array($ref[4] ?? null, ['current-instance','previous-instance','next-instance'], true);
+            $walk = 'e|' . serialize([$ref[1], $ref[2], $ref[4] ?? null,
+                $relative ? [(string)$context['event'], (string)$context['instrument'], (int)($context['instance'] ?? 1)] : null]);
+        } else {
+            $event = $this->shape->eventId($ref[3] ?? null, $context['event'], $form);
+            if ($event['state'] !== 'ok') return $first;
+            $bucket = $this->shape->bucket($event['event'], $form);
+            if ($bucket['state'] !== 'ok' || $bucket['bucket'] === null) return $first;
+            $own = isset($context['instance']) ? (int)$context['instance'] : 1;
+            $index = $this->instances($event['event'], $bucket['bucket'], $form, null, false);
+            if ($index['state'] !== 'ok') return $index;
+            $name = $this->shape->event($event['event'])['name'] ?? null;
+            if (!is_string($name) || $name === '') return $first;
+            $slots[] = [$own - 1, null];
+            foreach (array_reverse($index['instances']) as $id) {
+                if ($id < $own - 1) $slots[] = [$id, [$ref[0], $ref[1], $ref[2], $name, (string)$id]];
+            }
+            $walk = 'i|' . serialize([$ref[1], $ref[2], (string)$event['event'], $bucket['bucket']]);
+        }
+        $answer = false; $trail = [];
+        for ($i = 0, $last = count($slots) - 1; $i < $last; $i++) {
+            $from = $slots[$i][0];
+            if (isset($this->nearest[$walk]) && array_key_exists($from, $this->nearest[$walk])) { $answer = $this->nearest[$walk][$from]; break; }
+            $trail[] = $from;
+            $r = $this->resolve($slots[$i + 1][1], $context);
+            if ($this->holdsValue($r)) { $answer = $r; break; }
+            if (!in_array($r['state'], ['ok','absent'], true)) return $r;
+        }
+        foreach ($trail as $from) $this->nearest[$walk][$from] = $answer;
+        if ($answer === false) return $first;
+        // A kept answer costs its next asker one unit, as a kept collection does.
+        if (!$trail && !$this->budget->take()) return self::problem('limit');
+        return $answer + ['nearest' => $byEvent ? 'event' : 'instance'];
+    }
+
+    /**
+     * Whether resolveNearest() of $ref, asked from $context, reads the entry at
+     * $event and $instance: the walk passes it or stops on it. null when the
+     * reference is not one that walks. A walk that cannot be read (a layout
+     * or an entry that does not resolve, a spent budget) answers true: the
+     * entry may read the saved one. The save audit asks this to leave alone
+     * the entries a save cannot change (review DLT-3): with a value at every
+     * visit, only the next visit reads the saved one.
+     */
+    public function walkReads(array $ref, array $context, $event, $instance)
+    {
+        $byEvent = ($ref[3] ?? null) === 'previous-event-name';
+        $byInstance = !$byEvent && ($ref[4] ?? null) === 'previous-instance';
+        if (!$byEvent && !$byInstance) return null;
+        $field = $this->shape->field($ref[1]);
+        if (!$field || empty($field['form'])) return true;
+        $r = $this->resolveNearest($ref, $context);
+        if (!in_array($r['state'] ?? null, ['ok','absent'], true)) return true;
+        // Where the walk stopped; null when it found no value and so passed every earlier entry.
+        $stop = $this->holdsValue($r) && isset($r['location']) ? $r['location'] : null;
+        if ($byEvent) {
+            $earlier = $this->shape->earlierEvents($context['event'], $field['form']);
+            if ($earlier['state'] !== 'ok') return true;
+            foreach ($earlier['events'] as $id) {
+                if ((string)$id === (string)$event) return true;
+                if ($stop !== null && (string)$stop['event'] === (string)$id) return false;
+            }
+            return false;
+        }
+        $at = $this->shape->eventId($ref[3] ?? null, $context['event'], $field['form']);
+        if ($at['state'] !== 'ok') return true;
+        if ((string)$at['event'] !== (string)$event) return false;
+        $own = isset($context['instance']) ? (int)$context['instance'] : 1;
+        if ((int)$instance >= $own) return false;
+        return $stop === null || (int)$instance >= (int)$stop['instance'];
     }
 
     /** Declarative bindings. Match sources are scalar field references, never executable logic. */

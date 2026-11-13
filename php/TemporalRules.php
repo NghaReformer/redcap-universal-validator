@@ -129,6 +129,31 @@ final class TemporalRules
         return $errors;
     }
 
+    /**
+     * The qualified references one rule reads other entries by, as
+     * [['ref' => the parsed reference, 'walks' => whether it walks back to the
+     * nearest value (ModeRegistry::nearestKey())], ...]. null when the rule
+     * reads more than a reference names (a binding, record uniqueness) or a
+     * condition does not parse: the save audit then cannot say which entries a
+     * save leaves alone (review DLT-3).
+     */
+    public static function crossReads(array $rule)
+    {
+        if(isset($rule['references'])||($rule['uniqueScope']??null)==='record')return null;
+        $out=[];
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
+            $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))return null;
+            foreach(Logic::qualifiedRefs($p['ast']) as $r){if($r[0]!=='qref')return null;$out[]=['ref'=>$r,'walks'=>false];}
+        }
+        foreach(self::operands($rule) as list($rk,$op))if($op[0]==='qref')$out[]=['ref'=>$op,'walks'=>ModeRegistry::nearestKey($rk,$rule)!==null];
+        foreach($rule['branches']??[] as $branch){
+            $flat=array_merge($rule,$branch);unset($flat['branches']);$sub=self::crossReads($flat);
+            if($sub===null)return null;
+            $out=array_merge($out,$sub);
+        }
+        return $out;
+    }
+
     /** Events needed for one rendered host. null means metadata cannot narrow safely. */
     public static function eventIds(array $rule,ProjectShape $shape,$current)
     {
@@ -144,7 +169,14 @@ final class TemporalRules
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))continue;
             foreach(Logic::qualifiedRefs($p['ast']) as $ref)if($ref[0]==='qref')$add($ref[1],$ref[3]);
         }
-        foreach(self::operands($rule) as list(,$op))if($op[0]==='qref')$add($op[1],$op[3]);
+        foreach(self::operands($rule) as list($rk,$op))if($op[0]==='qref'){
+            $add($op[1],$op[3]);
+            // A previous event that walks back to the nearest value may read any earlier event of the arm.
+            if($op[3]==='previous-event-name'&&ModeRegistry::nearestKey($rk,$rule)!==null&&($meta=$shape->field($op[1]))){
+                $earlier=$shape->earlierEvents($current,$meta['form']);
+                if($earlier['state']!=='ok')$unknown=true;else foreach($earlier['events'] as $id)$ids[$id]=true;
+            }
+        }
         foreach($rule['references']??[] as $binding){
             if(!is_array($binding)||!isset($binding['field']))continue;
             if(($binding['events']??null)==='arm'){
@@ -263,6 +295,21 @@ final class TemporalRules
             else $errors[]='Relative instance selector '.$instance.' targets a non-repeating instrument.';
         }
         return $errors;
+    }
+
+    /**
+     * Where AddressResolver::resolveNearest found a value further back than the slot right
+     * before: ['event'=>its unique name] or ['instance'=>its number], and for saved-data
+     * callers 'eventId' too (the scan stores the id). The page shows it to staff, the audit
+     * logs it and the scan report names it, so a comparison across a missed visit says so.
+     */
+    private static function foundAt(array $r,ProjectShape $shape,$browser)
+    {
+        $loc=$r['location'];
+        if($r['nearest']==='instance')return ['instance'=>(int)$loc['instance']];
+        $out=['event'=>(string)($shape->event($loc['event'])['name']??'')];
+        if(!$browser)$out['eventId']=(string)$loc['event'];
+        return $out;
     }
 
     /** Whether a compiled condition reads a value live on the page: a plain reference or a guard's key. */
@@ -396,7 +443,11 @@ final class TemporalRules
         $condSnapshot=$snapshot;
         foreach(self::operands($rule) as list($rk,$op)){
             if(!$browser && ($compiled['when']??null)==='1=0' && !$problems)continue;
-            $r=$resolver->resolve($op,$context);
+            //  - A "previous" event or instance of a mode that compares with the last value
+            //    (ModeRegistry::nearestKey: @UVDELTA) is the nearest earlier one that holds a value.
+            //    Where that is further back than the one right before, the rule says which under $found.
+            $found=ModeRegistry::nearestKey($rk,$rule);
+            $r=$found!==null?$resolver->resolveNearest($op,$context):$resolver->resolve($op,$context);
             if(($r['state']??null)==='absent'){$form=$shape->field($op[1])['form']??null;$r=['state'=>'ok','value'=>'','self'=>false,'location'=>['instrument'=>$form,'field'=>$op[1],'code'=>null]];}
             //  - One of an instrument this viewer may not read is withheld whatever its state, with
             //    no reason: an ambiguous entry must look like one the viewer may not see (wargame S1).
@@ -413,6 +464,8 @@ final class TemporalRules
             if(isset($r['members'])){$problems[]='invalid';$node=['unknown'];}
             elseif(($r['state']??null)==='ok'&&$browser&&empty($r['self'])&&$mayRead&&!$mayRead($r['location']['instrument']??null))$node=['withheld'];
             else $node=$member($r);
+            // The page is told where only with the value itself: a viewer who is not sent it learns nothing of it.
+            if($found!==null&&isset($r['nearest'])&&$node[0]==='lit')$compiled[$found]=self::foundAt($r,$shape,$browser);
             if($browser)$compiled[$rk['op']]=$node;
             else{
                 $compiled[$rk['value']]=$node[0]==='lit'?(string)$node[1]:null;
@@ -430,7 +483,7 @@ final class TemporalRules
         }
         // Withheld from this viewer alone: the audit, which reads every form, does check it.
         if($browser&&$problems&&array_values(array_unique($problems))===['unauthorized'])$compiled['deferredChecked']=true;
-        if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser){foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];foreach(ModeRegistry::operandKeys() as $rk)unset($compiled[$rk['op']]);}}
+        if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser){foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];foreach(ModeRegistry::operandKeys() as $rk){unset($compiled[$rk['op']]);if(isset($rk['nearest']['found']))unset($compiled[$rk['nearest']['found']]);}}}
         if($snapshot)$compiled['snapshotFields']=['saved event/instance values'];
         // Whether this rule reads anything that is not live on this page: a saved value, a set, a
         // row a "match" chose, a condition on a form this viewer may not read, or a value that could

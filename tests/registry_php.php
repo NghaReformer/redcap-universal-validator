@@ -110,7 +110,9 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     // @UVDELTA: what it compares with (as written, its shorthand, its name,
     // that field's decimal comma), the limits, their words, the branch group
     'deltaVs', 'deltaVsName', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct', 'deltaDirection',
-    'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
+    'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed', 'deltaUnvalidated',
+    // "previous":"adjacent": only the event or instance right before (DLT-1)
+    'deltaAdjacent',
     // @UVWRITEONCE: the roles that may still change the value, the day the lock starts;
     // what the page hook adds: the roles could not be read, a dropdown's saved code,
     // the saved values could not be read
@@ -171,8 +173,9 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // reference's source line
     'rangeShow', 'growthCurveKey', 'growthTableKey', 'growthChartWhy', 'growthChartSource',
     // @UVDELTA (the earlier value travels folded, as deltaVsOp)
-    'deltaVs', 'deltaVsOp', 'deltaVsLabel', 'deltaVsComma', 'deltaMax', 'deltaMaxPct',
-    'deltaDirection', 'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed',
+    // deltaVsFound: where a value further back than the entry right before was found (DLT-1)
+    'deltaVs', 'deltaVsOp', 'deltaVsLabel', 'deltaVsFound', 'deltaVsComma', 'deltaMax', 'deltaMaxPct',
+    'deltaDirection', 'deltaUnit', 'deltaText', 'deltaGroup', 'deltaComputed', 'deltaUnvalidated',
     // @UVWRITEONCE, from the page hook: the roles could not be read, a dropdown's saved code,
     // the saved values could not be read
     'writeonceRolesUnread', 'writeonceSaved', 'writeonceValuesUnread',
@@ -426,7 +429,23 @@ check('range issue labels', ModeRegistry::issueLabel('range', 'soft-low') === 'U
     && ModeRegistry::issueLabel('range', 'plausible-high') === 'Implausible value');
 check('range detail keys', ModeRegistry::detailKeys('range') === ['rangeSoftText', 'rangeHardText', 'rangePlausibleText']);
 check('kept off survey pages: the window diagnostics, the @UVEXISTS "whereMessage", and what @UVDELTA compares with',
-    ModeRegistry::staffOnlyKeys() === ['windowFromOpWhy', 'windowNotFutureOff', 'whereMessage', 'deltaVs', 'deltaVsLabel']);
+    ModeRegistry::staffOnlyKeys() === ['windowFromOpWhy', 'windowNotFutureOff', 'whereMessage', 'deltaVs', 'deltaVsLabel', 'deltaVsFound']);
+// DLT-7: the shorthand's name and the "previous" option are the server's
+check('the @UVDELTA shorthand name and "previous" option never reach a page',
+    in_array('deltaVsName', ModeRegistry::serverKeys(), true) && in_array('deltaAdjacent', ModeRegistry::serverKeys(), true)
+    && !isset(ModeRegistry::clientShape(['type' => 'delta', 'fields' => ['w'], 'deltaVsName' => 'previous-event', 'deltaAdjacent' => true])['deltaVsName'])
+    && !isset(ModeRegistry::clientShape(['type' => 'delta', 'fields' => ['w'], 'deltaVsName' => 'previous-event', 'deltaAdjacent' => true])['deltaAdjacent']));
+// DLT-1: the @UVDELTA "vs" walks back to the nearest value unless the rule says "previous":"adjacent"
+$dvs = null;
+foreach (ModeRegistry::operandKeys() as $rk) if ($rk['key'] === 'deltaVs') $dvs = $rk;
+check('the @UVDELTA operand walks back to the nearest value, and says where under deltaVsFound',
+    $dvs !== null && ModeRegistry::nearestKey($dvs, ['type' => 'delta']) === 'deltaVsFound');
+check('... unless the rule is "previous":"adjacent"', $dvs !== null && ModeRegistry::nearestKey($dvs, ['type' => 'delta', 'deltaAdjacent' => true]) === null);
+$wfrom = null;
+foreach (ModeRegistry::operandKeys() as $rk) if ($rk['key'] === 'windowFrom') $wfrom = $rk;
+check('an operand that does not say so reads the slot right before (@UVWINDOW "from")', $wfrom !== null && ModeRegistry::nearestKey($wfrom, []) === null);
+check('a delta finding says where the value was found: the log as vs_found, the scan as asOf',
+    (ModeRegistry::findingKeys()['vsFound'] ?? null) === ['log' => 'vs_found'] && (ModeRegistry::findingKeys()['vsFoundAt'] ?? null) === ['scan' => 'asOf']);
 check('survey shape: reasons dropped, snapshot and chart reasons kept as present',
     ModeRegistry::surveyShape()['drop'] === ['deferredWhy'] && ModeRegistry::surveyShape()['presence'] === ['snapshotFields', 'growthChartWhy']
     && ModeRegistry::surveyShape()['conditionText'] === '(condition)');
@@ -598,6 +617,15 @@ $cases = [
         return json_encode($g); })($good),
     'a finding key mapped to the log key a reason writes' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'writeonce') $g['modes'][$i]['findingKeys']['lockedAt'] = ['log' => 'justified_by'];
+        return json_encode($g); })($good),
+    'a "nearest" whose found key the survey page would be sent' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'delta') $g['modes'][$i]['staffOnlyKeys'] = ['deltaVs', 'deltaVsLabel'];
+        return json_encode($g); })($good),
+    'a "nearest" whose "unless" is no branch key' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'delta') $g['modes'][$i]['refKeys'][0]['nearest']['unless'] = 'nope';
+        return json_encode($g); })($good),
+    'a "nearest" on a condition key' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'delta') $g['modes'][$i]['refKeys'][] = ['key' => 'x', 'kind' => 'cond', 'nearest' => ['unless' => 'deltaAdjacent', 'found' => 'deltaVsFound']];
         return json_encode($g); })($good),
     'a mode with no "justify"' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'range') unset($g['modes'][$i]['justify']);

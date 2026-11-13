@@ -133,12 +133,22 @@
   "delta/up": {
     "staff":  "The value rose more than allowed from the value it is compared with.",
     "survey": "This value is much higher than before. Please check it.",
-    "detail": "Allowed {deltaText} from {deltaVsLabel}."
+    "detail": "Allowed {deltaText} from {deltaVsLabel}.",
+    "asOf":   "Compared with {asOf}, the nearest earlier entry that holds a value."
   },
   "delta/down": {
     "staff":  "The value fell more than allowed from the value it is compared with.",
     "survey": "This value is much lower than before. Please check it.",
-    "detail": "Allowed {deltaText} from {deltaVsLabel}."
+    "detail": "Allowed {deltaText} from {deltaVsLabel}.",
+    "asOf":   "Compared with {asOf}, the nearest earlier entry that holds a value."
+  },
+  "delta/not-a-number": {
+    "staff":  "The value is not a number, so its change cannot be checked.",
+    "survey": "This is not a number."
+  },
+  "delta/too-long": {
+    "staff":  "The number is too long to compare with an earlier value.",
+    "survey": "This number is too long."
   },
   "delta/*": {
     "staff":  "The value changed more than allowed from the value it is compared with.",

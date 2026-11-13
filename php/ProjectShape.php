@@ -10,6 +10,8 @@ final class ProjectShape
     private $recordIdField;
     /** eventId() answers, keyed by its arguments. The shape never changes, so neither do they. */
     private $eventIds = [];
+    /** remember() answers, by key. */
+    private $kept = [];
 
     /**
      * events[id] = {name, arm, order, forms: ?array<string>, repeats: ?array<string>,
@@ -23,6 +25,19 @@ final class ProjectShape
         $this->fields = $fields;
         $this->fieldsKnown = (bool)$fieldsKnown;
         $this->recordIdField = is_string($recordIdField) && $recordIdField !== '' ? $recordIdField : null;
+    }
+
+    /**
+     * One answer per key for this layout. A check that reads only the layout
+     * (which events hold a form, where it repeats) gives every field that asks
+     * the same question the same answer, and 500 tagged fields on a form asked
+     * it 500 times on each page load (review DLT-8). $work runs once; a null
+     * answer is kept too.
+     */
+    public function remember($key, callable $work)
+    {
+        if (!array_key_exists($key, $this->kept)) $this->kept[$key] = $work();
+        return $this->kept[$key];
     }
 
     public function fieldsKnown() { return $this->fieldsKnown; }
@@ -67,6 +82,23 @@ final class ProjectShape
             }
             return ['state'=>'invalid'];
         }
+        $arm = $this->armEvents($token, $current, $form);
+        if ($arm['state'] !== 'ok') return ['state'=>$arm['state']];
+        $eligible = $arm['events'];
+        if (!$eligible) return ['state'=>'absent'];
+        $id = in_array($token, ['previous-event-name','last-event-name'], true) ? end($eligible) : reset($eligible);
+        return ['state'=>'ok','event'=>$id];
+    }
+
+    /**
+     * The events of $current's arm that hold $form and that the relative
+     * $token can name (those before $current for previous-event-name, those
+     * after it for next-event-name, else all), in order:
+     * ['state'=>'ok','events'=>[order=>id]], or 'unreadable' for a layout
+     * that does not say.
+     */
+    private function armEvents($token, $current, $form)
+    {
         $source = $this->event($current);
         if (!$source || !isset($source['arm'], $source['order'])) return ['state'=>'unreadable'];
         $eligible = [];
@@ -80,10 +112,22 @@ final class ProjectShape
             if (isset($eligible[(string)$event['order']])) return ['state'=>'unreadable'];
             $eligible[(string)$event['order']] = $id;
         }
-        if (!$eligible) return ['state'=>'absent'];
         ksort($eligible, SORT_NUMERIC);
-        $id = in_array($token, ['previous-event-name','last-event-name'], true) ? end($eligible) : reset($eligible);
-        return ['state'=>'ok','event'=>$id];
+        return ['state'=>'ok','events'=>$eligible];
+    }
+
+    /**
+     * Every event before $current in its arm that holds $form, the nearest
+     * first: ['state'=>'ok','events'=>[id, ...]] (none on the first such
+     * event), or 'unreadable'. The first one is what [previous-event-name]
+     * names; @UVDELTA walks on from it past the visits that hold no value
+     * (AddressResolver::resolveNearest).
+     */
+    public function earlierEvents($current, $form)
+    {
+        $arm = $this->armEvents('previous-event-name', $current, $form);
+        if ($arm['state'] !== 'ok') return ['state'=>$arm['state']];
+        return ['state'=>'ok','events'=>array_reverse(array_values($arm['events']))];
     }
 
     /** bucket=null is a base row; '' is a whole repeating event. */
