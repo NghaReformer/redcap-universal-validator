@@ -774,11 +774,30 @@ namespace {
     save($m);
     check('a blank value empties the fields', written() === ['r_site' => '']);
     $m = mod();
-    row9(['r_spec' => 'SP-DUP', 'r_site' => '2']);
+    row9(['r_spec' => 'SP-DUP', 'r_site' => '2', 'r_from' => '4']);
     save($m);
     $u = unconfigurable($m);
-    check('a conflict writes nothing and is a rule problem (got ' . json_encode($u) . ')', !\REDCap::$saves && count($u) === 1
-        && strpos(implode(' ', $u), 'different values to copy') !== false);
+    check('a conflict whose fields hold the values of one of the entries writes nothing and is a rule problem (got ' . json_encode($u) . ')',
+        !\REDCap::$saves && count($u) === 1 && strpos(implode(' ', $u), 'different values to copy') !== false
+        && strpos(implode(' ', $u), 'keep their values') !== false);
+    // EXI-4: the value looked up was changed, and the fields still hold what
+    // the entry looked up before holds (SP-1: site 1, its date, dose and record).
+    $m = mod();
+    row9(['r_spec' => 'SP-DUP', 'r_site' => '1', 'r_date' => '2026-03-01', 'r_dose' => '7.5', 'r_from' => '1']);
+    save($m);
+    $u = unconfigurable($m);
+    check('EXI-4 a conflict whose fields hold the values of none of the entries empties them (got ' . json_encode(written()) . ')',
+        written() === ['r_site' => '', 'r_date' => '', 'r_dose' => '', 'r_from' => '']);
+    check('EXI-4 ...and the rule problem says so (got ' . json_encode($u) . ')', count($u) === 1
+        && strpos(implode(' ', $u), 'held the values of none of them, so they are left empty') !== false);
+    $m = mod();
+    $r = ask($m, 'r_spec', 'SP-DUP');
+    check('EXI-4 the live answer lists what the entries hold, keyed by the field here (got ' . json_encode($r['options'] ?? null) . ')',
+        ($r['options'] ?? null) === [['r_site' => '1', 'r_date' => '', 'r_dose' => '', 'r_from' => '3'],
+                                     ['r_site' => '2', 'r_date' => '', 'r_dose' => '', 'r_from' => '4']]);
+    $m = mod();
+    $r = ask($m, 'r_spec', 'SP-DUP', 7);
+    check('EXI-4 ...and never an entry outside the caller\'s group (got ' . json_encode($r) . ')', !isset($r['options']));
     $m = mod(null);
     save($m);
     check('a save with no signed-in user (a job, an API call) copies nothing, and that is no rule problem', !\REDCap::$saves && !unconfigurable($m));

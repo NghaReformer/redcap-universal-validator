@@ -933,7 +933,11 @@ the specimen ID on the collection form.
   `@HIDDEN` (or the `-FORM` form) on the data-entry form; a field a person
   could type into is refused. Several entries with
   different values copy nothing and an amber line says so; a user in a Data
-  Access Group gets values only from their own group. The page fills the
+  Access Group gets values only from their own group. Fields left this way
+  keep what they hold only while it goes with the value in the field: once
+  the value is changed and the lookup copies nothing, the page empties them,
+  and the save empties fields that hold the values of none of several
+  disagreeing entries. The page fills the
   fields for a user who may open every form the lookup reads, and the
   post-save audit, checking the same rights, writes the values that differ as
   the person who saved (the project setting "@UVEXISTS returned values" turns

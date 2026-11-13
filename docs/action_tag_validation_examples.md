@@ -1912,6 +1912,16 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   entries the user can see, agreeing or not), and the post-save audit logs a
   rule problem. Narrow the lookup with `match`. Copying `record` from two
   records is a disagreement too.
+- **Values of the entry looked up before.** The fields keep what they hold
+  only while it goes with the value in the field. When the value is changed
+  and the new lookup copies nothing (*could not check*, entries that
+  disagree, an entry outside the user's group), the page empties the fields
+  and says so; kept, the save would store one specimen beside another
+  specimen's site. When entries disagree, the fields are kept only if they
+  hold the values of one of those entries; the save judges the same way and
+  empties them otherwise. An import or API write has no page: there the save
+  empties them for disagreeing entries, and leaves them, with a rule problem
+  in the module log, when the lookup could not be made.
 - **Data Access Groups.** A user in a group gets values only from entries of
   their own group. When REDCap lets the module see the other groups' records
   for that user, a value found only in another group is still *found*, nothing

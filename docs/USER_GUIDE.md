@@ -1201,7 +1201,10 @@ is refused. A value found fills them, "not found", a blank
 value or a `when` that is false empties them, and "could not check" leaves
 them. When several saved entries hold the value with different values to
 copy, nothing is copied and an amber line says so; add `match` to narrow the
-lookup. A user in a Data Access Group gets values only from entries of their
+lookup. Fields left as they are keep their values only while those go with
+the value in the field: when the value is changed and the lookup copies
+nothing, the page empties them, so one entry's values are never saved beside
+another entry's key. A user in a Data Access Group gets values only from entries of their
 own group. The page fills the fields only for a user who may open every form
 the lookup reads (the searched field's, the `match` fields' and the copied
 fields'), and the save fills them again, writing only what differs, as the

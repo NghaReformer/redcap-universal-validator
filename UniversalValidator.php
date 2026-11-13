@@ -547,6 +547,10 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
             foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
+            // The fields a rule fills, on its own form: what they hold decides
+            // whether a lookup that copies nothing leaves them (EXI-4,
+            // returnsExists). The scan reads them too (scanPlan).
+            foreach (ModeRegistry::returnFields($r) as $f) $readSet[$f] = true;
             // and what a required field's branching logic reads (REQ-1)
             foreach ($this->requiredBranchingRefs($project_id, $r) as $f) $readSet[$f] = true;
         }
@@ -647,13 +651,13 @@ class UniversalValidator extends AbstractExternalModule
                             $this->auditRule($rule, $ruleIndex, $hctx['values'], $dupes, $ownFields, $logMode,
                                 $project_id, $record, $hostForm, $hctx['event_id'], $hctx['instance'],
                                 isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null,
-                                $depResolution[$hk], ['callerGroup' => $group_id]);
+                                $depResolution[$hk], ['callerGroup' => $group_id, 'returnsHeld' => true]);
                         }
                     }
                     continue;
                 }
                 $this->auditRule($rule, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance,
-                    isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution, ['callerGroup' => $group_id]);
+                    isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution, ['callerGroup' => $group_id, 'returnsHeld' => true]);
             } catch (\Throwable $e) {
                 $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'rule ' . ($ruleIndex + 1));
             }
@@ -1216,14 +1220,48 @@ class UniversalValidator extends AbstractExternalModule
             return ['values' => $out, 'problem' => null, 'field' => $field];
         }
         if (isset($r['returnConflict'])) {
-            return $keep((int) $r['returnConflict'] . ' saved entries hold this value with different values to copy, so ' . $targets
-                . ' keep their values — narrow the lookup with "match"');
+            // The fields keep what they hold only while that is what one of
+            // the entries holds (EXI-4). Values copied for the value looked
+            // up before belong to none of them, and are emptied. Judged only
+            // where the audit read those fields ($meta['returnsHeld'], set
+            // by auditPhase): a blank that was not read is not a blank.
+            $options = (!empty($meta['returnsHeld']) && isset($r['returnOptions']) && is_array($r['returnOptions'])) ? $r['returnOptions'] : null;
+            if (self::returnedIsAnOption($ret, $options, $values, $this->dataDictionary($project_id))) {
+                return $keep((int) $r['returnConflict'] . ' saved entries hold this value with different values to copy, so ' . $targets
+                    . ' keep their values — narrow the lookup with "match"');
+            }
+            return ['values' => array_fill_keys(array_values($ret), ''), 'field' => $field,
+                    'problem' => (int) $r['returnConflict'] . ' saved entries hold this value with different values to copy, and '
+                        . $targets . ' held the values of none of them, so they are left empty — narrow the lookup with "match"'];
         }
         if (!empty($r['returnWithheld'])) {
             return $keep('the value is saved only outside the Data Access Group of the person who saved, so ' . $targets
                 . ' keep their values');
         }
         return $keep();
+    }
+
+    /**
+     * Whether the fields a rule fills ($ret: field there => field here) hold,
+     * in $values, the values of one of $options (existsReturnOutcome
+     * 'returnOptions': field there => value). A field that holds numbers
+     * compares by value, as the save compares before it writes
+     * (ReturnedValues::returnedDiffers). True when the options are not known:
+     * what cannot be compared is kept.
+     */
+    private static function returnedIsAnOption(array $ret, $options, array $values, $dd)
+    {
+        if (!is_array($options)) return true;
+        foreach ($options as $opt) {
+            if (!is_array($opt)) continue;
+            foreach ($ret as $s => $t) {
+                $cur = (isset($values[$t]) && !is_array($values[$t])) ? (string) $values[$t] : '';
+                $loose = is_array($dd) && isset($dd[$t]) && self::numberMarkOf($dd[$t]) !== null;
+                if (self::returnedDiffers($cur, isset($opt[$s]) ? (string) $opt[$s] : '', $loose)) continue 2;
+            }
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -1895,6 +1933,8 @@ class UniversalValidator extends AbstractExternalModule
 
     /** What a person in a Data Access Group is told when the value is saved in another group and the rule tests more than the value. */
     const EXISTS_BEYOND_GROUP_WHY = 'a value saved in another Data Access Group may not be visible from yours';
+    /** The different sets of values a live answer lists when the entries found disagree on what to copy (existsCheck). */
+    const EXISTS_RETURN_OPTIONS_MAX = 10;
 
     /**
      * A miss ($miss, from existsMiss) where the value IS saved, in entries
@@ -2398,6 +2438,8 @@ class UniversalValidator extends AbstractExternalModule
      *   ['returned' => field => value]  every visible entry holds the same values;
      *   ['returnConflict' => n]          the n visible entries do not all hold
      *                                    the same ones: nothing is copied;
+     *                                    'returnOptions' lists the different
+     *                                    values they hold (field => value);
      *   ['returnWithheld' => true]       the value is saved only outside group
      *                                    $visible: nothing is copied.
      * $visible is the Data Access Group of the person the lookup runs for
@@ -2419,7 +2461,7 @@ class UniversalValidator extends AbstractExternalModule
             $tuples[serialize($vals)] = $vals;
         }
         if (!$tuples) return ['returnWithheld' => true];
-        if (count($tuples) > 1) return ['returnConflict' => $seen];
+        if (count($tuples) > 1) return ['returnConflict' => $seen, 'returnOptions' => array_values($tuples)];
         return ['returned' => reset($tuples)];
     }
 

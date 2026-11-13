@@ -530,6 +530,21 @@ trait LiveLookups
                 } elseif (isset($r['returnConflict'])) {
                     $resp['fill'] = 'conflict';
                     $resp['count'] = (int) $r['returnConflict'];
+                    // The different values those entries hold, keyed by the
+                    // field here (EXI-4): the page keeps what its fields
+                    // show only while that is one of them, as the save does
+                    // (returnsExists). Too many to send, or values of another
+                    // project (its log line names one entry handed over, not
+                    // several): the save decides.
+                    $options = (isset($r['returnOptions']) && is_array($r['returnOptions'])) ? $r['returnOptions'] : [];
+                    if ($options && empty($rule['existsPid']) && count($options) <= self::EXISTS_RETURN_OPTIONS_MAX) {
+                        $resp['options'] = [];
+                        foreach ($options as $opt) {
+                            $vals = [];
+                            foreach ($ret as $s => $t) $vals[$t] = isset($opt[$s]) ? (string) $opt[$s] : '';
+                            $resp['options'][] = $this->displayFormOf($project_id, $vals);
+                        }
+                    }
                 } elseif (!empty($r['returnWithheld'])) {
                     $resp['fill'] = 'withheld';
                 }
