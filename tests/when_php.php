@@ -167,6 +167,42 @@ check('fold: folded AST agrees with the unfolded verdict',
     Logic::evaluate($fo, $vals) === Logic::evaluate($un['ast'], $vals));
 check('fold: folded AST only needs the live field to evaluate',
     Logic::evaluate($fo, ['a' => '1']) === true);
+// AST-7: a number against a text settled under a "not" is settled so the
+// "not" reads false, as the live comparison does. Each spelling, folded for
+// every set of live fields, agrees with the unfolded verdict in both roles.
+$nums = ['age' => 'point', 'lim' => 'point'];
+foreach (["not([age]>[lim])", "[age]<=[lim]", "not(not([age]<=[lim]))", "not([age]<0 or [age]>[lim])", "not([age]>[lim]) or [x]='1'"] as $expr) {
+    $p = Logic::parse($expr);
+    foreach ([['age' => '12O', 'lim' => '120', 'x' => '0'], ['age' => '50', 'lim' => '120', 'x' => '0'], ['age' => '', 'lim' => '120', 'x' => '0'],
+              ['age' => '500', 'lim' => 'abc', 'x' => '1']] as $vals) {
+        foreach ([[], ['age' => true], ['lim' => true], ['age' => true, 'lim' => true, 'x' => true]] as $live) {
+            foreach ([Logic::BLANK_PASSES, Logic::BLANK_INERT] as $blank) {
+                $fr = false; $bl = []; $sn = [];
+                $fo = Logic::fold($p['ast'], $vals, $live, ['age' => true, 'lim' => true, 'x' => true], $fr, [], $bl, $sn, $blank, false, $nums);
+                check('AST-7 fold agrees with the unfolded verdict: ' . $expr . ' ' . json_encode($vals) . ' live ' . json_encode(array_keys($live))
+                    . ' blank ' . json_encode($blank),
+                    Logic::evaluate($fo, $vals, $blank, false, $nums) === Logic::evaluate($p['ast'], $vals, $blank, false, $nums));
+            }
+        }
+    }
+}
+$p = Logic::parse("not([age]>[lim])");
+$fr = false; $bl = []; $sn = [];
+check('AST-7 fold: not(text > number), both off the page, settles to a "not" that reads false',
+    json_encode(Logic::fold($p['ast'], ['age' => '12O', 'lim' => '120'], [], [], $fr, [], $bl, $sn, Logic::BLANK_PASSES, false, $nums)) === '["not",["const",true]]');
+// AST-8: an exact = bakes an off-page number field as typed, so the page
+// compares the characters the audit compares.
+$p = Logic::parse("[a]=[n]");
+$fr = false; $bl = []; $sn = [];
+check('AST-8 fold: exact bakes 1e2 as typed',
+    json_encode(Logic::fold($p['ast'], ['a' => '100', 'n' => '1e2'], ['a' => true], ['n' => true], $fr, [], $bl, $sn, Logic::BLANK_PASSES, Logic::EXACT, ['a' => 'point', 'n' => 'point']))
+    === '["cmp","=",["ref","a",null],["lit","1e2"]]');
+$fr = false; $bl = []; $sn = [];
+check('AST-8 fold: without exact it is baked as the number it holds',
+    json_encode(Logic::fold($p['ast'], ['a' => '100', 'n' => '1e2'], ['a' => true], ['n' => true], $fr, [], $bl, $sn, Logic::BLANK_PASSES, false, ['a' => 'point', 'n' => 'point']))
+    === '["cmp","=",["ref","a",null],["lit","100"]]');
+// AST-5: comparable() is what both sides of a comparison are read as.
+check('AST-5 comparable: CR LF, CR and LF are one line break', Logic::comparable(" a\r\nb\rc\nd \r\n") === "a\nb\nc\nd");
 
 // ---- checkRefs (dictionary-dependent; PHP-only, used by config channels) ----
 $types = [

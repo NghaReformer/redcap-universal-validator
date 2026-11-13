@@ -30,7 +30,7 @@ function rnd($max) { global $seed; $seed = ($seed * 1103515245 + 12345) & 0x7fff
 
 $pool = ['', ' ', "\t", '0', '-0', '0.0', '5', '05', '5.0', ' 5 ', '+5', '-3', '-3.50', '.5', '0.5', '7.50', '12',
     '1000000000000000000000', '999999999999999999999', 'abc', 'ABC', 'Abc', 'abd', 'b', 'B', 'a b', '1e1', '1.2.3',
-    '10', '9', 'x', 'X', '-', '+', '.', 'z9', '9z'];
+    '10', '9', 'x', 'X', '-', '+', '.', 'z9', '9z', "a\r\nb", "a\nb", "a\rb", "a\n\nb", "5\r\n"];
 $ops = CollectionIndex::OPS;
 $modes = [false, true, Logic::EXACT];
 $cases = 0;
@@ -43,16 +43,28 @@ for ($round = 0; $round < 800; $round++) {
     $skip = rnd(3) === 0 ? rnd($size) : null;
     $plain = $values;
     if ($skip !== null) array_splice($plain, $skip, 1);
-    foreach (['any', 'all'] as $q) foreach ($ops as $op) foreach ($modes as $case) foreach ([true, false] as $blank) foreach ([true, false] as $left) {
+    // $mixed: what a number against a text yields in an ordered comparison,
+    // false at the top of a condition and true under one "not" (AST-7).
+    foreach (['any', 'all'] as $q) foreach ($ops as $op) foreach ($modes as $case) foreach ([true, false] as $blank) foreach ([true, false] as $left) foreach ([false, true] as $mixed) {
         $indexed = ['set'=>$q, 'index'=>$index, 'skip'=>$skip];
         $listed = ['set'=>$q, 'values'=>$plain];
-        $a = $left ? TemporalLogic::compare($op, $indexed, $x, $blank, $case) : TemporalLogic::compare($op, $x, $indexed, $blank, $case);
-        $b = $left ? TemporalLogic::compare($op, $listed, $x, $blank, $case) : TemporalLogic::compare($op, $x, $listed, $blank, $case);
+        $a = $left ? TemporalLogic::compare($op, $indexed, $x, $blank, $case, null, $mixed) : TemporalLogic::compare($op, $x, $indexed, $blank, $case, null, $mixed);
+        $b = $left ? TemporalLogic::compare($op, $listed, $x, $blank, $case, null, $mixed) : TemporalLogic::compare($op, $x, $listed, $blank, $case, null, $mixed);
         $cases++;
-        if ($a !== $b) check(false, json_encode(compact('values', 'skip', 'x', 'q', 'op', 'case', 'blank', 'left', 'a', 'b')));
+        if ($a !== $b) check(false, json_encode(compact('values', 'skip', 'x', 'q', 'op', 'case', 'blank', 'left', 'mixed', 'a', 'b')));
     }
 }
-check($cases === 800 * 144, "the index and the loop agree on $cases comparisons");
+check($cases === 800 * 288, "the index and the loop agree on $cases comparisons");
+// AST-5: a member saved with CR LF is the member typed with LF, from the index as from the loop.
+$index = new CollectionIndex(["line 1\r\nline 2", 'x']);
+check(TemporalLogic::compare('=', ['set'=>'any', 'index'=>$index, 'skip'=>null], "line 1\nline 2", true, Logic::EXACT) === true, 'CR LF member equals the LF value (exact)');
+check(TemporalLogic::compare('=', ['set'=>'any', 'index'=>$index, 'skip'=>null], "line 1\nline 2", true, false) === true, 'CR LF member equals the LF value');
+// AST-7: text against a number has no order, and a "not" around it does not turn that into a pass.
+check(TemporalLogic::evaluate(['not', ['cmp', '>', ['lit', '12O'], ['lit', '120']]], function () { return ''; }) === false, 'not("12O" > 120) is false, as "12O" <= 120 is');
+check(TemporalLogic::evaluate(['cmp', '<=', ['lit', '12O'], ['lit', '120']], function () { return ''; }) === false, '"12O" <= 120 is false');
+$index = new CollectionIndex(['5', '12O']);
+check(TemporalLogic::evaluate(['not', ['cmp', '>', ['set', 'any', [['lit', '5'], ['lit', '12O']]], ['lit', '120']]], function () { return ''; }) === false,
+    'not(any member > 120) with a text member is false');
 
 // A value the index does not cover (an average) is compared member by member.
 $index = new CollectionIndex(['1', '2', '3']);

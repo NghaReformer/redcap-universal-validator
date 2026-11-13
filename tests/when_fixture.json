@@ -548,7 +548,8 @@
       "expr": "[hb]='12.5'",
       "values": { "hb": "12,5" },
       "numbers": { "hb": "comma" },
-      "expect": true
+      "expect": true,
+      "expectExact": false
     },
     {
       "name": "num_comma_field_saved_with_point_still_reads",
@@ -665,7 +666,37 @@
     { "name": "code_ne_reads_itself", "expr": "[start]<>'UNK'", "values": { "start": "UNK" }, "codes": ["UNK", "NASK", "-99"], "expect": false },
     { "name": "code_eq_reads_itself", "expr": "[start]='UNK'", "values": { "start": "UNK" }, "codes": ["UNK", "NASK", "-99"], "expect": true },
     { "name": "code_literal_is_not_a_code", "expr": "[x]>='UNK'", "values": { "x": "ZZZ" }, "codes": ["UNK", "NASK", "-99"], "expect": true },
-    { "name": "code_other_term_still_counts", "expr": "[end]>=[start] and [n]<3", "values": { "end": "2024-02-01", "start": "UNK", "n": "5" }, "codes": ["UNK", "NASK", "-99"], "expect": false }
+    { "name": "code_other_term_still_counts", "expr": "[end]>=[start] and [n]<3", "values": { "end": "2024-02-01", "start": "UNK", "n": "5" }, "codes": ["UNK", "NASK", "-99"], "expect": false },
+    { "_comment": "AST-5 (review 2026-11-13): a line break is one character however it was saved. A Notes value typed on the page holds LF, the same text read back from the server CR LF; the two compared as different across forms." },
+    { "name": "crlf_equals_lf", "expr": "[a]=[b]", "values": { "a": "line 1\r\nline 2", "b": "line 1\nline 2" }, "expect": true },
+    { "name": "crlf_not_unequal_to_lf", "expr": "[a]<>[b]", "values": { "a": "line 1\r\nline 2\r\nline 3", "b": "line 1\nline 2\nline 3" }, "expect": false },
+    { "name": "cr_alone_equals_lf", "expr": "[a]=[b]", "values": { "a": "x\ry", "b": "x\ny" }, "expect": true },
+    { "name": "crlf_orders_as_lf", "expr": "[a]<=[b] and [a]>=[b]", "values": { "a": "x\r\ny", "b": "x\ny" }, "expect": true },
+    { "name": "crlf_is_not_a_space", "expr": "[a]=[b]", "values": { "a": "x\r\ny", "b": "x y" }, "expect": false },
+    { "name": "crlf_two_breaks_are_not_one", "expr": "[a]=[b]", "values": { "a": "x\r\n\r\ny", "b": "x\ny" }, "expect": false },
+    { "name": "crlf_cr_then_cr_is_two_breaks", "expr": "[a]=[b]", "values": { "a": "x\r\ry", "b": "x\n\ny" }, "expect": true },
+    { "_comment": "AST-7 (review 2026-11-13): an ordered comparison of a number with a text has no order to report. It is false, and it makes a \"not\" around it false too, so not([age]>120) and [age]<=120 give one verdict on text typed into a number field. A gate stays inert under either spelling." },
+    { "name": "mixed_plain_le_flags_text", "expr": "[age]<=120", "values": { "age": "12O" }, "numbers": { "age": "point" }, "expect": false },
+    { "name": "mixed_negated_gt_flags_text_too", "expr": "not([age]>120)", "values": { "age": "12O" }, "numbers": { "age": "point" }, "expect": false },
+    { "name": "mixed_negated_gt_comma_typed_in_point_field", "expr": "not([age]>120)", "values": { "age": "1,5" }, "numbers": { "age": "point" }, "expect": false },
+    { "name": "mixed_range_and", "expr": "[age]>=0 and [age]<=120", "values": { "age": "abc" }, "numbers": { "age": "point" }, "expect": false },
+    { "name": "mixed_range_de_morgan", "expr": "not([age]<0 or [age]>120)", "values": { "age": "abc" }, "numbers": { "age": "point" }, "expect": false },
+    { "name": "mixed_double_not", "expr": "not(not([age]<=120))", "values": { "age": "12O" }, "numbers": { "age": "point" }, "expect": false },
+    { "name": "mixed_triple_not", "expr": "not(not(not([age]>120)))", "values": { "age": "12O" }, "numbers": { "age": "point" }, "expect": false },
+    { "name": "mixed_negated_text_field_against_number", "expr": "not([s]>'9')", "values": { "s": "A" }, "expect": false },
+    { "name": "mixed_negated_literal_text_against_number_field", "expr": "not([n]>='abc')", "values": { "n": "5" }, "numbers": { "n": "point" }, "expect": false },
+    { "name": "mixed_other_term_still_decides", "expr": "not([age]>120) or [x]='1'", "values": { "age": "12O", "x": "1" }, "numbers": { "age": "point" }, "expect": true },
+    { "name": "mixed_negated_equality_is_untouched", "expr": "not([s]='9')", "values": { "s": "A" }, "expect": true },
+    { "name": "mixed_negated_control_number_passes", "expr": "not([age]>120)", "values": { "age": "50" }, "numbers": { "age": "point" }, "expect": true },
+    { "name": "mixed_negated_control_number_fails", "expr": "not([age]>120)", "values": { "age": "500" }, "numbers": { "age": "point" }, "expect": false },
+    { "name": "mixed_negated_blank_keeps_its_polarity", "expr": "not([age]>120)", "values": { "age": "" }, "numbers": { "age": "point" }, "expect": true, "expectGate": false },
+    { "name": "mixed_negated_two_texts_order_as_text", "expr": "not([s]>'b')", "values": { "s": "a" }, "expect": true },
+    { "_comment": "AST-8 (review 2026-11-13): under \"exact\", = and <> read a number field as typed, so 100 does not confirm 1e2 and 12,5 does not confirm 12,50. Without \"exact\" they are the same number." },
+    { "name": "exact_number_field_exponent", "expr": "[a]=[n]", "values": { "a": "100", "n": "1e2" }, "numbers": { "a": "point", "n": "point" }, "expect": true, "expectExact": false },
+    { "name": "exact_number_field_exponent_ne", "expr": "[a]<>[n]", "values": { "a": "100", "n": "1e2" }, "numbers": { "a": "point", "n": "point" }, "expect": false, "expectExact": true },
+    { "name": "exact_comma_field_trailing_zero", "expr": "[a]=[n]", "values": { "a": "12,5", "n": "12,50" }, "numbers": { "a": "comma", "n": "comma" }, "expect": true, "expectExact": false },
+    { "name": "exact_number_field_same_text", "expr": "[a]=[n]", "values": { "a": "12,5", "n": " 12,5 " }, "numbers": { "a": "comma", "n": "comma" }, "expect": true },
+    { "name": "exact_number_field_ordered_still_reads_numbers", "expr": "[a]<=[n]", "values": { "a": "9,5", "n": "1e1" }, "numbers": { "a": "comma", "n": "comma" }, "expect": true }
   ],
   "errors": [
     {

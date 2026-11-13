@@ -60,10 +60,15 @@
  *     on edge cases (U+0130 and friends), and this dialect's contract is that
  *     both runtimes return the same verdict;
  *   - MIXED (one numeric, one not, both non-empty): = and <> still answer, by
- *     string identity. The ORDERED operators < > <= >= are false whichever way
- *     round they are asked, because a per-pair comparator produced ordering
- *     CYCLES (a<=b, b<=c and a>c all true for "2", "10", "1e1") that no error
- *     message could explain;
+ *     string identity. The ORDERED operators < > <= >= have NO ORDER to
+ *     report, whichever way round they are asked, because a per-pair
+ *     comparator produced ordering CYCLES (a<=b, b<=c and a>c all true for
+ *     "2", "10", "1e1") that no error message could explain. The comparison
+ *     is false, and it makes a "not" around it false too: evaluate() hands
+ *     down $mixed, flipped at each "not" as $blank is, so not([age]>120)
+ *     and [age]<=120 give one verdict on "12O" (AST-7). A test then reports
+ *     text where a number belongs under either spelling, and a "when" gate
+ *     stays inert under either;
  *   - EMPTY is not a rival domain either: it is ABSENCE, and an ordered
  *     comparison against an absent operand has NO ANSWER. It does not fall
  *     through to byte order. It used to, and because '' sorts lowest that made
@@ -91,7 +96,11 @@
  *   - a rule with "exact": true passes EXACT as its text mode: = and <>
  *     compare the trimmed values byte for byte, so 00123 is not 123 and
  *     AB12 is not ab12; the ordered operators read it as case-sensitive
- *     (AST-2).
+ *     (AST-2). Under "exact", = and <> also read a number field as typed,
+ *     so 100 is not 1e2 and 12,5 is not 12,50 (AST-8);
+ *   - a line break counts as one character however it was saved: CR LF and
+ *     a lone CR compare as LF. A Notes value read back from the server holds
+ *     CR LF where the same text typed on the page holds LF (AST-5).
  *
  * Caps (parse errors beyond): MAX_EXPR_LEN chars, MAX_REFS field references,
  * MAX_DEPTH nesting levels (parentheses + not).
@@ -420,17 +429,21 @@ class Logic
      * [end]>=[start] with start UNK passes as a test and leaves a "when"
      * inert; = and <> read the code as itself, so [start]<>'UNK' still works
      * (AST-10). An event or instance reference reads it as itself.
+     *
+     * $mixed is what an ordered comparison of a number with a text yields
+     * (AST-7). A caller leaves it false; it flips at each "not", so such a
+     * comparison makes the condition false however it is negated.
      */
-    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [], array $codes = [])
+    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [], array $codes = [], $mixed = false)
     {
         switch ($ast[0]) {
             case 'const':
                 return !empty($ast[1]);
             case 'or':
-                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank, $caseSensitive, $numbers, $codes)) return true; }
+                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank, $caseSensitive, $numbers, $codes, $mixed)) return true; }
                 return false;
             case 'and':
-                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank, $caseSensitive, $numbers, $codes)) return false; }
+                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank, $caseSensitive, $numbers, $codes, $mixed)) return false; }
                 return true;
             case 'not':
                 // THE FLIP. "No answer" has to mean the same thing about the
@@ -440,19 +453,33 @@ class Logic
                 // the same question — give opposite verdicts on a blank [max],
                 // which is the original defect wearing a different spelling.
                 // Case sensitivity does NOT flip: it describes how two strings
-                // are matched, not what "no answer" means.
-                return !self::evaluate($ast[1], $values, !$blank, $caseSensitive, $numbers, $codes);
+                // are matched, not what "no answer" means. $mixed flips for
+                // the same reason $blank does (AST-7).
+                return !self::evaluate($ast[1], $values, !$blank, $caseSensitive, $numbers, $codes, !$mixed);
             case 'cmp':
                 if ($codes && self::codeCompared($ast, $values, $codes)) return $blank;
+                if (self::exactEquality($ast[1], $caseSensitive)) $numbers = [];
                 return self::compare(
                     $ast[1],
                     self::operandValue($ast[2], $values, $numbers),
                     self::operandValue($ast[3], $values, $numbers),
                     $blank,
-                    $caseSensitive
+                    $caseSensitive,
+                    $mixed
                 );
         }
         return false; // unreachable for parse()-produced ASTs
+    }
+
+    /**
+     * Whether $op under the text mode $caseSensitive compares two values
+     * character for character: = or <> of a rule with "exact": true. The two
+     * values are then read as typed, a number field too, so 100 does not
+     * confirm 1e2 (AST-8). Twin: QRID_whenExactEquality.
+     */
+    private static function exactEquality($op, $caseSensitive)
+    {
+        return $caseSensitive === self::EXACT && ($op === '=' || $op === '<>');
     }
 
     /**
@@ -511,20 +538,21 @@ class Logic
      * with no live ref at all cannot react anyway, so folding it is both
      * correct and leak-minimal.
      */
-    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [], array $codes = [])
+    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [], array $codes = [], $mixed = false)
     {
         if (self::qualifiedRefs($ast)) throw new \LogicException('Resolve extended references before folding.');
         switch ($ast[0]) {
             case 'or':
             case 'and':
                 $out = [];
-                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank, $caseSensitive, $numbers, $codes);
+                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank, $caseSensitive, $numbers, $codes, $mixed);
                 return [$ast[0], $out];
             case 'not':
                 // Flipped exactly as evaluate() flips it, so a comparison
                 // settled into a ['const', b] here sits under the same number
                 // of "not"s as the live one it replaced and agrees with it.
-                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank, $caseSensitive, $numbers, $codes)];
+                // $mixed flips with it (AST-7).
+                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank, $caseSensitive, $numbers, $codes, !$mixed)];
             case 'cmp':
                 $refs = 0;
                 $live = 0;
@@ -573,8 +601,9 @@ class Logic
                         foreach ($offPage as $slot) {
                             $snapshot[$ast[$slot][1]] = true;   // read once, at render
                             // baked as the number it holds (12,5 as 12.5): the
-                            // browser compares a literal as written
-                            $ast[$slot] = ['lit', self::operandValue($ast[$slot], $values, $numbers)];
+                            // browser compares a literal as written. An exact
+                            // = or <> reads it as typed (AST-8).
+                            $ast[$slot] = ['lit', self::operandValue($ast[$slot], $values, self::exactEquality($ast[1], $caseSensitive) ? [] : $numbers)];
                         }
                         return $ast;
                     }
@@ -601,7 +630,7 @@ class Logic
                         if ($ast[$slot][0] === 'ref') $snapshot[$ast[$slot][1]] = true;
                     }
                 }
-                return ['const', self::evaluate($ast, $values, $blank, $caseSensitive, $numbers, $codes)];
+                return ['const', self::evaluate($ast, $values, $blank, $caseSensitive, $numbers, $codes, $mixed)];
         }
         return $ast;   // 'const' (already folded) and anything unknown
     }
@@ -1538,11 +1567,24 @@ class Logic
         return ['verdict' => $empty($current) ? 'cleared' : 'changed', 'lockedAt' => $lockedAt, 'changedAt' => $lastAt];
     }
 
-    /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */
-    private static function compare($op, $a, $b, $blank = self::BLANK_PASSES, $caseSensitive = false)
+    /**
+     * A value as compare() reads it before it compares: space, tab, CR and LF
+     * off both ends, and every line break inside as LF. A line break is one
+     * character however it was saved: a Notes value typed on the page holds
+     * LF, the same text read back from the server CR LF, and the two compared
+     * as different across forms (AST-5). Twin: QRID_whenComparable.
+     */
+    public static function comparable($value)
     {
-        $a = trim((string) $a, " \t\r\n");
-        $b = trim((string) $b, " \t\r\n");
+        $v = trim((string) $value, " \t\r\n");
+        return strpos($v, "\r") === false ? $v : str_replace(["\r\n", "\r"], "\n", $v);
+    }
+
+    /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */
+    private static function compare($op, $a, $b, $blank = self::BLANK_PASSES, $caseSensitive = false, $mixed = false)
+    {
+        $a = self::comparable($a);
+        $b = self::comparable($b);
         // "exact": identity of the two strings, before any reading as numbers
         // or folding of case (AST-2).
         if ($caseSensitive === self::EXACT && ($op === '=' || $op === '<>')) {
@@ -1568,9 +1610,12 @@ class Logic
         // cycle, and a rule built on it is unsatisfiable in a way no message
         // could explain.
         // Ordering is therefore defined only WITHIN a domain: both numeric, or
-        // neither. One-of-each yields false for < > <= >=, whichever way round
-        // it is asked, so no cycle can form. Equality is unaffected — "2" and
-        // "1e1" are simply different strings, which is exactly right.
+        // neither. One-of-each yields $mixed for < > <= >=, whichever way round
+        // it is asked, so no cycle can form. $mixed is false at the top of a
+        // condition and flips at each "not" (evaluate), so the condition as a
+        // whole reads false: not([age]>120) used to pass "12O" in a number
+        // field that [age]<=120 reported (AST-7). Equality is unaffected — "2"
+        // and "1e1" are simply different strings, which is exactly right.
         // EMPTY is absence, so an ORDERED comparison against it has NO ANSWER
         // and $blank — the caller's polarity, already flipped by evaluate() for
         // every "not" above this node — is substituted instead. It used to fall
@@ -1585,15 +1630,15 @@ class Logic
             $b = strtr($b, self::ASCII_UPPER, self::ASCII_LOWER);
         }
         $blankSide = ($a === '' || $b === '');
-        $mixed = !$blankSide
+        $apart = !$blankSide
                && ((bool) preg_match(self::NUM_RE, $a) !== (bool) preg_match(self::NUM_RE, $b));
         switch ($op) {
             case '=':  return $a === $b;
             case '<>': return $a !== $b;
-            case '>':  return $blankSide ? $blank : (!$mixed && strcmp($a, $b) > 0);
-            case '<':  return $blankSide ? $blank : (!$mixed && strcmp($a, $b) < 0);
-            case '>=': return $blankSide ? $blank : (!$mixed && strcmp($a, $b) >= 0);
-            case '<=': return $blankSide ? $blank : (!$mixed && strcmp($a, $b) <= 0);
+            case '>':  return $blankSide ? $blank : ($apart ? $mixed : strcmp($a, $b) > 0);
+            case '<':  return $blankSide ? $blank : ($apart ? $mixed : strcmp($a, $b) < 0);
+            case '>=': return $blankSide ? $blank : ($apart ? $mixed : strcmp($a, $b) >= 0);
+            case '<=': return $blankSide ? $blank : ($apart ? $mixed : strcmp($a, $b) <= 0);
         }
         return false;
     }

@@ -817,6 +817,11 @@
     return fm[0] === "datetime" ? p.value.slice(0, 16) : p.value;
   }
   function QRID_pageNumberValue(f, v){ return QRID_numberValue(f, v, QRID_NUMBER_MARKS); }
+  /* A field's value for an exact = or <>: a date as REDCap stores it, anything
+     else as typed, a number field too (AST-8). */
+  function QRID_exactValue(f, v){
+    return (QRID_DATE_FORMATS[f] && typeof v === "string") ? QRID_logicValue(f, v) : v;
+  }
 
   /* Shared per-load registries (were window globals; now namespace-only).
      Object.create(null): REDCap field names are attacker-ish input for a plain
@@ -2064,35 +2069,38 @@ function QRID_sameFlags(op){
   if(p.length!==3||p[0]!=='same'||(p[1]!=='fold'&&p[1]!=='exact')||['text','point','comma'].indexOf(p[2])<0)return null;
   return [p[1]==='fold',p[2]==='text'?null:p[2]];
 }
-function QRID_temporalCompare(op,a,b,blank,cs){
+function QRID_temporalCompare(op,a,b,blank,cs,mixed){
   if(a===null||b===null)return null;
   if(op==='identical'||String(op).slice(0,5)==='same:'){var f=QRID_sameFlags(op);return f!==null&&typeof a!=='object'&&typeof b!=='object'?QRID_lookupKey(a,f[0],f[1])===QRID_lookupKey(b,f[0],f[1]):null;}
   if((a&&a.set)||(b&&b.set)){
     if(a.set&&b.set)return null;var left=!!a.set,set=left?a:b;if(!set.values.length)return null;var and=set.set==='all',unknown=false;
-    for(var i=0;i<set.values.length;i++){var r=QRID_temporalCompare(op,left?set.values[i]:a,left?b:set.values[i],blank,cs);if(r===null)unknown=true;else if(r!==and)return !and;}return unknown?null:and;
+    for(var i=0;i<set.values.length;i++){var r=QRID_temporalCompare(op,left?set.values[i]:a,left?b:set.values[i],blank,cs,mixed);if(r===null)unknown=true;else if(r!==and)return !and;}return unknown?null:and;
   }
   if((a&&a.date)||(b&&b.date)){
-    if(QRID_temporalBlank(a)||QRID_temporalBlank(b))return QRID_whenCompare(op,typeof a==='object'?a.value:'',typeof b==='object'?b.value:'',blank,cs);
-    if(!a.date||a.date!==b.date)return null;return QRID_whenCompare(op,a.value,b.value,blank,cs);
+    if(QRID_temporalBlank(a)||QRID_temporalBlank(b))return QRID_whenCompare(op,typeof a==='object'?a.value:'',typeof b==='object'?b.value:'',blank,cs,mixed);
+    if(!a.date||a.date!==b.date)return null;return QRID_whenCompare(op,a.value,b.value,blank,cs,mixed);
   }
   if(typeof a==='object'||typeof b==='object'){
     if(typeof a!=='object')a=QRID_whenTrim(a);if(typeof b!=='object')b=QRID_whenTrim(b);
     /* Blank against an average or elapsed time: absence, not an unknown. */
-    if(a===''||b==='')return QRID_whenCompare(op,typeof a==='object'&&a.numerator!==undefined?a.numerator:'',typeof b==='object'&&b.numerator!==undefined?b.numerator:'',blank,cs);
+    if(a===''||b==='')return QRID_whenCompare(op,typeof a==='object'&&a.numerator!==undefined?a.numerator:'',typeof b==='object'&&b.numerator!==undefined?b.numerator:'',blank,cs,mixed);
     a=typeof a==='object'?a:{numerator:String(a),denominator:'1'};b=typeof b==='object'?b:{numerator:String(b),denominator:'1'};
     if(a.numerator===undefined||b.numerator===undefined)return null;
     var x=QRID_temporalScaled(a.numerator,b.denominator),y=QRID_temporalScaled(b.numerator,a.denominator);if(x===null||y===null)return null;a=x;b=y;
   }
-  return QRID_whenCompare(op,String(a),String(b),blank,cs);
+  return QRID_whenCompare(op,String(a),String(b),blank,cs,mixed);
 }
-function QRID_temporalEvaluate(ast,read,blank,cs){
-  if(ast[0]==='temporal')return QRID_temporalEvaluate(ast[1],read,blank,cs);
+/* mixed: what an ordered comparison of a number with a text yields, false at the
+   top and flipped at each "not" (AST-7). Twin of TemporalLogic::evaluate. */
+function QRID_temporalEvaluate(ast,read,blank,cs,mixed){
+  mixed=mixed===true;
+  if(ast[0]==='temporal')return QRID_temporalEvaluate(ast[1],read,blank,cs,mixed);
   if(ast[0]==='const')return !!ast[1];if(ast[0]==='unknown')return null;
-  if(ast[0]==='not'){var n=QRID_temporalEvaluate(ast[1],read,!blank,cs);return n===null?null:!n;}
+  if(ast[0]==='not'){var n=QRID_temporalEvaluate(ast[1],read,!blank,cs,!mixed);return n===null?null:!n;}
   if(ast[0]==='and'||ast[0]==='or'){
-    var and=ast[0]==='and',unknown=false;for(var i=0;i<ast[1].length;i++){var r=QRID_temporalEvaluate(ast[1][i],read,blank,cs);if(r===null)unknown=true;else if(r!==and)return !and;}return unknown?null:and;
+    var and=ast[0]==='and',unknown=false;for(var i=0;i<ast[1].length;i++){var r=QRID_temporalEvaluate(ast[1][i],read,blank,cs,mixed);if(r===null)unknown=true;else if(r!==and)return !and;}return unknown?null:and;
   }
-  if(ast[0]==='cmp')return QRID_temporalCompare(ast[1],QRID_temporalValue(ast[2],read),QRID_temporalValue(ast[3],read),blank,cs);
+  if(ast[0]==='cmp')return QRID_temporalCompare(ast[1],QRID_temporalValue(ast[2],read),QRID_temporalValue(ast[3],read),blank,cs,mixed);
   return null;
 }
 
@@ -2646,18 +2654,21 @@ function QRID_whenPeekKw(st, kw){
 /* Evaluate against a resolver callback (field, codeOrNull) -> string. The
    runtime gate resolves from the live DOM/snapshot; the map form below is the
    fixture-locked entry point. */
-function QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive){
+function QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive, mixed){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   if(caseSensitive === undefined) caseSensitive = false;
+  /* What an ordered comparison of a number with a text yields (AST-7): false
+     at the top, flipped at each "not" as blank is. Twin of Logic::evaluate. */
+  mixed = mixed === true;
   switch(ast[0]){
-    case "temporal": return QRID_temporalEvaluate(ast, resolve, blank, caseSensitive);
+    case "temporal": return QRID_temporalEvaluate(ast, resolve, blank, caseSensitive, mixed);
     case "const":
       return !!ast[1];
     case "or":
-      for(var i = 0; i < ast[1].length; i++){ if(QRID_whenEvaluateWith(ast[1][i], resolve, blank, caseSensitive)) return true; }
+      for(var i = 0; i < ast[1].length; i++){ if(QRID_whenEvaluateWith(ast[1][i], resolve, blank, caseSensitive, mixed)) return true; }
       return false;
     case "and":
-      for(var j = 0; j < ast[1].length; j++){ if(!QRID_whenEvaluateWith(ast[1][j], resolve, blank, caseSensitive)) return false; }
+      for(var j = 0; j < ast[1].length; j++){ if(!QRID_whenEvaluateWith(ast[1][j], resolve, blank, caseSensitive, mixed)) return false; }
       return true;
     case "not":
       /* THE FLIP — twin of Logic::evaluate. "No answer" must mean the same
@@ -2666,16 +2677,24 @@ function QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive){
          Without it, not([dose]>[max]) and [dose]<=[max] disagree on a blank
          [max], which is the original defect in a different spelling. Case
          sensitivity does not flip: it is how strings match, not what "no
-         answer" means. */
-      return !QRID_whenEvaluateWith(ast[1], resolve, !blank, caseSensitive);
+         answer" means. mixed flips for the same reason blank does (AST-7). */
+      return !QRID_whenEvaluateWith(ast[1], resolve, !blank, caseSensitive, !mixed);
     case "cmp":
       if(typeof resolve.isMissing === "function" && QRID_whenCodeCompared(ast, resolve)) return blank;
+      var exact = QRID_whenExactEquality(ast[1], caseSensitive);
       return QRID_whenCompare(ast[1],
-        QRID_whenOperandVal(ast[2], resolve),
-        QRID_whenOperandVal(ast[3], resolve),
-        blank, caseSensitive);
+        QRID_whenOperandVal(ast[2], resolve, exact),
+        QRID_whenOperandVal(ast[3], resolve, exact),
+        blank, caseSensitive, mixed);
   }
   return false; /* unreachable for QRID_whenParse-produced ASTs */
+}
+/* Whether op under the text mode compares two values character for character:
+   = or <> of a rule with "exact": true. The two values are then read as typed,
+   a number field too, so 100 does not confirm 1e2 (AST-8). Twin of
+   Logic::exactEquality. */
+function QRID_whenExactEquality(op, caseSensitive){
+  return caseSensitive === QRID_WHEN_EXACT && (op === "=" || op === "<>");
 }
 /* Whether the comparison is ordered (< > <= >=) and a plain [field] operand
    holds a Missing Data Code (resolve.isMissing), so it has no answer: [end] >=
@@ -2698,18 +2717,22 @@ function QRID_numberValue(f, v, marks){
   var n = QRID_rangeNumber(v, marks[f] === "comma");
   return (n === null || n === "") ? v : n;
 }
-function QRID_whenOperandVal(op, resolve){
+function QRID_whenOperandVal(op, resolve, exact){
   if(op[0] === "qref" || op[0] === "binding"){
     if(!resolve.extendedValues) throw new Error("Resolve extended references before browser evaluation.");
     var xv = resolve(QRID_whenRefKey(op), null, true);
-    return (op[0] === "qref" && op[2] === null && typeof resolve.numberValue === "function") ? resolve.numberValue(op[1], xv) : xv;
+    return (!exact && op[0] === "qref" && op[2] === null && typeof resolve.numberValue === "function") ? resolve.numberValue(op[1], xv) : xv;
   }
   if(op[0] === "lit") return op[1];
   /* A page resolver may say how a field's value is compared (resolve.logicValue:
-     a D-M-Y date as its stored Y-M-D). A temporal "date" node reads the value
-     raw, with the field's own format. */
+     a D-M-Y date as its stored Y-M-D, a number field as its number). A temporal
+     "date" node reads the value raw, with the field's own format. An exact = or
+     <> (exact) reads the value as stored but not as a number
+     (resolve.exactValue, AST-8). */
   var v = resolve(op[1], op[2]);
-  return (op[2] === null && typeof resolve.logicValue === "function") ? resolve.logicValue(op[1], v) : v;
+  if(op[2] !== null) return v;
+  if(exact && typeof resolve.exactValue === "function") return resolve.exactValue(op[1], v);
+  return typeof resolve.logicValue === "function" ? resolve.logicValue(op[1], v) : v;
 }
 /* Evaluate against a value map (field => string, or field => {code:'0'|'1'}
    for checkboxes). Missing fields resolve to '' (checkbox refs to '0').
@@ -2733,13 +2756,14 @@ function QRID_whenEvaluate(ast, values, blank, caseSensitive, numbers, codes){
   resolve.extendedValues = true;
   if(numbers){
     resolve.logicValue = resolve.numberValue = function(f, v){ return QRID_numberValue(f, v, numbers); };
+    resolve.exactValue = function(f, v){ return v; };
   }
   if(Array.isArray(codes) && codes.length){
     var set = Object.create(null);
     for(var i = 0; i < codes.length; i++) set[String(codes[i])] = true;
     resolve.isMissing = function(v){ return QRID_codeIn(v, set); };
   }
-  return QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive);
+  return QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive, false);
 }
 /* Space, tab, CR and LF off both ends, as PHP's trim($v, " \t\r\n") in Logic::compare.
    An index scan from each end (AST-8): the regex it replaces retried its end
@@ -3551,10 +3575,19 @@ function QRID_writeReturned(name, text, announce, exact, lost){
   }
   return true;
 }
-function QRID_whenCompare(op, a, b, blank, caseSensitive){
+/* A value as QRID_whenCompare reads it before it compares: trimmed
+   (QRID_whenTrim), and every line break inside as LF. A line break is one
+   character however it was saved: a Notes value typed here holds LF, the same
+   text read back from the server CR LF, and the two compared as different
+   across forms (AST-5). Twin of Logic::comparable. */
+function QRID_whenComparable(v){
+  v = QRID_whenTrim(v);
+  return v.indexOf("\r") < 0 ? v : v.replace(/\r\n?/g, "\n");
+}
+function QRID_whenCompare(op, a, b, blank, caseSensitive, mixed){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   if(caseSensitive === undefined) caseSensitive = false;
-  a = QRID_whenTrim(a); b = QRID_whenTrim(b);
+  a = QRID_whenComparable(a); b = QRID_whenComparable(b);
   /* "exact": identity of the two strings, before any reading as numbers or
      folding of case (AST-2). Twin of Logic::compare. */
   if(caseSensitive === QRID_WHEN_EXACT && (op === "=" || op === "<>")) return (a === b) === (op === "=");
@@ -3573,8 +3606,10 @@ function QRID_whenCompare(op, a, b, blank, caseSensitive){
   /* MIXED DOMAINS in an ORDERED comparison are not comparable (M-02). Twin of
      Logic::compare — the comparator used to be chosen per PAIR, so "2"<="10",
      "10"<="1e1" and "2">"1e1" were all true at once. Ordering is defined only
-     within a domain; one-of-each is false either way round, so no cycle forms.
-     Equality is untouched. */
+     within a domain; one-of-each yields `mixed` either way round, so no cycle
+     forms. mixed is false at the top of a condition and flips at each "not",
+     so the condition as a whole reads false: not([age]>120) used to pass "12O"
+     in a number field that [age]<=120 reported (AST-7). Equality is untouched. */
   /* EMPTY is absence, so an ORDERED comparison against it has NO ANSWER and
      `blank` — the caller's polarity, already flipped for every enclosing "not"
      — stands in. It used to fall through to code-point order, where "" sorts
@@ -3584,15 +3619,16 @@ function QRID_whenCompare(op, a, b, blank, caseSensitive){
      See Logic::compare, the normative twin. */
   if(!caseSensitive){ a = QRID_whenFoldCase(a); b = QRID_whenFoldCase(b); }
   var blankSide = (a === "" || b === "");
-  var mixed = !blankSide &&
+  var apart = !blankSide &&
               (QRID_WHEN_NUM_RE.test(a) !== QRID_WHEN_NUM_RE.test(b));
+  mixed = mixed === true;
   switch(op){
     case "=":  return a === b;
     case "<>": return a !== b;
-    case ">":  return blankSide ? blank : (!mixed && QRID_cmpStr(a, b) > 0);
-    case "<":  return blankSide ? blank : (!mixed && QRID_cmpStr(a, b) < 0);
-    case ">=": return blankSide ? blank : (!mixed && QRID_cmpStr(a, b) >= 0);
-    case "<=": return blankSide ? blank : (!mixed && QRID_cmpStr(a, b) <= 0);
+    case ">":  return blankSide ? blank : (apart ? mixed : QRID_cmpStr(a, b) > 0);
+    case "<":  return blankSide ? blank : (apart ? mixed : QRID_cmpStr(a, b) < 0);
+    case ">=": return blankSide ? blank : (apart ? mixed : QRID_cmpStr(a, b) >= 0);
+    case "<=": return blankSide ? blank : (apart ? mixed : QRID_cmpStr(a, b) <= 0);
   }
   return false;
 }
@@ -3717,6 +3753,7 @@ var QRID_WHEN = (function(){
   function readLogic(f, code){ return readRef(f, code); }
   readLogic.logicValue = QRID_logicValue;
   readLogic.numberValue = QRID_pageNumberValue;
+  readLogic.exactValue = QRID_exactValue;
   readLogic.isMissing = QRID_isMissingCode;
   /* Whether the page carries (field, codeOrNull) at all - a live lookup sends
      only values the page really has (QRID_condValues). */
