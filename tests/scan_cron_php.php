@@ -391,6 +391,79 @@ try { $out = $m->uvLookupIndexCron(); } catch (\Throwable $e) { $threw = true; }
 check('lookup cron: a database failure does not escape, and comes back as a summary',
     !$threw && is_string($out) && stripos($out, 'could not read') !== false);
 
+// ---- 8b) FRM-7 and FRM-6: the index's secret, a disabled project, which tables are made ----
+$m = new UniversalValidator();
+$m->systemSettings = [];
+$m->uvLookupIndexCron();
+$headAsked = false;
+foreach ($m->bound as $b) {
+    if (strpos($b[0], 'FROM uv_lookup_field') !== false && strpos($b[0], 'LEFT(spec, ?) <> ?') !== false) {
+        $head = end($b[1]);
+        $headAsked = is_string($head) && preg_match('/^' . \INSPIRE\UniversalValidator\Scan\LookupIndex::KEY_VERSION . '\.[0-9a-f]{8}\|$/', $head) === 1
+            && $b[1][count($b[1]) - 2] === strlen($head);
+    }
+}
+check('FRM-7: the cron lists the fields keyed under another version or secret, by this secret\'s id', $headAsked);
+check('FRM-7: the secret is the module\'s own, made when there was none',
+    isset($m->systemSettings['log-hmac-key']) && strlen($m->systemSettings['log-hmac-key']) === 64
+    && $head === \INSPIRE\UniversalValidator\Scan\LookupIndex::specHeadOf($m->systemSettings['log-hmac-key']) . '|');
+check('FRM-7: no statement carries the secret', strpos(json_encode($m->bound), $m->systemSettings['log-hmac-key']) === false);
+
+// the module disabled in a project: the project's index rows go, whatever the scan's switch says
+foreach ([[], ['lookup-index-system-off' => '1']] as $sys) {
+    $m = new UniversalValidator();
+    $m->systemSettings = $sys;
+    $threw = false;
+    try { $m->redcap_module_project_disable('v1', 149); } catch (\Throwable $e) { $threw = true; }
+    $cleared = [];
+    foreach ($m->bound as $b) {
+        if (preg_match('/^DELETE FROM (uv_lookup_\w+) WHERE project_id = \?/', $b[0], $mm) && $b[1] === [149]) $cleared[$mm[1]] = true;
+    }
+    ksort($cleared);
+    check('FRM-7: project disable clears the project\'s rows of the four index tables' . ($sys ? ' (index turned off)' : '')
+        . ' (got ' . json_encode(array_keys($cleared)) . ')',
+        !$threw && array_keys($cleared) === ['uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync']);
+    $said = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'lookup-index-project-cleared'; }));
+    check('FRM-7: ...and says so in the log', count($said) === 1 && (int) $said[0][1]['project_id'] === 149 && $said[0][1]['cleared'] === '1');
+}
+$m = new UniversalValidator();
+$m->queryThrows = true;
+$threw = false;
+try { $m->redcap_module_project_disable('v1', 149); } catch (\Throwable $e) { $threw = true; }
+$said = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'lookup-index-project-cleared'; }));
+check('FRM-7: a clear that fails does not fail the disable, and is logged as not cleared',
+    !$threw && count($said) === 1 && $said[0][1]['cleared'] === '0');
+$m = new UniversalValidator();
+$m->redcap_module_project_disable('v1', 0);
+check('FRM-7: no project, nothing cleared', $m->sql === []);
+
+// which tables the three administrator actions make with the scan off (FRM-6)
+$made = function ($m) {
+    $t = [];
+    foreach ($m->sql as $q) if (preg_match('/^CREATE TABLE IF NOT EXISTS (uv_\w+)/', $q, $mm)) $t[$mm[1]] = true;
+    ksort($t);
+    return array_keys($t);
+};
+$FIVE = ['uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync', 'uv_rate_bucket'];
+foreach (['redcap_module_system_enable' => ['v1'], 'redcap_module_system_change_version' => ['v2', 'v1'],
+          'redcap_module_save_configuration' => [null]] as $hook => $args) {
+    $m = new UniversalValidator();
+    $m->systemSettings = [];
+    $m->$hook(...$args);
+    check("FRM-6: $hook with the scan off makes the counter table and the four index tables, and no other (got " . json_encode($made($m)) . ')',
+        $made($m) === $FIVE);
+    $m = new UniversalValidator();
+    $m->systemSettings = ['lookup-index-system-off' => '1'];
+    $m->$hook(...$args);
+    check("FRM-6: $hook with the value index turned off makes the counter table alone (got " . json_encode($made($m)) . ')',
+        $made($m) === ['uv_rate_bucket']);
+}
+$m = new UniversalValidator();
+$m->redcap_module_save_configuration(149);
+check('FRM-6: saving a project\'s settings makes no table', $made($m) === []);
+check('FRM-6: the module owns ' . count(Schema::tables()) . ' tables: these five and the scan\'s twelve',
+    count(Schema::tables()) === 17 && array_diff(array_map(function ($t) { return Schema::table($t); }, ['rate_bucket', 'lookup_key', 'lookup_field', 'lookup_sync', 'lookup_record']), Schema::tables()) === []);
+
 // ---- 9) the budget, and the cursor between passes ---------------------------
 //
 // ScanMaintenance itself, over a scripted connection and a clock that moves a

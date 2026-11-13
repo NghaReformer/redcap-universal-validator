@@ -897,7 +897,10 @@ namespace {
     check('survey budget: past it, a miss is unknown and nothing more is read', ($r['state'] ?? null) === 'unknown' && fullReads() === 0);
     check('survey budget: a hit needs no whole-field read and is still answered', (askSurvey($m, 'res_s', ['res_s' => 'SP-2'])['state'] ?? null) === 'found');
     $m = mod(null); $m->queryThrows = true;
-    check('survey budget: a counter that cannot be kept refuses the read (fail closed)', (askSurvey($m, 'res_s', ['res_s' => 'SP-404'])['state'] ?? null) === 'unknown');
+    // No counter at all: the survey throttle refuses first (FRM-5), before the read budget is asked.
+    $r = askSurvey($m, 'res_s', ['res_s' => 'SP-404']);
+    check('survey budget: a counter that cannot be kept refuses the read (fail closed)',
+        !in_array($r['state'] ?? null, ['found', 'not-found'], true) && (($r['state'] ?? null) === 'unknown' || isset($r['error'])) && fullReads() === 0);
     $m = mod(); $m->rateBuckets['149|' . $tier2] = 10000;
     check('survey budget: staff are not on it', (ask($m, 'res_spec', ['res_spec' => 'SP-404'])['state'] ?? null) === 'not-found');
 

@@ -25,6 +25,11 @@ use INSPIRE\UniversalValidator\Scan\LookupIndex;
 use INSPIRE\UniversalValidator\Scan\FieldValues;
 use INSPIRE\UniversalValidator\Scan\Schema;
 
+/** The secret this case's keys are hashed with (LookupIndex option "keySecret", FRM-7). */
+function uv_lix_secret() { return str_repeat('7c', 32); }
+/** $o with that secret, for every index this case builds. */
+function uv_lix_opts(array $o = array()) { return $o + array('keySecret' => uv_lix_secret()); }
+
 $PID = 900;
 $NEIGHBOUR = uv_neighbour($PID);
 
@@ -105,7 +110,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     };
     $sorted = function ($a) { if (is_array($a)) sort($a); return $a; };
     $ask = function (array $fields, $value) use ($mod, $PID, $sorted) {
-        return $sorted((new LookupIndex($mod))->candidates($PID, $fields, $value));
+        return $sorted((new LookupIndex($mod, uv_lix_opts()))->candidates($PID, $fields, $value));
     };
     $field = function ($f) use ($A, $PID) {
         $r = $A->query("SELECT spec, ready, built_at FROM " . Schema::table('lookup_field')
@@ -121,7 +126,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('lookup index: the first lookup builds [tok] and answers (got ' . json_encode($got) . ')', $got === array('S1', 'S3'));
     $st = $field('tok');
     check('lookup index: [tok] is built, keyed as text (got ' . json_encode($st) . ')',
-        $st !== null && $st['ready'] === 1 && $st['spec'] === LookupIndex::KEY_VERSION . '|text' && $st['built'] > 0);
+        $st !== null && $st['ready'] === 1 && $st['spec'] === LookupIndex::specOf(uv_lix_secret(), null) && $st['built'] > 0);
     $keys = (int) $A->query('SELECT COUNT(*) FROM ' . Schema::table('lookup_key') . " WHERE project_id = $PID AND field_name = 'tok'")->fetch_row()[0];
     check('lookup index: one key per record holding [tok], none of the neighbour\'s (got ' . $keys . ')', $keys === 302);
     check('lookup index: a value saved nowhere has no candidate', $ask(array('tok' => null), 'NOPE') === array());
@@ -145,7 +150,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     $n = count($mod->log);
     check('lookup index: a lookup with nothing new in the log sends 8 statements and writes nothing (got ' . $n . ', '
         . count($writes()) . ' writes)', $n === 8 && $writes() === array());
-    $ix = new LookupIndex($mod);
+    $ix = new LookupIndex($mod, uv_lix_opts());
     $ix->candidates($PID, array('tok' => null), 'DUP-1');
     $mod->log = array();
     $got = $sorted($ix->candidates($PID, array('tok' => null), 'dup-1'));
@@ -157,7 +162,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         $ask(array('scan' => null, 'num' => 'point'), 'DUP-1') === null);
     $got = $ask(array('scan' => null, 'num' => 'point'), 'DUP-1');
     check('lookup index: the next request builds the other and answers (got ' . json_encode($got) . ')', $got === array('S2'));
-    check('lookup index: [num] is keyed by number', $field('num')['spec'] === LookupIndex::KEY_VERSION . '|point');
+    check('lookup index: [num] is keyed by number', $field('num')['spec'] === LookupIndex::specOf(uv_lix_secret(), 'point'));
     $got = $ask(array('num' => 'point'), '7.00');
     check('lookup index: 7, 7.0 and 007 are one number (got ' . json_encode($got) . ')', $got === array('S4', 'S5', 'S6'));
     $got = $ask(array('tok' => null, 'scan' => null), 'dup-1');
@@ -314,7 +319,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event, ts, object_type)
         VALUES (400000, $P3, 'B1', 'INSERT', $old, 'redcap_data')");
     $logId = 400000;
-    $small = function () use ($mod) { return new LookupIndex($mod, array('liveBuildRows' => 50)); };
+    $small = function () use ($mod) { return new LookupIndex($mod, uv_lix_opts(array('liveBuildRows' => 50))); };
     $askB = function ($f, $v) use ($small, $P3, $sorted) { return $sorted($small()->candidates($P3, array($f => null), $v)); };
     $fieldB = function ($f) use ($A, $P3) {
         $r = $A->query('SELECT ready, wanted_at, gen, building_at, asked_at, built_at FROM ' . Schema::table('lookup_field')
@@ -355,7 +360,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         $mod->after = null;
         $set($P3, 'B9', 'big2', 'CHANGED-9');
         $log($P3, 'B9');
-        $during = (new LookupIndex(new UvFlakyModule($B), array('liveBuildRows' => 50)))->candidates($P3, array('big' => null), 'big-8');
+        $during = (new LookupIndex(new UvFlakyModule($B), uv_lix_opts(array('liveBuildRows' => 50))))->candidates($P3, array('big' => null), 'big-8');
     };
     $r = $small()->maintain(time() + 60);
     $mod->after = null;
@@ -372,7 +377,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         if (strpos($sql, 'SELECT record, event_id, `value` FROM redcap_data') !== 0 || !in_array('big3', $params, true)) return;
         $mod->after = null;
         $log($P3, 'big3', 'redcap_metadata');
-        (new LookupIndex(new UvFlakyModule($B), array('liveBuildRows' => 50)))->candidates($P3, array('big' => null), 'big-8');
+        (new LookupIndex(new UvFlakyModule($B), uv_lix_opts(array('liveBuildRows' => 50))))->candidates($P3, array('big' => null), 'big-8');
     };
     $r = $small()->maintain(time() + 60);
     $mod->after = null;
@@ -396,7 +401,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     $mod->after = function ($sql, $params) use (&$during, $B, $P3, &$mod) {
         if (strpos($sql, 'SELECT record, event_id, `value` FROM redcap_data') !== 0 || !in_array('big', $params, true)) return;
         $mod->after = null;
-        $during = (new LookupIndex(new UvFlakyModule($B), array('liveBuildRows' => 50)))->candidates($P3, array('big' => null), 'big-7');
+        $during = (new LookupIndex(new UvFlakyModule($B), uv_lix_opts(array('liveBuildRows' => 50))))->candidates($P3, array('big' => null), 'big-7');
     };
     $r = $small()->maintain(time() + 60);
     $mod->after = null;
@@ -411,7 +416,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('lookup index: a fourth large field is wanted', $askB('big4', 'x') === null && $fieldB('big4')['wanted'] > 0);
     $A->query('UPDATE ' . Schema::table('lookup_field') . ' SET wanted_at = wanted_at - ' . (LookupIndex::CRON_GRACE + 1)
         . " WHERE project_id = $P3 AND field_name = 'big4'");
-    $busy = new LookupIndex($mod, array('liveBuildRows' => 50, 'cronAt' => time() - 60));
+    $busy = new LookupIndex($mod, uv_lix_opts(array('liveBuildRows' => 50, 'cronAt' => time() - 60)));
     check('lookup index: wanted for CRON_GRACE while a cron runs, a lookup still leaves it to the cron',
         $busy->candidates($P3, array('big4' => null), 'x') === null && $fieldB('big4')['ready'] === 0);
     check('lookup index: wanted for CRON_GRACE with no cron, a lookup builds it itself', $askB('big4', 'x') === array('B1')
@@ -427,4 +432,48 @@ $NEIGHBOUR = uv_neighbour($PID);
     $r = $small()->maintain(time() + 60);
     check('lookup index: a field no lookup asked for in UNUSED_AFTER is dropped (got ' . json_encode($r) . ')',
         $r['dropped'] === 1 && $keysB('big2') === 0 && $fieldB('big2') === null);
+
+    // ---- FRM-7: keyed hashes, keys of another version cleared, a disabled project cleared ----
+    $kt = Schema::table('lookup_key');
+    $k = strtolower((string) $A->query("SELECT HEX(key_hash) FROM $kt WHERE project_id = $P3 AND field_name = 'big4' AND record = 'B1'")->fetch_row()[0]);
+    check('FRM-7: a stored key is the keyed hash of the value for this project (got ' . $k . ')',
+        $k === LookupIndex::keyOf(uv_lix_secret(), $P3, 'X', null));
+    check('FRM-7: ...and neither the MD5 of the value nor the key another project or secret would give',
+        $k !== md5(\INSPIRE\UniversalValidator\Logic::lookupKey('X', true, null))
+        && $k !== LookupIndex::keyOf(uv_lix_secret(), $P3 + 1, 'X', null)
+        && $k !== LookupIndex::keyOf(str_repeat('9d', 32), $P3, 'X', null));
+    check('FRM-7: with no secret the index answers nothing and sends no statement',
+        (function () use ($mod, $P3) {
+            $mod->log = array();
+            $a = (new LookupIndex($mod))->candidates($P3, array('big4' => null), 'x');
+            $b = (new LookupIndex($mod))->maintain(time() + 60);
+            return $a === null && $b === array('built' => 0, 'dropped' => 0, 'waiting' => 0, 'left' => 0) && $mod->log === array();
+        })());
+    // A field keyed the version-1 way (plain MD5): the cron drops it and its keys at
+    // its next pass, though a lookup asked for it a moment ago.
+    $A->query('UPDATE ' . Schema::table('lookup_field') . " SET spec = '1|text' WHERE project_id = $P3 AND field_name = 'big4'");
+    $r = $small()->maintain(time() + 60);
+    check('FRM-7: a field keyed under version 1 is dropped with its keys by the next cron pass (got ' . json_encode($r) . ')',
+        $r['dropped'] === 1 && $keysB('big4') === 0 && $fieldB('big4') === null);
+    check('FRM-7: asked again, the field is wanted, built by the cron and answers',
+        $askB('big4', 'x') === null && $fieldB('big4')['wanted'] > 0
+        && $small()->maintain(time() + 60)['built'] === 1 && $askB('big4', 'x') === array('B1'));
+    // Another secret: the keys there cannot match, so the field does not answer from them.
+    $other = new LookupIndex($mod, array('liveBuildRows' => 50, 'keySecret' => str_repeat('9d', 32)));
+    check('FRM-7: under another secret the field does not answer from the old keys',
+        $other->candidates($P3, array('big4' => null), 'x') === null && $fieldB('big4')['ready'] === 0);
+    // The module disabled in a project: everything the index holds for it goes, and only for it.
+    $count = function ($pid) use ($A) {
+        $n = 0;
+        foreach (array('lookup_key', 'lookup_field', 'lookup_sync', 'lookup_record') as $t) {
+            $n += (int) $A->query('SELECT COUNT(*) FROM ' . Schema::table($t) . " WHERE project_id = $pid")->fetch_row()[0];
+        }
+        return $n;
+    };
+    $beforeOther = $count($PID);
+    check('FRM-7: (both projects hold rows)', $count($P3) > 0 && $beforeOther > 0);
+    check('FRM-7: forgetProject() clears the four tables of the project, with no secret needed',
+        (new LookupIndex($mod))->forgetProject($P3) === true && $count($P3) === 0);
+    check('FRM-7: ...and leaves every other project as it was', $count($PID) === $beforeOther);
+    check('FRM-7: forgetProject() of no project does nothing', (new LookupIndex($mod))->forgetProject(0) === false);
 }

@@ -3053,10 +3053,11 @@ namespace {
     // table behind the durable scan's opt-in flag, this was not an edge case,
     // it was every default installation.
     //
-    // The tier still fails OPEN - the live check is a convenience, never a gate
-    // on data entry - so what is asserted here is that the failure is RECORDED.
-    // An operator cannot notice an absence, and an absence was the only
-    // evidence the module produced for a whole release.
+    // The tier fails CLOSED (FRM-5): it failed open, so where the table could
+    // not be created an unauthenticated caller had no project limit at all.
+    // A refusal here is of the live lookup, never of a survey response. And
+    // the failure is RECORDED: an operator cannot notice an absence, and an
+    // absence was the only evidence the module produced for a whole release.
     $bucketNow = (int) floor(time() / 60);
 
     $m = newModule([], $f5Dict, $f5Data, 149);
@@ -3064,8 +3065,13 @@ namespace {
     // A saved value: the narrowed read answers it, with no read budget to consult.
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
-    check('F6: a missing counter table does not refuse the caller (the tier fails open)',
-        isset($r['used']));
+    check('FRM-5: a missing counter table refuses the unauthenticated caller (got ' . json_encode($r) . ')',
+        !isset($r['used']) && isset($r['error']) && $r['error'] === 'too many checks — slow down');
+    // ...and only that caller: a signed-in one has a session to be counted by
+    $rs = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'alice', null);
+    check('FRM-5: a signed-in caller is still answered without the table (got ' . json_encode($rs) . ')',
+        isset($rs['used']));
     $warn = array_values(array_filter($m->logCalls, function ($l) {
         return $l[0] === 'uv-throttle-storage-unavailable';
     }));
@@ -3113,7 +3119,12 @@ namespace {
         count(array_filter($m->logCalls, function ($l) {
             return $l[0] === 'uv-throttle-storage-unavailable';
         })) === 1);
-    check('F6: and the caller is still answered', isset($r['used']));
+    check('FRM-5: and the unauthenticated caller is refused, not answered', !isset($r['used']) && isset($r['error']));
+    // the control: the same request with a counter that works is answered
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('FRM-5 (control): with the counter kept, the unauthenticated caller is answered', isset($r['used']));
 
     // THE INSTALLER IS WHAT MAKES THE TIER REACHABLE AT ALL. Its own assertions
     // live in hosting_php.php; this one only fixes the seam, so that moving the

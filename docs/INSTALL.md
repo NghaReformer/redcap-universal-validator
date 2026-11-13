@@ -175,7 +175,52 @@ and when the module is enabled or a new version installed while it is on.
 survey uniqueness throttle uses it. So are the four tables of the value index
 of the live lookups (`uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync`,
 `uv_lookup_record`), which the README's "Lookups on large projects: the value
-index" describes.
+index" describes, unless that index is turned off.
+
+### Every table the module creates, and when
+
+The module's own tables number 17 at most, all prefixed `uv_`. It writes to no table of
+REDCap's, and creates none during data entry: a table is created only when an
+administrator enables the module, installs a new version or saves the module's
+system settings. Every statement is `CREATE TABLE IF NOT EXISTS`.
+
+| Tables | Created | What they hold |
+|---|---|---|
+| `uv_rate_bucket` | Always | A counter per project and minute that limits `@UVUNIQUE` and `@UVEXISTS` lookups from surveys and into other projects. No value, no record. While it cannot be created or written, lookups from a survey are refused (the page shows nothing and the save goes through). |
+| `uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record` | Unless *Live lookups: turn OFF the value index* is checked | The value index. Empty until a project uses `@UVUNIQUE` or `@UVEXISTS`. A key is a keyed hash of a saved value (HMAC-SHA-256 with the module's secret and the project id) beside the record that holds it. |
+| The scan's other twelve | Only with `scan-system-enable-durable` on | Scan runs, findings and their audit rows. |
+
+To keep the module from creating anything but the counter table, check
+*Live lookups: turn OFF the value index* before or right after enabling it and
+leave `scan-system-enable-durable` off. A database user with no `CREATE` grant
+gets no table: the module still validates in the browser and audits after each
+save, the lookups read the data table, and lookups from surveys are refused.
+
+### What stays when the module is disabled
+
+- **Disabled in one project:** that project's rows of the value index are
+  deleted, its running scan is stopped, and the module log gets
+  `lookup-index-project-cleared`. Stored scan findings stay until their
+  retention days pass.
+- **Disabled on the server:** every running scan is stopped. Nothing is
+  deleted unless the system setting *delete every table this module created
+  ... when the module is disabled* (`scan-system-drop-tables-on-disable`) is
+  checked. It is off by default, so that disabling and enabling again loses
+  no scan. With it checked, all the module's tables are dropped.
+- **To remove the tables by hand** after disabling without that setting, drop
+  every table whose name starts with `uv_` in the list above.
+- The module's project and system settings and its log entries are kept by
+  REDCap as for any module, in `redcap_external_module_settings` and
+  `redcap_external_modules_log`.
+
+### Upgrading to 2.5.0: the value index is rebuilt
+
+Up to 2.4.0 a key of the value index was a plain MD5 of the value. From this
+version it is a keyed hash. No table changes. The old keys stop being read at
+once, the `uv_lookup_index` cron deletes them at its next pass (every 5
+minutes) and builds each field again when a lookup next asks for it. Until a
+field is built the lookups read the data table, as they do on a new
+installation.
 
 The module's database user needs a plain `CREATE` grant to make them and
 `ALTER` to upgrade them. `CREATE TEMPORARY TABLES`, `CREATE VIEW` and

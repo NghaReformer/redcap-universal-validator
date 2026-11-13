@@ -106,7 +106,7 @@
   "system-settings": [
     {
       "key": "lookup-index-system-off",
-      "name": "<b>Live lookups</b> — turn OFF the value index of @UVUNIQUE and @UVEXISTS. Leave this unchecked. The index answers a lookup from a few rows instead of reading every saved value of the field, which is what keeps lookups fast on projects with hundreds of thousands of records. A lookup builds a small field's index itself; the module's cron (every 5 minutes) builds the larger ones, so a lookup reads the data table until its field is built. The index is kept current from the project's log, and the lookups read the data table directly whenever it cannot be proved current. Check this only to rule the index out while you investigate a problem; the lookups then read the data table every time.",
+      "name": "<b>Live lookups</b> — turn OFF the value index of @UVUNIQUE and @UVEXISTS. Leave this unchecked. The index answers a lookup from a few rows instead of reading every saved value of the field, which is what keeps lookups fast on projects with hundreds of thousands of records. A lookup builds a small field's index itself; the module's cron (every 5 minutes) builds the larger ones, so a lookup reads the data table until its field is built. The index is kept current from the project's log, and the lookups read the data table directly whenever it cannot be proved current. Check this only to rule the index out while you investigate a problem; the lookups then read the data table every time. The index is four tables (uv_lookup_key, uv_lookup_field, uv_lookup_sync, uv_lookup_record), created when the module is enabled, upgraded or these settings are saved; with this checked they are not created, and tables already there are left as they are. A stored key is a keyed hash of the value (HMAC-SHA-256 with a secret the module holds, and the project id), never the value. Disabling the module in a project deletes that project's rows.",
       "type": "checkbox"
     },
     {
@@ -121,7 +121,7 @@
     },
     {
       "key": "scan-system-enable-durable",
-      "name": "<b>Validation scan</b> — enable the durable, resumable scan on this installation. <b>Off by default, and it should stay off until you have piloted it on a real project here.</b> The scan creates its own tables when you turn this on (one small counter table backing the survey uniqueness throttle is created either way, because that throttle runs whether or not the scan does), runs in bounded batches across several requests, and stores its findings; a project must ALSO turn it on for itself before anything runs. While either switch is off, the Validation scan page shows an explanatory notice and nothing is scanned.",
+      "name": "<b>Validation scan</b> — enable the durable, resumable scan on this installation. <b>Off by default, and it should stay off until you have piloted it on a real project here.</b> Turning this on creates the scan's twelve tables (uv_schema_version, uv_scan_run, uv_scan_record, uv_finding, uv_unique_candidate, uv_unique_group, uv_scan_worker_slot, uv_scan_aggregate, uv_scan_dim, uv_scan_audit, uv_project_seq, uv_scan_plan). Five tables are created whether or not this is on, when the module is enabled, upgraded or its system settings are saved: uv_rate_bucket, a small counter that limits lookups from surveys, and the four tables of the live lookups' value index (uv_lookup_key, uv_lookup_field, uv_lookup_sync, uv_lookup_record), which are not created when that index is turned off below. No table is created during data entry. The scan runs in bounded batches across several requests, and stores its findings; a project must ALSO turn it on for itself before anything runs. While either switch is off, the Validation scan page shows an explanatory notice and nothing is scanned.",
       "type": "checkbox"
     },
     {
@@ -161,7 +161,7 @@
     },
     {
       "key": "scan-system-drop-tables-on-disable",
-      "name": "<b>Validation scan</b> \u2014 delete every table this module created, with every stored scan, finding and audit row and the value index of the live lookups, when the module is disabled on this server. <b>Off by default.</b> With the scan switched on, disabling stops every scan in progress (each one is reported as stopped, nothing it examined is lost) and frees the worker places, whatever this says. With this off, disabling deletes nothing, and enabling again finds every earlier scan where it was. With it on, the survey throttle's counter table is dropped too; enabling the module creates it again.",
+      "name": "<b>Validation scan</b> \u2014 delete every table this module created (up to 17, all named uv_...), with every stored scan, finding and audit row and the value index of the live lookups, when the module is disabled on this server. <b>Off by default.</b> With the scan switched on, disabling stops every scan in progress (each one is reported as stopped, nothing it examined is lost) and frees the worker places, whatever this says. With this off, disabling deletes nothing, and enabling again finds every earlier scan where it was. With it on, the survey throttle's counter table is dropped too; enabling the module creates it again.",
       "type": "checkbox"
     },
     {

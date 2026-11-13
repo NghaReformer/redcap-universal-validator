@@ -130,7 +130,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     foreach (array_merge(glob($root . '/php/*.php'), glob($root . '/php/Scan/*.php')) as $f) {
         $source .= file_get_contents($f);
     }
-    preg_match_all('/(?:->log\(|call_user_func\(\$this->log,|\$log\()\s*\'(scan-[a-z0-9-]+)\'/', $source, $m);
+    preg_match_all('/(?:->log\(|call_user_func\(\$this->log,|\$log\()\s*\'([a-z][a-z0-9]*-[a-z0-9-]+)\'/', $source, $m);
     $events = array_fill_keys($m[1], true);
     check('build: the module logs scan events', isset($events['scan-cron'], $events['scan-schema-migrate']));
 
@@ -186,7 +186,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             if (preg_match('/^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/', $t)) {
                 $p = explode('-', $t);
                 if (isset($families[$p[0] . '-' . $p[1]])) {
-                    check($doc . ': `' . $t . '` is a config.json setting key', isset($keys[$t]));
+                    check($doc . ': `' . $t . '` is a config.json setting key or a log event', isset($keys[$t]) || isset($events[$t]));
                 }
                 if (substr($t, -6) === '-check') {
                     check($doc . ': `' . $t . '` is an AJAX action', isset($actions[$t]));

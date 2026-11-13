@@ -5630,6 +5630,9 @@ class UniversalValidator extends AbstractExternalModule
     private function buildClientConfig($pid = null, $context = 'form', $record = null, $instrument = null, $event_id = null, $repeat_instance = 1)
     {
         $rules = $this->getRules($pid);
+        // No rule in the project: nothing to put on any page, and nothing below
+        // is asked of the dictionary or the person's rights (FRM-10).
+        if (!$rules) return ['rules' => []];
         // Inject only rules that touch the instrument being rendered — and only
         // their on-instrument fields. A rule whose field lives on another form can
         // never bind here (its field never appears in this page's DOM), yet each
@@ -6905,6 +6908,16 @@ class UniversalValidator extends AbstractExternalModule
         // surviving rules wholesale.
         $out = [];
         foreach ($this->getSettingRules($pid) as $r) { $r['_origin'] = 'settings'; $out[] = $r; }
+        // A PROJECT WITH NO RULE STOPS HERE, before the dictionary is read
+        // (FRM-10): no settings row names a field, and the database says that
+        // no field's annotation holds a module tag. That answer is false only
+        // on evidence (projectHasTags); when it cannot be told, the dictionary
+        // is read as before. The empty list is an answer and is remembered.
+        if (!$out && $this->projectHasTags($pid) === false) {
+            $this->deltaHeldMemo = [];
+            $this->deltaTagsMemo = [];
+            return $this->rulesMemo[$key] = [];
+        }
         $scope = $fields === null ? null : array_fill_keys($fields, true);
         foreach ($this->getAnnotationRules($pid, $scope) as $r) { $r['_origin'] = 'annotation'; $out[] = $r; }
         // Shared fields become explicit per-field branch rules (or config
@@ -7374,6 +7387,13 @@ class UniversalValidator extends AbstractExternalModule
         $out = [];
         $subs = $this->getSubSettings('rules', $pid);
         if (!is_array($subs)) return $out;
+        // A project with no row that names a field has no settings rule, and
+        // the dictionary is not read to find that out (FRM-10).
+        $named = false;
+        foreach ($subs as $s) {
+            if (!self::settingRowNamesNothing($s)) { $named = true; break; }
+        }
+        if (!$named) return $out;
         $known = $this->projectFieldNames($pid);
         $types = $this->projectFieldTypes($pid);
         $choices = $this->projectFieldChoices($pid);
@@ -7408,6 +7428,70 @@ class UniversalValidator extends AbstractExternalModule
             $out[] = $rule;
         }
         return $out;
+    }
+
+    /**
+     * Whether a settings-dialog row names no field at all: no field picked and
+     * nothing in the fast-entry box. settingRowToRule() answers null for such
+     * a row whatever the dictionary holds, so getSettingRules() can skip the
+     * dictionary when every row is one (FRM-10). A row that names anything,
+     * a misspelt field included, is not one: it is a rule or a configuration
+     * error, and both need the dictionary.
+     */
+    private static function settingRowNamesNothing($s)
+    {
+        if (!is_array($s)) return true;
+        $fields = isset($s['fields']) ? $s['fields'] : [];
+        if (!is_array($fields)) $fields = [$fields];
+        foreach ($fields as $f) {
+            if ($f !== null && $f !== '') return false;
+        }
+        if (isset($s['fields-csv']) && is_scalar($s['fields-csv'])
+                && preg_split('/[,;\s]+/', trim((string) $s['fields-csv']), -1, PREG_SPLIT_NO_EMPTY)) return false;
+        return true;
+    }
+
+    /**
+     * Whether any field of the project carries a module action tag, asked of
+     * the database without exporting the data dictionary (FRM-10): true,
+     * false, or null when it could not be told.
+     *
+     * A project with the module on and no rule exported its whole dictionary
+     * on every form view, survey page and save, to learn that there was
+     * nothing to do. One statement counts the project's fields and those
+     * whose annotation holds "@uv", in any letter case, which is the same
+     * pre-filter getAnnotationRules() applies to each annotation.
+     *
+     * FALSE IS ANSWERED ONLY ON EVIDENCE: one row, a field count above zero
+     * and a tagged count of zero. No row, a count of zero fields, a statement
+     * that fails or a framework without query() is null, and the caller then
+     * reads the dictionary as before. "Could not tell" is never "no rules".
+     *
+     * redcap_metadata.misc is the Field Annotation column. REDCap has no
+     * method that answers this without building the whole dictionary (see
+     * docs/INSTALL.md, "REDCap internals this module reads").
+     */
+    private function projectHasTags($pid)
+    {
+        if (!$pid) return null;
+        // a dictionary already in hand answers for nothing: the caller has it
+        if (isset($this->ddCache[$pid])) return null;
+        if (!is_callable([$this, 'query'])) return null;
+        try {
+            // ModuleDb::select() throws for a read that failed and for a
+            // result it cannot walk, and hands back rows as lists.
+            $rows = (new Scan\ModuleDb($this))->select(
+                'SELECT COUNT(*), SUM(CASE WHEN LOWER(misc) LIKE ? THEN 1 ELSE 0 END)'
+                . ' FROM redcap_metadata WHERE project_id = ?', ['%@uv%', (int) $pid]);
+            if (count($rows) !== 1 || !is_array($rows[0]) || count($rows[0]) !== 2) return null;
+            $row = array_values($rows[0]);
+            if (!is_numeric($row[0]) || !is_numeric($row[1])) return null;
+            if ((int) $row[0] < 1) return null;
+            return (int) $row[1] > 0;
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::projectHasTags');
+            return null;
+        }
     }
 
     /**
@@ -7969,6 +8053,99 @@ class UniversalValidator extends AbstractExternalModule
      * in AnnotationRules (pure, unit-tested); this is only the REDCap glue. Tags
      * on non-text fields become a visible config error rather than a silent no-op.
      */
+    /** pid => the parse cache of this request (parsedTags): entries, the keys used, whether it must be written. */
+    private $parseCache = [];
+
+    /** A parse cheaper than this many milliseconds is not kept; null is RuleCache::MIN_MS. A test lowers it. */
+    private $parseCacheMinMs = null;
+
+    /**
+     * AnnotationRules::parseAllTags() for one annotation of $pid, from the
+     * project's parse cache when it holds this exact text parsed with these
+     * options by this build (php/RuleCache.php says why that cannot be stale).
+     *
+     * Only a parse that took RuleCache::MIN_MS or longer is kept: one accepted
+     * annotation cost 1.1 s on every request (VAL-3), while an ordinary one
+     * costs less than looking it up would. What comes out of the cache is the
+     * parse and nothing else. The field hooks, the dictionary checks, the
+     * grouping and the branching in getAnnotationRules() and getRules() run on
+     * it on every request, so an edited dictionary or setting is seen at once.
+     *
+     * Without a project, or without the module's secret to check the stored
+     * text with, the annotation is parsed and nothing is kept.
+     */
+    private function parsedTags($pid, $ann, array $opts)
+    {
+        if (!$pid) return AnnotationRules::parseAllTags($ann, $opts);
+        $pid = (int) $pid;
+        if (!isset($this->parseCache[$pid])) $this->parseCache[$pid] = $this->loadParseCache($pid);
+        if ($this->parseCache[$pid]['off']) return AnnotationRules::parseAllTags($ann, $opts);
+        $key = RuleCache::key(RuleCache::signature(), $opts, $ann);
+        if (isset($this->parseCache[$pid]['entries'][$key])) {
+            $this->parseCache[$pid]['used'][$key] = true;
+            return $this->parseCache[$pid]['entries'][$key];
+        }
+        $t = microtime(true);
+        $frags = AnnotationRules::parseAllTags($ann, $opts);
+        $ms = (microtime(true) - $t) * 1000;
+        $min = $this->parseCacheMinMs === null ? RuleCache::MIN_MS : $this->parseCacheMinMs;
+        if ($ms >= $min && RuleCache::storable($frags)) {
+            $this->parseCache[$pid]['entries'][$key] = $frags;
+            $this->parseCache[$pid]['used'][$key] = true;
+            $this->parseCache[$pid]['dirty'] = true;
+        }
+        return $frags;
+    }
+
+    /**
+     * The project's stored parse cache, opened: ['off' => true] when there is
+     * no secret to check it with or it cannot be read. The secret is the one
+     * the audit log's hashes use; it is read here and never made, so a page
+     * view does not create a system setting.
+     */
+    private function loadParseCache($pid)
+    {
+        try {
+            $secret = $this->getSystemSetting('log-hmac-key');
+            if (!is_string($secret) || strlen($secret) < 64) return ['off' => true];
+            $entries = RuleCache::open($this->getProjectSetting(RuleCache::SETTING, $pid), $secret, $pid);
+            return ['off' => false, 'secret' => $secret, 'entries' => $entries, 'used' => [], 'dirty' => false];
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::loadParseCache');
+            return ['off' => true];
+        }
+    }
+
+    /**
+     * Write the project's parse cache when this request changed it. After a
+     * build of every field ($full) the entries no annotation asked for are
+     * dropped first: their text is no longer in the dictionary, or the module
+     * or its settings changed. A build for some fields drops nothing.
+     */
+    private function flushParseCache($pid, $full)
+    {
+        if (!$pid) return;
+        $pid = (int) $pid;
+        if (!isset($this->parseCache[$pid]) || $this->parseCache[$pid]['off']) return;
+        $c = $this->parseCache[$pid];
+        if ($full) {
+            $kept = array_intersect_key($c['entries'], $c['used']);
+            if (count($kept) !== count($c['entries'])) { $c['entries'] = $kept; $c['dirty'] = true; }
+        }
+        if ($c['dirty']) {
+            $c['dirty'] = false;
+            try {
+                $sealed = RuleCache::seal($c['entries'], $c['secret'], $pid);
+                if ($sealed !== null && is_callable([$this, 'setProjectSetting'])) {
+                    $this->setProjectSetting(RuleCache::SETTING, $sealed, $pid);
+                }
+            } catch (\Throwable $e) {
+                Faults::swallow($e, 'UniversalValidator::flushParseCache');
+            }
+        }
+        $this->parseCache[$pid] = $c;
+    }
+
     private function getAnnotationRules($pid = null, ?array $scope = null)
     {
         // the @UVDELTA hooks remember answers for one build of the rules, read
@@ -7988,7 +8165,7 @@ class UniversalValidator extends AbstractExternalModule
             // "return", so a tag holding a backslash is read too.
             if ($scope !== null && !isset($scope[$name]) && stripos($ann, 'return') === false
                 && strpos($ann, '\\') === false) continue;
-            $frags = AnnotationRules::parseAllTags($ann, $this->temporalOptions($pid));
+            $frags = $this->parsedTags($pid, $ann, $this->temporalOptions($pid));
             if ($frags === null) continue; // no module tag (e.g. @UVALIDATED)
             // Field-type eligibility is per MODE (php/modes.json): check-
             // character/regex still needs a Text/Notes input; a constraint
@@ -8011,6 +8188,10 @@ class UniversalValidator extends AbstractExternalModule
             }
             $perField[$name] = $frags;
         }
+        // Every annotation of the build has been parsed: what the parse cache
+        // gained is written, and after a build of every field what it no
+        // longer needs is dropped (parsedTags).
+        $this->flushParseCache($pid, $scope === null);
         if (!$perField) return [];
         // Dictionary-dependent reference checks for this channel — parseAllTags/
         // checkFragment already validated syntax; whether the referenced fields
@@ -10739,8 +10920,7 @@ class UniversalValidator extends AbstractExternalModule
         // set, and gating the throttle's storage on the scan's flag is what
         // left the module's only unauthenticated endpoint unthrottled by
         // default. See Schema::ensureRateBucket().
-        Scan\Schema::ensureRateBucket($this);
-        Scan\Schema::ensureLookupIndex($this);
+        $this->ensureModuleTables();
         $this->installScanSchema();
     }
 
@@ -10822,8 +11002,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         // See the note in redcap_module_save_configuration(): the throttle's
         // table is not the scan's, and is installed either way.
-        Scan\Schema::ensureRateBucket($this);
-        Scan\Schema::ensureLookupIndex($this);
+        $this->ensureModuleTables();
         $this->installScanSchema();
         $missing = $this->missingPhpExtensions();
         if ($missing) $this->logMissingExtensions($missing, 'enable');
@@ -10873,8 +11052,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_system_change_version($version = null, $old_version = null)
     {
-        Scan\Schema::ensureRateBucket($this);
-        Scan\Schema::ensureLookupIndex($this);
+        $this->ensureModuleTables();
         $this->installScanSchema();
         $missing = $this->missingPhpExtensions();
         if ($missing) $this->logMissingExtensions($missing, 'upgrade');
@@ -10960,6 +11138,11 @@ class UniversalValidator extends AbstractExternalModule
             } catch (\Throwable $e) {
                 $this->scanDisableFailed('project-marker', $e);
             }
+            // The value index of the project's live lookups goes with the
+            // module (FRM-7): hashes of its saved values are not kept for a
+            // project that no longer uses it. Whatever the scan's switch
+            // says, and before its gate, which may return.
+            $this->forgetLookupIndex($pid);
             $why = $this->scanDisableGate();
             if ($why !== null) {
                 $this->log('scan-project-disable', ['project_id' => $pid, 'stopped' => 0, 'why' => $why]);
@@ -10970,6 +11153,51 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             $this->scanDisableFailed('project-disable', $e);
         }
+    }
+
+    /**
+     * Clear what the value index holds for $pid (Scan\LookupIndex::forgetProject)
+     * and say so in the module log. Never thrown. Works with the index turned
+     * off too: rows written before it was turned off are still there.
+     */
+    private function forgetLookupIndex($pid)
+    {
+        try {
+            if (!is_callable([$this, 'query'])) return;
+            $ok = (new Scan\LookupIndex($this))->forgetProject($pid);
+            $this->log('lookup-index-project-cleared', ['project_id' => (int) $pid, 'cleared' => $ok ? '1' : '0']);
+        } catch (\Throwable $e) {
+            $this->scanDisableFailed('lookup-index-clear', $e);
+        }
+    }
+
+    /**
+     * The tables the module makes without the durable scan being asked for
+     * (FRM-6), on the three administrator actions that can need them: saving
+     * the system configuration, enabling the module, installing a version.
+     *
+     *   - uv_rate_bucket, always: one small counter table. The limit on
+     *     unauthenticated survey lookups counts in it, and those lookups are
+     *     refused while it is missing (LiveLookups::surveyRateLimited).
+     *   - the four tables of the value index (uv_lookup_key, uv_lookup_field,
+     *     uv_lookup_sync, uv_lookup_record), unless an administrator turned
+     *     the index off (lookup-index-system-off). They hold nothing until a
+     *     project uses @UVUNIQUE or @UVEXISTS.
+     *
+     * The scan's twelve other tables are made by installScanSchema() and only
+     * with its switch on. Each statement is CREATE TABLE IF NOT EXISTS.
+     * Nothing here is made during data entry.
+     */
+    private function ensureModuleTables()
+    {
+        Scan\Schema::ensureRateBucket($this);
+        $off = false;
+        try {
+            $off = (bool) $this->getSystemSetting('lookup-index-system-off');
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::ensureModuleTables');
+        }
+        if (!$off) Scan\Schema::ensureLookupIndex($this);
     }
 
     /**
@@ -11288,7 +11516,7 @@ class UniversalValidator extends AbstractExternalModule
         'temporalPid', 'temporalBudget', 'temporalResolver', 'temporalUniqueIndex', 'temporalShapes',
         'conditionNumbersCache', 'branchingCache', 'choicesMemo', 'valueHistoryMemo', 'roleBookMemo',
         'clockZoneMemo', 'loggedBefore', 'logWrites', 'deltaTagsMemo', 'deltaHeldMemo', 'lookupIndexer', 'fieldValuesReader',
-        'temporalOptionsMemo', 'referenceDirMemo',
+        'temporalOptionsMemo', 'referenceDirMemo', 'parseCache',
     ];
 
     /**
@@ -11306,7 +11534,8 @@ class UniversalValidator extends AbstractExternalModule
      */
     const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave', 'pageHookFailed',
         'returnBarred', 'valueHistoryOverride', 'roleBookOverride', 'auditPid', 'uniqueAuditPlan', 'uniqueAuditReads',
-        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveStaffLookup', 'liveReadSkipped'];
+        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveStaffLookup', 'liveReadSkipped',
+        'parseCacheMinMs'];
 
     /** Every SCAN_MEMOS property back to its declared default. */
     private function resetScanMemos()
@@ -11875,7 +12104,9 @@ class UniversalValidator extends AbstractExternalModule
             } catch (\Throwable $e) {
                 Faults::swallow($e, 'UniversalValidator::lookupIndex');
             }
-            $this->lookupIndexer = $off ? false : new Scan\LookupIndex($this, ['cronAt' => $cronAt]);
+            // The keys are hashed with the module's secret (FRM-7); without
+            // one the index answers nothing and the lookups read the data table.
+            $this->lookupIndexer = $off ? false : new Scan\LookupIndex($this, ['cronAt' => $cronAt, 'keySecret' => $this->hmacKey()]);
         }
         return $this->lookupIndexer === false ? null : $this->lookupIndexer;
     }

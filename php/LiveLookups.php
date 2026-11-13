@@ -796,8 +796,20 @@ trait LiveLookups
      * Still defence in depth, not THE defence: a single TARGETED probe is
      * inherent to answering "is this value already used?" at all, which is why
      * the survey opt-in is refused on Identifier fields and off by default
-     * everywhere else. Fails OPEN on any error — the live check is a convenience,
-     * never a gate on data entry.
+     * everywhere else.
+     *
+     * A COUNTER THAT CANNOT BE KEPT REFUSES THE CALLER (FRM-5). Tier (2) used
+     * to fail open: where uv_rate_bucket could not be created (a database user
+     * without CREATE) or written, every unauthenticated caller was answered
+     * with no project limit at all, for as long as the table stayed away.
+     * Only unauthenticated callers come here, and a refusal costs a
+     * respondent nothing: the page reads it as "could not check", says
+     * nothing on a survey, and the save goes through; the audit after the
+     * save still checks the value. So tier (2) now answers "limited" when it
+     * cannot count, as surveyFullReadAllowed() and crossRateLimited() already
+     * did, and logs uv-throttle-storage-unavailable once per project per
+     * window. Tier (1) is unchanged: session state that cannot be read is
+     * not counted, and tier (2) still runs.
      */
     private function surveyRateLimited($pid = null)
     {
@@ -857,7 +869,8 @@ trait LiveLookups
         // purpose is to bound a flood rather than to meter it, that is the right
         // way round.
         try {
-            if (!$pid) return false;
+            // no project, no counter: refused, as any counter that cannot be kept
+            if (!$pid) return true;
             // TWO BUDGETS, NOT ONE, because the two populations are not alike.
             // Sessioned traffic is mostly real respondents, and a busy public
             // survey can legitimately spend more than the sessionless cap: tier
@@ -921,18 +934,19 @@ trait LiveLookups
             }
             return $hits > $pmax;
         } catch (\Throwable $e) {
-            // FAILS OPEN, as the whole method does: the live check is a
-            // convenience and never a gate on data entry, so a database that
-            // is briefly unreachable must not start refusing survey responses.
+            // FAILS CLOSED (FRM-5): an unauthenticated caller is not answered
+            // while the project's counter cannot be kept. This refuses the
+            // live lookup, never a survey response: the page shows nothing
+            // and the save goes through.
             //
-            // BUT IT SAYS SO. Failing open in silence is how this tier came to
-            // be inert on every default installation for a whole release - the
-            // table lived behind the durable scan's opt-in flag, the increment
-            // threw on every request, and the only evidence was an absence.
-            // An operator cannot notice an absence. One log row per project per
-            // window is enough to see it and cheap enough to survive a flood.
+            // AND IT SAYS SO. This tier was inert on every default
+            // installation for a whole release - the table lived behind the
+            // durable scan's opt-in flag, the increment threw on every
+            // request, and the only evidence was an absence. An operator
+            // cannot notice an absence. One log row per project per window is
+            // enough to see it and cheap enough to survive a flood.
             $this->noteThrottleUnavailable($pid, (int) floor($now / $window), $e);
-            return false;
+            return true;
         }
     }
 
