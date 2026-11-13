@@ -45,6 +45,14 @@ namespace {
         fclose($pipes[1]); fclose($pipes[2]);
         return ['code' => proc_close($p), 'out' => $out, 'err' => $err];
     }
+    // RNG-12: the script ships inside the module folder, which a web server
+    // may serve. Its first statement turns away anything that is not the
+    // command line, before a file is loaded or an option is read.
+    $src = (string) file_get_contents($script);
+    $body = ltrim((string) substr($src, (int) strpos($src, '*/') + 2));
+    check('convert.php: the first statement refuses every run that is not the command line',
+        strpos($body, "if (PHP_SAPI !== 'cli') {") === 0
+        && preg_match('~^if \(PHP_SAPI !== \'cli\'\) \{\s*(//[^\n]*\s*)*http_response_code\(404\);\s*exit;\s*\}~', $body) === 1);
     function put($name, $text) {
         global $dir;
         file_put_contents($dir . DIRECTORY_SEPARATOR . $name, $text);
