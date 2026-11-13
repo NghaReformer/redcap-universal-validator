@@ -80,6 +80,51 @@ final class ClockZones
         return null;
     }
 
+    /** How far either side of a moment fold() looks for a change of the zone's offset. */
+    const FOLD_REACH_S = 86400;
+
+    /**
+     * Whether the moment $ts (Unix seconds) lies in an hour $zone's clocks
+     * show twice, as when daylight saving ends (WIN-4): from 01:00 to 02:00
+     * in New York on the first Sunday of November, once on summer time and
+     * once on winter time. A wall-clock time in it names two moments, so a
+     * comparison of wall-clock times there is off by the change:
+     *   future  the seconds the clock went back by, while $ts is in the
+     *           second showing: a time later on the clock than "now" may be
+     *           from the first showing, and so not in the future;
+     *   until   the moment (Unix seconds) the second showing ends, or null;
+     *   past    the same seconds, while $ts is in the first showing: a time
+     *           earlier on the clock than "now" may be from the second
+     *           showing, and so not in the past.
+     * 0 everywhere else, and for a zone with no changes (a fixed offset).
+     */
+    public static function fold(\DateTimeZone $zone, $ts)
+    {
+        $out = ['future' => 0, 'past' => 0, 'until' => null];
+        $ts = (int) $ts;
+        try {
+            $changes = $zone->getTransitions($ts - self::FOLD_REACH_S, $ts + self::FOLD_REACH_S);
+        } catch (\Throwable $e) {
+            $changes = null;
+        }
+        if (!is_array($changes)) return $out;
+        $before = null;   // the offset in force before the change looked at
+        foreach ($changes as $c) {
+            if (!is_array($c) || !isset($c['ts'], $c['offset'])) continue;
+            $offset = (int) $c['offset'];
+            $by = $before === null ? 0 : $before - $offset;
+            $at = (int) $c['ts'];
+            if ($by > 0 && $ts >= $at && $ts < $at + $by) {
+                $out['future'] = $by;
+                $out['until'] = $at + $by;
+            } elseif ($by > 0 && $ts < $at && $ts >= $at - $by) {
+                $out['past'] = $by;
+            }
+            $before = $offset;
+        }
+        return $out;
+    }
+
     /**
      * The links file, read on the first name PHP does not know. A file that
      * cannot be read leaves the map empty: names PHP knows still work, and the

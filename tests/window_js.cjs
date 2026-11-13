@@ -99,6 +99,42 @@ check('clockAt: no next change counts elapsed time only',
 check('clockAt: a zone field that is not a number is ignored',
   W.clockAt(Object.assign({}, dst, { offsetAfter: '0' }), 120 * 1000).now === '2026-10-25 02:00:00');
 
+// WIN-4: the hour a zone shows twice. tests/window_fold_fixture.json holds the
+// server's clock (UniversalValidator::clockStamp) for a moment and for moments
+// after it; the page's clock advanced by as much must be the same clock, with
+// the same margin for a date and time.
+const fold = JSON.parse(fs.readFileSync(path.join(__dirname, 'window_fold_fixture.json'), 'utf8'));
+check('fold fixture loads', Array.isArray(fold.cases) && fold.cases.length > 0);
+for (const c of fold.cases) {
+  for (const s of c.steps) {
+    const at = W.clockAt(c.base, s.elapsedMs);
+    const len = W.clockLenient(at, 0);
+    const got = { now: at.now, foldFuture: at.foldFuture || 0, foldPast: at.foldPast || 0, futureNow: len.futureNow, pastNow: len.pastNow };
+    const want = { now: s.now, foldFuture: s.foldFuture, foldPast: s.foldPast, futureNow: s.futureNow, pastNow: s.pastNow };
+    check('fold: ' + c.name + ' +' + s.elapsedMs + ' ms -> ' + JSON.stringify(want) + ' (got ' + JSON.stringify(got) + ')',
+      JSON.stringify(got) === JSON.stringify(want));
+    check('fold: ... and the clock carries a fold key only inside the hour',
+      Object.keys(at).join() === ['today', 'now'].concat(s.foldFuture ? ['foldFuture'] : [], s.foldPast ? ['foldPast'] : []).join());
+  }
+}
+const nfDt = { notFuture: true, type: 'datetime' };
+const inFold = { today: '2026-11-01', now: '2026-11-01 01:05:00', foldFuture: 3600 };
+check('a time from the first showing of a repeated hour is not in the future in the second',
+  W.verdict(nfDt, '2026-11-01 01:50', 'ymd', null, 'ymd', W.clockLenient(inFold, 0)).verdict === 'ok');
+check('... without the fold it was',
+  W.verdict(nfDt, '2026-11-01 01:50', 'ymd', null, 'ymd', W.clockLenient({ today: '2026-11-01', now: '2026-11-01 01:05:00' }, 0)).verdict === 'future');
+check('... and a time past the fold still is',
+  W.verdict(nfDt, '2026-11-01 02:08', 'ymd', null, 'ymd', W.clockLenient(inFold, 0)).verdict === 'future');
+check('a time of the second showing is not in the past in the first',
+  W.verdict({ notPast: true, type: 'datetime' }, '2026-11-01 01:05', 'ymd', null, 'ymd',
+    W.clockLenient({ today: '2026-11-01', now: '2026-11-01 01:50:00', foldPast: 3600 }, 0)).verdict === 'ok');
+check('clockLenient: a fold that is not a whole number of seconds up to a day is ignored',
+  W.clockLenient({ today: '2026-11-01', now: '2026-11-01 01:05:00', foldFuture: '3600' }, 0).futureNow === '2026-11-01 01:07:00'
+  && W.clockLenient({ today: '2026-11-01', now: '2026-11-01 01:05:00', foldFuture: 86401 }, 0).futureNow === '2026-11-01 01:07:00'
+  && W.clockLenient({ today: '2026-11-01', now: '2026-11-01 01:05:00', foldPast: -5 }, 0).pastNow === '2026-11-01 01:03:00');
+check('clockAt: a fold from the server ends at foldUntil, and needs it',
+  W.clockAt({ today: '2026-11-01', now: '2026-11-01 01:10:00', utc: 1793513400000, foldFuture: 3600 }, 0).foldFuture === undefined);
+
 // clockLenient: a date and time may run 120 s past "now" (futureNow), plus how
 // far this computer's clock runs ahead of the server's (in UTC), by up to 10
 // minutes; and as far before it (pastNow), plus how far it runs behind.

@@ -2286,9 +2286,43 @@ function QRID_clockAt(base,elapsedMs){
   if(QRID_finiteNumber(base.utc)&&QRID_finiteNumber(base.offset)&&QRID_finiteNumber(base.next)
      &&QRID_finiteNumber(base.offsetAfter)&&base.utc+elapsedMs>=base.next)secs+=base.offsetAfter-base.offset;
   var now=QRID_temporalCanonical(secs,'datetime');
-  return now===null?null:{today:now.slice(0,10),now:now};
+  if(now===null)return null;
+  var out={today:now.slice(0,10),now:now},fold=QRID_clockFoldAt(base,elapsedMs);
+  if(fold.future>0)out.foldFuture=fold.future;
+  if(fold.past>0)out.foldPast=fold.past;
+  return out;
 }
 function QRID_finiteNumber(v){ return typeof v==='number'&&isFinite(v); }
+/* The hour the zone's clocks show twice, when daylight saving ends (WIN-4):
+   from 01:00 to 02:00 in New York on the first Sunday of November. Times are
+   compared as the clock shows them, and there one time on the clock is two
+   moments: in the second showing a time up to the change later than "now" may
+   be from the first, so it is not in the future (future, the seconds the
+   clocks went back by); in the first showing a time earlier than "now" may be
+   from the second, so it is not in the past (past). Both are 0 at any other
+   moment. The fold of the next change comes from next and offsetAfter; a page
+   opened inside the second showing gets it from the server (foldFuture until
+   foldUntil, UniversalValidator::clockStamp, which uses ClockZones::fold).
+   clockStamp for the moment base.utc+elapsedMs carries the same seconds. */
+function QRID_clockFoldAt(base,elapsedMs){
+  var out={future:0,past:0};
+  if(!base||typeof base!=='object'||!QRID_finiteNumber(base.utc))return out;
+  var t=base.utc+elapsedMs;
+  if(QRID_clockFoldOf(base,'foldFuture')>0&&QRID_finiteNumber(base.foldUntil)&&t<base.foldUntil)out.future=base.foldFuture;
+  if(QRID_finiteNumber(base.offset)&&QRID_finiteNumber(base.next)&&QRID_finiteNumber(base.offsetAfter)&&base.offsetAfter<base.offset){
+    var by=base.offset-base.offsetAfter;
+    if(t>=base.next&&t<base.next+by*1000)out.future=by;
+    else if(t<base.next&&t>=base.next-by*1000)out.past=by;
+  }
+  return out;
+}
+/* The clock's fold in seconds under key (foldFuture or foldPast), or 0 when
+   it carries none or one that is not a whole number of seconds from 1 to a
+   day. Twin of TemporalLogic::clockFold. */
+function QRID_clockFoldOf(clock,key){
+  var v=clock&&typeof clock==='object'?clock[key]:0;
+  return (QRID_finiteNumber(v)&&Math.floor(v)===v&&v>0&&v<=86400)?v:0;
+}
 /* "Now" for a date and time typed on this page is a span around the server's
    clock. futureNow (for notFuture, and the late end of a window counted from
    "now") is the clock plus 120 seconds (TemporalLogic::CLOCK_SLACK_S, which
@@ -2300,7 +2334,9 @@ function QRID_finiteNumber(v){ return typeof v==='number'&&isFinite(v); }
    is measured in UTC (QRID_deviceClockError), so the computer's time zone
    plays no part: a computer set to another zone than the rule's is still
    refused, which points to the project's time zone setting. "today" and
-   "now" are unchanged, and dates have no margin. */
+   "now" are unchanged, and dates have no margin. In an hour the zone's
+   clocks show twice the margin grows by the change (the clock's foldFuture
+   and foldPast, QRID_clockFoldAt), as TemporalLogic::clockSlack's does. */
 var QRID_CLOCK_SLACK_S=120,QRID_DEVICE_ERROR_MAX_S=600;
 function QRID_clockLenient(clock,errorSeconds){
   var b=clock?QRID_temporalDate(clock.now,'datetime_seconds','ymd'):null;if(!b)return clock;
@@ -2308,8 +2344,8 @@ function QRID_clockLenient(clock,errorSeconds){
   var lead=err>0?Math.min(Math.floor(err),QRID_DEVICE_ERROR_MAX_S):0;
   var lag=err<0?Math.min(Math.floor(-err),QRID_DEVICE_ERROR_MAX_S):0;
   var out={today:clock.today,now:clock.now};
-  var later=QRID_temporalCanonical(b.seconds+QRID_CLOCK_SLACK_S+lead,'datetime');
-  var earlier=QRID_temporalCanonical(b.seconds-QRID_CLOCK_SLACK_S-lag,'datetime');
+  var later=QRID_temporalCanonical(b.seconds+QRID_CLOCK_SLACK_S+lead+QRID_clockFoldOf(clock,'foldFuture'),'datetime');
+  var earlier=QRID_temporalCanonical(b.seconds-QRID_CLOCK_SLACK_S-lag-QRID_clockFoldOf(clock,'foldPast'),'datetime');
   if(later!==null)out.futureNow=later;
   if(earlier!==null)out.pastNow=earlier;
   return out;

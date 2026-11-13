@@ -3841,7 +3841,8 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 if ($st['at'] !== null) {
                     $asOf = $st['at'];
-                    $clock = ['today' => substr($asOf, 0, 10), 'now' => $asOf];
+                    // with the fold of an hour shown twice, when the save lies in one (WIN-4)
+                    $clock = ['today' => substr($asOf, 0, 10), 'now' => $asOf] + array_diff_key($st, ['at' => 1, 'why' => 1]);
                 } elseif ($st['why'] !== null) {
                     // THE ONE PART JUDGED AGAINST TODAY, and in a durable run
                     // the today it froze (W10BF-3): a run that read this value
@@ -3946,7 +3947,22 @@ class UniversalValidator extends AbstractExternalModule
         $stamps = $this->valueStamps($pid);
         if ($stamps === null) return ['at' => null, 'why' => 'the project log could not be read'];
         $r = $stamps->savedAt($record, $eventId, $instance, $field, $value);
-        if ($r['state'] === 'logged') return ['at' => $r['at'], 'why' => null];
+        if ($r['state'] === 'logged') {
+            // A save in an hour a clock showed twice (ValueStamps::toClock,
+            // WIN-4): the day is known only when the whole span the save
+            // may lie in is on one day.
+            $fold = ['foldFuture' => TemporalLogic::clockFold($r, 'foldFuture'), 'foldPast' => TemporalLogic::clockFold($r, 'foldPast')];
+            if ($fold['foldFuture'] || $fold['foldPast']) {
+                $at = TemporalValue::parse((string) $r['at'], 'datetime_seconds', 'ymd');
+                $late = $at['state'] === 'ok' ? TemporalValue::canonical($at['seconds'] + $fold['foldFuture'], 'datetime') : null;
+                $early = $at['state'] === 'ok' ? TemporalValue::canonical($at['seconds'] - $fold['foldPast'], 'datetime') : null;
+                $day = substr((string) $r['at'], 0, 10);
+                if ($late === null || $early === null || substr($late, 0, 10) !== $day || substr($early, 0, 10) !== $day) {
+                    return ['at' => null, 'why' => 'the project log gives its time in an hour the clocks showed twice, either side of midnight'];
+                }
+            }
+            return ['at' => $r['at'], 'why' => null] + array_filter($fold);
+        }
         $why = ['changed' => 'the project log shows another value for it',
                 'unlogged' => 'the project log does not show when it was saved',
                 'capped' => 'the project log holds more saves of this record than are read',
@@ -3971,7 +3987,8 @@ class UniversalValidator extends AbstractExternalModule
         if ($v['state'] !== 'ok' || $now['state'] !== 'ok') return false;
         $date = $v['type'] === 'date';
         if (!empty($spec['notFuture'])
-            && ($date ? strcmp($v['value'], (string) $clock['today']) > 0 : $v['seconds'] > $now['seconds'] + TemporalLogic::AFTER_SAVE_SLACK_S)) {
+            && ($date ? strcmp($v['value'], (string) $clock['today']) > 0
+                      : $v['seconds'] > $now['seconds'] + TemporalLogic::AFTER_SAVE_SLACK_S + TemporalLogic::clockFold($clock, 'foldFuture'))) {
             return true;
         }
         if (!empty($spec['notPast']) && empty($spec['notFuture']) && !$clockAnchor) {
@@ -4767,6 +4784,19 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         }
+        // A moment in an hour the zone's clocks show twice (ClockZones::fold,
+        // WIN-4) carries the seconds the clocks went back by: foldFuture in
+        // the second showing, with foldUntil, the UTC millisecond it ends, so
+        // the page drops it then (QRID_clockAt), and foldPast in the first.
+        // TemporalLogic::clockSlack adds them to a date and time's margin. No
+        // other moment carries these keys; the page works out the fold of
+        // the next change from "next" and "offsetAfter".
+        $fold = ClockZones::fold($now->getTimezone(), $ts);
+        if ($fold['future'] > 0) {
+            $out['foldFuture'] = $fold['future'];
+            $out['foldUntil'] = $fold['until'] * 1000;
+        }
+        if ($fold['past'] > 0) $out['foldPast'] = $fold['past'];
         return $out;
     }
 

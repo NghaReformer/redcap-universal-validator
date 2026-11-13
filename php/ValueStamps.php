@@ -4,6 +4,8 @@ namespace INSPIRE\UniversalValidator;
 use INSPIRE\UniversalValidator\Scan\ScanDb;
 use INSPIRE\UniversalValidator\Scan\SourceFence;
 
+require_once __DIR__ . '/ClockZones.php';
+
 /**
  * When a saved value was saved, read from REDCap's own log, for the
  * @UVWINDOW rules judged against "today" (a "from" of today or now,
@@ -108,7 +110,8 @@ final class ValueStamps
      * When $field's value $value was saved on this record, event and instance.
      *
      * @return array{state:string, at:?string} at is 'Y-m-d H:i:s' in the clock
-     *   zone when state is "logged". The other states:
+     *   zone when state is "logged"; a save in an hour a clock showed twice
+     *   also carries foldFuture or foldPast (toClock). The other states:
      *   changed   the newest row for the field logged another value (or an
      *             ambiguous one)
      *   unlogged  the log holds rows for the record, none for this field
@@ -129,7 +132,7 @@ final class ValueStamps
                 list($ts, $logged) = $this->seen[$record][$eventId][$instance][$field];
                 if ($logged === null || trim($logged, " \t\r\n") !== $value) return ['state' => 'changed', 'at' => null];
                 $at = $this->toClock($ts);
-                return $at === null ? ['state' => 'unknown', 'at' => null] : ['state' => 'logged', 'at' => $at];
+                return $at === null ? ['state' => 'unknown', 'at' => null] : ['state' => 'logged'] + $at;
             }
             if (!empty($this->done[$record])) {
                 $state = empty($this->any[$record]) ? 'none' : (empty($this->capped[$record]) ? 'unlogged' : 'capped');
@@ -359,12 +362,39 @@ final class ValueStamps
         return $out;
     }
 
-    /** A log ts (YYYYMMDDHHMMSS, log zone) as 'Y-m-d H:i:s' in the clock zone, or null. */
+    /**
+     * A log ts (YYYYMMDDHHMMSS, log zone) as ['at' => 'Y-m-d H:i:s' in the
+     * clock zone], or null.
+     *
+     * THE HOUR SHOWN TWICE (WIN-4). The ts is a time on the server's clock,
+     * and in the hour that clock repeats when daylight saving ends it names
+     * two moments an hour apart; PHP reads it as the first. 'at' is then the
+     * earlier moment, and the answer says how far the save may lie from it
+     * as the clock zone shows time: foldFuture, the seconds a time later
+     * than 'at' may still not be after the save, and foldPast, the seconds a
+     * time earlier than 'at' may still not be before it. They also hold the
+     * clock zone's own repeated hour (ClockZones::fold), where two moments
+     * share one time on the clock. Neither key is there when it is 0, which
+     * is every other hour of the year.
+     */
     private function toClock($ts)
     {
         if (!is_string($ts) || !preg_match('/^\d{14}$/D', $ts)) return null;
         $d = \DateTimeImmutable::createFromFormat('!YmdHis', $ts, $this->logZone);
         if ($d === false || $d->format('YmdHis') !== $ts) return null;
-        return $d->setTimezone($this->clockZone)->format('Y-m-d H:i:s');
+        $early = $d->getTimestamp();
+        $late = $early;
+        $log = ClockZones::fold($this->logZone, $early);
+        if ($log['past'] > 0) $late = $early + $log['past'];
+        elseif ($log['future'] > 0) $early = $late - $log['future'];
+        $first = (new \DateTimeImmutable('@' . $early))->setTimezone($this->clockZone);
+        $last = (new \DateTimeImmutable('@' . $late))->setTimezone($this->clockZone);
+        $out = ['at' => $first->format('Y-m-d H:i:s')];
+        // how much later the clock zone shows the later moment, plus its own fold there
+        $future = ($late + $last->getOffset()) - ($early + $first->getOffset()) + ClockZones::fold($this->clockZone, $late)['future'];
+        $past = ClockZones::fold($this->clockZone, $early)['past'];
+        if ($future > 0) $out['foldFuture'] = $future;
+        if ($past > 0) $out['foldPast'] = $past;
+        return $out;
     }
 }

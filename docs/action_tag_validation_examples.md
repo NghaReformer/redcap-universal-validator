@@ -1644,6 +1644,17 @@ warning.
   post-save audit and the scan allow the most the page could have: 12 minutes
   either side of the moment the value was saved. The computer's time zone adds
   no margin, and a date has none.
+- **The hour the clocks show twice.** When daylight saving ends, one hour comes
+  twice (01:00 to 02:00 in New York), and a time in it does not say which of
+  the two it is. Times are compared as the clock shows them, so in that hour
+  the margin grows by the hour: a sample timed 01:50, saved 15 minutes later
+  at 01:05 on winter time, is not "in the future", and `notPast` treats the
+  first showing of the hour the same way. It applies on the page, after saving
+  and in the scan, also when the server's own clock repeats the hour in which
+  REDCap logged the save. A date field is not affected, except for a save
+  logged in an hour the server repeats either side of midnight in the
+  project's time zone: its day is not known, and the parts judged against that
+  day are logged as not checked.
 - **One time zone per project.** `@NOW` and `@TODAY` fill in the computer's
   time, `@NOW-UTC` and `@TODAY-UTC` UTC, `@NOW-SERVER` and `@TODAY-SERVER` the
   server's. `notFuture` on a field filled by one of the last four is refused when

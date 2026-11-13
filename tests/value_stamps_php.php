@@ -191,6 +191,27 @@ $db = new FakeLog();
 $db->rows = [$row(1, '1', 351, '20261001233000', "visit = '2026-10-01'")];
 $s = ValueStamps::forProject($db, 149, new \DateTimeZone('America/New_York'), new \DateTimeZone('Africa/Douala'));
 check('the log zone is turned into the clock zone', $s->savedAt('1', 351, 1, 'visit', '2026-10-01')['at'] === '2026-10-02 04:30:00');
+// WIN-4: the log's ts is a time on the server's clock. In the hour that clock
+// shows twice it names two moments; "at" is the earlier, and the fold says how
+// far the save may lie from it as the clock zone shows time.
+$ny = new \DateTimeZone('America/New_York');
+$db->rows = [$row(1, '1', 351, '20261101013000', "visit = '2026-10-01'")];
+$s = ValueStamps::forProject($db, 149, $ny, new \DateTimeZone('Africa/Douala'));
+check('a ts in the server\'s repeated hour: the earlier moment, and an hour later it may be (WIN-4)',
+    $s->savedAt('1', 351, 1, 'visit', '2026-10-01') === ['state' => 'logged', 'at' => '2026-11-01 06:30:00', 'foldFuture' => 3600]);
+$s = ValueStamps::forProject($db, 149, $ny, $ny);
+check('... server and clock zone the same: an hour either way on the clock',
+    $s->savedAt('1', 351, 1, 'visit', '2026-10-01') === ['state' => 'logged', 'at' => '2026-11-01 01:30:00', 'foldFuture' => 3600, 'foldPast' => 3600]);
+$db->rows = [$row(1, '1', 351, '20261101063000', "visit = '2026-10-01'")];
+$s = ValueStamps::forProject($db, 149, $utc, $ny);
+check('a save in the clock zone\'s repeated hour, on a server with none',
+    $s->savedAt('1', 351, 1, 'visit', '2026-10-01') === ['state' => 'logged', 'at' => '2026-11-01 01:30:00', 'foldFuture' => 3600]);
+$db->rows = [$row(1, '1', 351, '20261101053000', "visit = '2026-10-01'")];
+$s = ValueStamps::forProject($db, 149, $utc, $ny);
+check('... in its first showing', $s->savedAt('1', 351, 1, 'visit', '2026-10-01') === ['state' => 'logged', 'at' => '2026-11-01 01:30:00', 'foldPast' => 3600]);
+$db->rows = [$row(1, '1', 351, '20261101023000', "visit = '2026-10-01'")];
+$s = ValueStamps::forProject($db, 149, $ny, $ny);
+check('the hour after carries no fold', $s->savedAt('1', 351, 1, 'visit', '2026-10-01') === ['state' => 'logged', 'at' => '2026-11-01 02:30:00']);
 $db->rows = [$row(1, '1', 351, '2026100123', "visit = '2026-10-01'")];
 $s = ValueStamps::forProject($db, 149, $utc, $utc);
 check('a ts that does not read is "unknown"', $s->savedAt('1', 351, 1, 'visit', '2026-10-01')['state'] === 'unknown');

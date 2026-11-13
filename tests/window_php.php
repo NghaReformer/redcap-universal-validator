@@ -91,6 +91,29 @@ check('clockSlack futureNow', $cs['futureNow'] === '2026-10-09 14:32:00');
 check('clockSlack pastNow', $cs['pastNow'] === '2026-10-09 14:28:00');
 check('clockSlack keeps now and today', $cs['now'] === '2026-10-09 14:30:00' && $cs['today'] === '2026-10-09');
 check('clockSlack leaves a clock that does not read', TemporalLogic::clockSlack(['now' => 'x']) === ['now' => 'x']);
+// WIN-4: in an hour the zone shows twice the margin grows by the change.
+$cs = TemporalLogic::clockSlack(['today' => '2026-11-01', 'now' => '2026-11-01 01:05:00', 'foldFuture' => 3600]);
+check('clockSlack: a fold widens futureNow only', $cs['futureNow'] === '2026-11-01 02:07:00' && $cs['pastNow'] === '2026-11-01 01:03:00');
+$cs = TemporalLogic::clockSlack(['today' => '2026-11-01', 'now' => '2026-11-01 01:50:00', 'foldPast' => 3600], TemporalLogic::AFTER_SAVE_SLACK_S);
+check('clockSlack: ... or pastNow only', $cs['futureNow'] === '2026-11-01 02:02:00' && $cs['pastNow'] === '2026-11-01 00:38:00');
+check('clockFold: a whole number of seconds from 1 to a day, else 0',
+    TemporalLogic::clockFold(['foldFuture' => 1800], 'foldFuture') === 1800 && TemporalLogic::clockFold(['foldFuture' => 86400], 'foldFuture') === 86400
+    && TemporalLogic::clockFold([], 'foldFuture') === 0 && TemporalLogic::clockFold(['foldFuture' => '3600'], 'foldFuture') === 0
+    && TemporalLogic::clockFold(['foldFuture' => -3600], 'foldFuture') === 0 && TemporalLogic::clockFold(['foldFuture' => 86401], 'foldFuture') === 0
+    && TemporalLogic::clockFold(['foldFuture' => 1.5], 'foldFuture') === 0 && TemporalLogic::clockFold(['foldPast' => 3600], 'foldFuture') === 0);
+// The reviewer's case: a sample taken at 01:50 summer time, saved 15 minutes
+// later at 01:05 winter time, was "in the future".
+$nf = ['notFuture' => true, 'type' => 'datetime'];
+$inFold = ['today' => '2026-11-01', 'now' => '2026-11-01 01:05:00', 'foldFuture' => 3600];
+check('a time from the first showing of a repeated hour is not in the future in the second',
+    TemporalLogic::windowVerdict($nf, '2026-11-01 01:50', 'ymd', null, 'ymd', TemporalLogic::clockSlack($inFold))['verdict'] === 'ok');
+check('... without the fold it was', TemporalLogic::windowVerdict($nf, '2026-11-01 01:50', 'ymd', null, 'ymd',
+    TemporalLogic::clockSlack(['today' => '2026-11-01', 'now' => '2026-11-01 01:05:00']))['verdict'] === 'future');
+check('... and a time past the fold still is', TemporalLogic::windowVerdict($nf, '2026-11-01 02:08', 'ymd', null, 'ymd', TemporalLogic::clockSlack($inFold))['verdict'] === 'future');
+$np = ['notPast' => true, 'type' => 'datetime'];
+check('a time of the second showing is not in the past in the first',
+    TemporalLogic::windowVerdict($np, '2026-11-01 01:05', 'ymd', null, 'ymd',
+        TemporalLogic::clockSlack(['today' => '2026-11-01', 'now' => '2026-11-01 01:50:00', 'foldPast' => 3600]))['verdict'] === 'ok');
 
 // anchorType / keywordAnchorType, the same pins as window_js.cjs
 check('anchorType date', TemporalLogic::anchorType('2026-01-01') === 'date');

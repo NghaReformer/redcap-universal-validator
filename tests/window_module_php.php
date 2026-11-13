@@ -314,6 +314,25 @@ namespace {
     check('clockStamp: a zone with no change has none', $st['offset'] === 0 && $st['next'] === null && $st['offsetAfter'] === null);
     $st = $UV::clockStamp(new \DateTimeImmutable('2026-10-20 12:00:00+02:00'));
     check('clockStamp: a fixed offset has no change', $st['offset'] === 7200 && $st['next'] === null);
+    // WIN-4: the hour a zone shows twice. The fixture holds the stamp of a
+    // moment and what the clock is some time later; tests/window_js.cjs
+    // advances the same stamp on the page and must reach the same clock.
+    $foldFx = json_decode(file_get_contents(__DIR__ . '/window_fold_fixture.json'), true);
+    check('fold fixture loads', is_array($foldFx) && !empty($foldFx['cases']));
+    foreach ($foldFx['cases'] as $c) {
+        $at0 = new \DateTimeImmutable($c['at'], new \DateTimeZone('UTC'));
+        $zone = new \DateTimeZone($c['zone']);
+        check('fold: ' . $c['name'] . ': the stamp (got ' . json_encode($UV::clockStamp($at0->setTimezone($zone))) . ')',
+            $UV::clockStamp($at0->setTimezone($zone)) === $c['base']);
+        foreach ($c['steps'] as $s) {
+            $st = $UV::clockStamp($at0->modify('+' . intdiv($s['elapsedMs'], 1000) . ' seconds')->setTimezone($zone));
+            $sl = \INSPIRE\UniversalValidator\TemporalLogic::clockSlack($st);
+            $got = ['elapsedMs' => $s['elapsedMs'], 'now' => $st['now'], 'foldFuture' => $st['foldFuture'] ?? 0, 'foldPast' => $st['foldPast'] ?? 0,
+                    'futureNow' => $sl['futureNow'], 'pastNow' => $sl['pastNow']];
+            check('fold: ' . $c['name'] . ' +' . $s['elapsedMs'] . ' ms (got ' . json_encode($got) . ')', $got === $s);
+            check('fold: ... foldUntil comes with foldFuture only', isset($st['foldUntil']) === isset($st['foldFuture']));
+        }
+    }
     $mz = mod($DICT, $DATA, $FULL, 'nurse');
     $rp = new \ReflectionProperty($UV, 'clockOverride'); $rp->setAccessible(true); $rp->setValue($mz, null);
     $mz->projectSettings['window-timezone'] = 'Europe/London';
@@ -732,6 +751,28 @@ namespace {
     $DW = $D9; $DW['2'][351]['w_now'] = '2026-10-09 12:19';
     list($by, $un) = $audit($stamps(mod($P9, $DW, $FULL, 'nurse'), [$row('20261009143000', "w_now = '2026-10-09 12:19'")]));
     check('audit: ...2 h 11 min before is inside the margin', !isset($by['w_now']));
+    // WIN-4: a save in the hour the clocks show twice. The reviewer's case:
+    // a time of 01:50 summer time, saved 15 minutes later at 01:05 winter time.
+    $foldAudit = function ($value, $ts, $logZone, $clockZone, $field = 'nf_dt') use ($P9, $D9, $FULL, $row, $audit) {
+        $DW = $D9; $DW['2'][351][$field] = $value;
+        $m = mod($P9 + ['nf_dt' => f('visit_form', '@UVWINDOW={"notFuture":true}', 'datetime_ymd')], $DW, $FULL, 'nurse');
+        $db = new WinLog();
+        $db->rows[] = array_merge([1, 149, '2', 351], $row($ts, $field . " = '" . $value . "'"));
+        $vs = \INSPIRE\UniversalValidator\ValueStamps::forProject($db, 149, new \DateTimeZone($logZone), new \DateTimeZone($clockZone));
+        $rp = new \ReflectionProperty($m, 'valueStampsOverride'); $rp->setAccessible(true); $rp->setValue($m, $vs);
+        return $audit($m);
+    };
+    list($by, $un) = $foldAudit('2025-11-02 01:50', '20251102010500', 'America/New_York', 'America/New_York');
+    check('audit: a time from the first showing of a repeated hour, saved in the second, is not in the future (WIN-4)',
+        !isset($by['nf_dt']) && !isset($un['nf_dt']));
+    list($by, $un) = $foldAudit('2025-11-02 03:20', '20251102010500', 'America/New_York', 'America/New_York');
+    check('audit: ... a time past the hour and its margin still is', ($by['nf_dt']['reason'] ?? null) === 'future');
+    list($by, $un) = $foldAudit('2025-10-26 01:50', '20251026010500', 'America/New_York', 'America/New_York');
+    check('audit: ... and so is the same time a week before, when no hour repeats', ($by['nf_dt']['reason'] ?? null) === 'future');
+    // The save's log time is 23:30 in Denver or 00:30 the next day: the day is not known.
+    list($by, $un) = $foldAudit('2025-11-01', '20251102013000', 'America/New_York', 'America/Denver', 'w_past');
+    check('audit: a save whose repeated hour lies either side of midnight has no known day',
+        !isset($by['w_past']) && $notKnown($un, 'w_past', 'the project log gives its time in an hour the clocks showed twice, either side of midnight'));
     // "now" with a period takes the plain now: the month is October, with no margin into September.
     $DW = $D9; $DW['2'][351]['w_now_p'] = '2026-09-30 23:59';
     list($by, $un) = $audit($stamps(mod($P9, $DW, $FULL, 'nurse'), [$row('20261001000100', "w_now_p = '2026-09-30 23:59'")]));
