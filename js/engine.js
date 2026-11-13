@@ -4260,8 +4260,11 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
   function guard(e, by){
     var partial = QRID_partialSave(by);
     /* the click guard runs before the programmatic submit it triggers; a
-       user who already chose "Save anyway" must not be asked twice */
-    if(UV_guard.passUntil && new Date().getTime() < UV_guard.passUntil) return true;
+       user who already chose "Save anyway" must not be asked twice. The pass
+       answers the question only: a value that holds the save without asking
+       (a hard limit) still holds it, so one typed after "Save anyway" does
+       not ride through on the pass (RNG-8). */
+    var passing = !!(UV_guard.passUntil && new Date().getTime() < UV_guard.passUntil);
     /* Branch rules overwrite __qridBlockMode per check with the ACTIVE
        branch's mode, which may be "off" — such a field never holds the save.
        (Pre-0.9.0 configs never register "off" items, so this filter is a
@@ -4289,6 +4292,10 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
       if(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0) return false;
       return QRID_itemHolds(el) && !QRID_justified(el);
     });
+    if(passing){
+      bad = bad.filter(function(el){ return el.__qridBlockMode === "hard"; });
+      if(!bad.length) return true;
+    }
     /* A lookup still on its way makes the save wait, with no dialog: clicking
        Save blurs the field, and the blur is when a lookup asks, so letting
        the save through at once would decide it before the answer that may
@@ -4297,7 +4304,7 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
        then. Only items whose active rule can block, or fills fields from the
        answer (@UVEXISTS "return"), set __qridPending. A save that already
        waited does not wait again: a lookup still out is given up. */
-    var pend = live.filter(function(el){
+    var pend = passing ? [] : live.filter(function(el){
       return el.__qridPending && bad.indexOf(el) < 0 && !(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0);
     });
     if(pend.length){
