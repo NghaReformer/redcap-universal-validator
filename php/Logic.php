@@ -60,10 +60,15 @@
  *     on edge cases (U+0130 and friends), and this dialect's contract is that
  *     both runtimes return the same verdict;
  *   - MIXED (one numeric, one not, both non-empty): = and <> still answer, by
- *     string identity. The ORDERED operators < > <= >= are false whichever way
- *     round they are asked, because a per-pair comparator produced ordering
- *     CYCLES (a<=b, b<=c and a>c all true for "2", "10", "1e1") that no error
- *     message could explain;
+ *     string identity. The ORDERED operators < > <= >= have NO ORDER to
+ *     report, whichever way round they are asked, because a per-pair
+ *     comparator produced ordering CYCLES (a<=b, b<=c and a>c all true for
+ *     "2", "10", "1e1") that no error message could explain. The comparison
+ *     is false, and it makes a "not" around it false too: evaluate() hands
+ *     down $mixed, flipped at each "not" as $blank is, so not([age]>120)
+ *     and [age]<=120 give one verdict on "12O" (AST-7). A test then reports
+ *     text where a number belongs under either spelling, and a "when" gate
+ *     stays inert under either;
  *   - EMPTY is not a rival domain either: it is ABSENCE, and an ordered
  *     comparison against an absent operand has NO ANSWER. It does not fall
  *     through to byte order. It used to, and because '' sorts lowest that made
@@ -91,7 +96,11 @@
  *   - a rule with "exact": true passes EXACT as its text mode: = and <>
  *     compare the trimmed values byte for byte, so 00123 is not 123 and
  *     AB12 is not ab12; the ordered operators read it as case-sensitive
- *     (AST-2).
+ *     (AST-2). Under "exact", = and <> also read a number field as typed,
+ *     so 100 is not 1e2 and 12,5 is not 12,50 (AST-8);
+ *   - a line break counts as one character however it was saved: CR LF and
+ *     a lone CR compare as LF. A Notes value read back from the server holds
+ *     CR LF where the same text typed on the page holds LF (AST-5).
  *
  * Caps (parse errors beyond): MAX_EXPR_LEN chars, MAX_REFS field references,
  * MAX_DEPTH nesting levels (parentheses + not).
@@ -270,36 +279,50 @@ class Logic
      * tags whose bare value IS a condition (@UVREQUIRED=[a]='1' and [b]='2').
      * A value used to end at the first space, so everything after "and" was
      * silently dropped. Reading stops at the end of the line, or at a word that
-     * starts with "@" (the next action tag), outside quotes; a note written
-     * after the condition is therefore still ignored. A condition that ends
+     * starts with "@" (the next action tag), outside quotes; a note in plain
+     * words written after the condition is still ignored. A condition that ends
      * its line and whose next line starts as a condition goes on is treated
      * as going on (continues below).
      *
-     * Returns ['length' => n, 'continues' => bool, 'hint' => string|null]. n is
-     * the byte length of the longest prefix, ending at a word boundary, that
-     * parses as a complete condition (0 when none does). continues is true
-     * when the text after it goes on as a condition would: "and", "or", "not"
-     * before a [field] or "(", a comparison operator, or "&", "|" or "!". The
-     * reader then cannot tell where the designer meant the condition to end,
-     * and the caller refuses the rule instead of guessing. hint is the
-     * lexer's advice when it goes on with "&&", "||" or "!" ('uses "&&" —
-     * write "and" instead.'), so the refusal names the word to write. A note
-     * after the condition that starts with any other word ("not needed at
-     * screening") is still a note. Prefixes are parsed with the qualified
-     * option only to find the boundary; the rule's own options apply when the
-     * value is checked. No prefix longer than MAX_EXPR_LEN is tried, since
-     * none can parse, which keeps a long annotation line linear. Annotations
-     * are parsed on the server only, so this has no JavaScript twin.
+     * Returns ['length' => n, 'continues' => bool, 'hint' => string|null,
+     * 'extra' => string|null]. n is the byte length of the longest prefix,
+     * ending at a word boundary, that parses as a complete condition (0 when
+     * none does). continues is true when the text after it goes on as a
+     * condition would: "and", "or", "not" before a [field] or "(", a
+     * comparison operator, or "&", "|" or "!". The reader then cannot tell
+     * where the designer meant the condition to end, and the caller refuses
+     * the rule instead of guessing. hint is the lexer's advice when it goes on
+     * with "&&", "||" or "!" ('uses "&&" — write "and" instead.'), so the
+     * refusal names the word to write.
+     *
+     * Text on the condition's own line that does not go on that way is a note
+     * only when it reads as plain words (plainNote): "not needed at
+     * screening", "(see the SOP)". Anything else is handed back as extra, its
+     * first characters, and the caller refuses the rule: "[a] <= [b] * 2" was
+     * read as "[a] <= [b]" and that shorter rule enforced, and so were
+     * "[a] >= [b] + 7", "[a] <= [b] , [a] >= 0" and "[a] <= [b] if [c] = 1"
+     * (AST-1).
+     *
+     * The line is lexed once and its tokens parsed once: a complete condition
+     * ends after any top-level term of the and/or chain, so the last such end
+     * at a word boundary is the answer. Each prefix used to be parsed again
+     * from its start, which made a long condition cost the square of its
+     * length (AST-3). Tokens are read with the qualified option only to find
+     * the boundary; the rule's own options apply when the value is checked.
+     * Nothing past MAX_EXPR_LEN characters is lexed, since no condition is
+     * longer. Annotations are parsed on the server only, so this has no
+     * JavaScript twin.
      */
     public static function parsePrefix($text)
     {
         $text = (string) $text;
         $n = strlen($text);
-        $ends = [];
+        $lead = strspn($text, " \t");
+        $limit = min($n, $lead + self::MAX_EXPR_LEN);
         $quote = null;
         $inWord = false;
         $i = 0;
-        for (; $i < $n; $i++) {
+        for (; $i < $limit; $i++) {
             $ch = $text[$i];
             if ($quote !== null) {
                 if ($ch === $quote) $quote = null;
@@ -307,7 +330,6 @@ class Logic
             }
             if ($ch === "\n" || $ch === "\r") break;
             if ($ch === ' ' || $ch === "\t") {
-                if ($inWord) $ends[] = $i;
                 $inWord = false;
                 continue;
             }
@@ -315,26 +337,59 @@ class Logic
             $inWord = true;
             if ($ch === '"' || $ch === "'") $quote = $ch;
         }
-        if ($inWord) $ends[] = $i;
+        // As parseText reads it: tab, CR and LF (inside a quoted value) are
+        // spaces, and a character outside printable ASCII ends what can parse.
+        $s = strtr(substr($text, 0, $i), "\t\r\n", '   ');
+        if (preg_match('/[^\x20-\x7E]/', $s, $m, PREG_OFFSET_CAPTURE)) $s = substr($s, 0, $m[0][1]);
+        $tokens = [];
+        $ends = [];
+        self::lex($s, ['qualified' => true], $tokens, $ends);
+        // a token the lexer refused after reading it has no end
+        $st = ['t' => array_slice($tokens, 0, count($ends)), 'p' => 0];
         $best = 0;
-        $lead = strspn($text, " \t");
-        foreach ($ends as $e) {
-            if ($e - $lead > self::MAX_EXPR_LEN) break;
-            // parseText, not parse(): the prefixes are throwaway texts and would
-            // push the rule conditions out of the bounded memo.
-            if (self::parseText(substr($text, 0, $e), ['qualified' => true])['ok']) $best = $e;
+        while (true) {
+            $r = self::parseNot($st, 0);
+            if (isset($r['error'])) break;
+            $e = $ends[$st['p'] - 1];
+            if ($e >= $n || strpos(" \t\r\n", $text[$e]) !== false) $best = $e;
+            if (!self::peekKw($st, 'and') && !self::peekKw($st, 'or')) break;
+            $st['p']++;
         }
         $after = $best > 0 ? ltrim(substr($text, $best), " \t") : '';
         // A condition that ends its line may go on at the start of the next
         // one ("[a]='1'" then "and [b]='2'"): that is read as going on too.
-        if ($after !== '' && ($after[0] === "\n" || $after[0] === "\r")) $after = ltrim($after, " \t\r\n");
+        $sameLine = $after !== '' && $after[0] !== "\n" && $after[0] !== "\r";
+        if (!$sameLine) $after = ltrim($after, " \t\r\n");
         $continues = $best > 0 && preg_match('/^(?:(?:and|or)\b|not\s*[\[(]|[=<>!&|])/i', $after) === 1;
         $hint = null;
         if ($continues && preg_match('/^(?:&&?|\|\|?|!(?!=))/', $after, $m)) {
             $lex = self::lex($m[0]);
             $hint = isset($lex['error']) ? $lex['error'] : null;
         }
-        return ['length' => $best, 'continues' => $continues, 'hint' => $hint];
+        $extra = null;
+        if ($sameLine && !$continues) {
+            // the note runs to the end of the line or to the next action tag
+            $line = substr($after, 0, strcspn($after, "\r\n"));
+            if (preg_match('/(?:^|[ \t])@/', $line, $m, PREG_OFFSET_CAPTURE)) $line = substr($line, 0, $m[0][1]);
+            $line = rtrim($line, " \t");
+            if ($line !== '' && !self::plainNote($line)) {
+                $extra = preg_match('/^.{1,24}/su', $line, $m) ? $m[0] : preg_replace('/[^\x20-\x7E]/', '?', substr($line, 0, 24));
+            }
+        }
+        return ['length' => $best, 'continues' => $continues, 'hint' => $hint, 'extra' => $extra];
+    }
+
+    /**
+     * Whether the text after an unquoted condition reads as a note: it starts
+     * with a letter, or "(" and a letter, and holds no "[", "]", "{", "}",
+     * "=", "<" or ">". Text that starts with a digit, a sign, a comma or a
+     * quote, or that names a [field] or compares something, may be the rest
+     * of a condition the dialect does not read (arithmetic, a function, a
+     * word such as "xor" or "if"), so it is never dropped as a note (AST-1).
+     */
+    private static function plainNote($line)
+    {
+        return preg_match('/^\(?[A-Za-z\x80-\xFF]/', $line) === 1 && strpbrk($line, '[]{}=<>') === false;
     }
 
     private static function parseText($expr, array $opts)
@@ -374,17 +429,21 @@ class Logic
      * [end]>=[start] with start UNK passes as a test and leaves a "when"
      * inert; = and <> read the code as itself, so [start]<>'UNK' still works
      * (AST-10). An event or instance reference reads it as itself.
+     *
+     * $mixed is what an ordered comparison of a number with a text yields
+     * (AST-7). A caller leaves it false; it flips at each "not", so such a
+     * comparison makes the condition false however it is negated.
      */
-    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [], array $codes = [])
+    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [], array $codes = [], $mixed = false)
     {
         switch ($ast[0]) {
             case 'const':
                 return !empty($ast[1]);
             case 'or':
-                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank, $caseSensitive, $numbers, $codes)) return true; }
+                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank, $caseSensitive, $numbers, $codes, $mixed)) return true; }
                 return false;
             case 'and':
-                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank, $caseSensitive, $numbers, $codes)) return false; }
+                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank, $caseSensitive, $numbers, $codes, $mixed)) return false; }
                 return true;
             case 'not':
                 // THE FLIP. "No answer" has to mean the same thing about the
@@ -394,19 +453,33 @@ class Logic
                 // the same question — give opposite verdicts on a blank [max],
                 // which is the original defect wearing a different spelling.
                 // Case sensitivity does NOT flip: it describes how two strings
-                // are matched, not what "no answer" means.
-                return !self::evaluate($ast[1], $values, !$blank, $caseSensitive, $numbers, $codes);
+                // are matched, not what "no answer" means. $mixed flips for
+                // the same reason $blank does (AST-7).
+                return !self::evaluate($ast[1], $values, !$blank, $caseSensitive, $numbers, $codes, !$mixed);
             case 'cmp':
                 if ($codes && self::codeCompared($ast, $values, $codes)) return $blank;
+                if (self::exactEquality($ast[1], $caseSensitive)) $numbers = [];
                 return self::compare(
                     $ast[1],
                     self::operandValue($ast[2], $values, $numbers),
                     self::operandValue($ast[3], $values, $numbers),
                     $blank,
-                    $caseSensitive
+                    $caseSensitive,
+                    $mixed
                 );
         }
         return false; // unreachable for parse()-produced ASTs
+    }
+
+    /**
+     * Whether $op under the text mode $caseSensitive compares two values
+     * character for character: = or <> of a rule with "exact": true. The two
+     * values are then read as typed, a number field too, so 100 does not
+     * confirm 1e2 (AST-8). Twin: QRID_whenExactEquality.
+     */
+    private static function exactEquality($op, $caseSensitive)
+    {
+        return $caseSensitive === self::EXACT && ($op === '=' || $op === '<>');
     }
 
     /**
@@ -465,20 +538,21 @@ class Logic
      * with no live ref at all cannot react anyway, so folding it is both
      * correct and leak-minimal.
      */
-    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [], array $codes = [])
+    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES, $caseSensitive = false, array $numbers = [], array $codes = [], $mixed = false)
     {
         if (self::qualifiedRefs($ast)) throw new \LogicException('Resolve extended references before folding.');
         switch ($ast[0]) {
             case 'or':
             case 'and':
                 $out = [];
-                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank, $caseSensitive, $numbers, $codes);
+                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank, $caseSensitive, $numbers, $codes, $mixed);
                 return [$ast[0], $out];
             case 'not':
                 // Flipped exactly as evaluate() flips it, so a comparison
                 // settled into a ['const', b] here sits under the same number
                 // of "not"s as the live one it replaced and agrees with it.
-                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank, $caseSensitive, $numbers, $codes)];
+                // $mixed flips with it (AST-7).
+                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank, $caseSensitive, $numbers, $codes, !$mixed)];
             case 'cmp':
                 $refs = 0;
                 $live = 0;
@@ -527,8 +601,9 @@ class Logic
                         foreach ($offPage as $slot) {
                             $snapshot[$ast[$slot][1]] = true;   // read once, at render
                             // baked as the number it holds (12,5 as 12.5): the
-                            // browser compares a literal as written
-                            $ast[$slot] = ['lit', self::operandValue($ast[$slot], $values, $numbers)];
+                            // browser compares a literal as written. An exact
+                            // = or <> reads it as typed (AST-8).
+                            $ast[$slot] = ['lit', self::operandValue($ast[$slot], $values, self::exactEquality($ast[1], $caseSensitive) ? [] : $numbers)];
                         }
                         return $ast;
                     }
@@ -555,9 +630,25 @@ class Logic
                         if ($ast[$slot][0] === 'ref') $snapshot[$ast[$slot][1]] = true;
                     }
                 }
-                return ['const', self::evaluate($ast, $values, $blank, $caseSensitive, $numbers, $codes)];
+                return ['const', self::evaluate($ast, $values, $blank, $caseSensitive, $numbers, $codes, $mixed)];
         }
         return $ast;   // 'const' (already folded) and anything unknown
+    }
+
+    /**
+     * The comparison operators a parsed condition uses, as op => true
+     * ("!=" is "<>"). A rule option that changes only some of them can then
+     * be refused where it changes nothing ("exact", AST-8).
+     */
+    public static function comparisonOps(array $ast)
+    {
+        if ($ast[0] === 'cmp') return [$ast[1] => true];
+        if ($ast[0] === 'not') return self::comparisonOps($ast[1]);
+        $out = [];
+        if ($ast[0] === 'and' || $ast[0] === 'or') {
+            foreach ($ast[1] as $c) $out += self::comparisonOps($c);
+        }
+        return $out;
     }
 
     /**
@@ -599,7 +690,14 @@ class Logic
             $f = $ref[0];
             $code = $ref[1];
             if (!array_key_exists($f, $types)) {
-                $errors[] = $label . ' references "[' . $f . ']", which is not a field in this project.';
+                // [form_complete] is the status REDCap keeps for each form. It
+                // is in no data dictionary, so the plain refusal sent the
+                // designer looking for a typing mistake (AST-4).
+                $errors[] = $label . ' references "[' . $f . ']", which is not a field in this project.'
+                    . (substr($f, -9) === '_complete' && strlen($f) > 9
+                        ? ' If it is the status of the form "' . substr($f, 0, -9) . '" (its "Complete?" box), a condition cannot read a form status: '
+                            . 'compare a field of that form instead.'
+                        : '');
                 continue;
             }
             $type = (string) $types[$f];
@@ -720,14 +818,21 @@ class Logic
      * Tokenize a normalized expression. Returns ['tokens'=>[...]] or
      * ['error'=>string]. Tokens: ['ref', field, codeOrNull] | ['lit', string]
      * | ['op', op] | ['kw', and|or|not] | ['('] | [')'].
+     *
+     * $tokens and $ends, when asked for, also hold what was read before an
+     * error: the tokens, and for each the offset just past it in $s. A token
+     * refused after it was read (the reference past MAX_REFS) has no end.
      */
-    private static function lex($s, array $opts = [])
+    private static function lex($s, array $opts = [], &$tokens = null, &$ends = null)
     {
         $tokens = [];
+        $ends = [];
         $n = strlen($s);
         $refs = 0;
         $i = 0;
         while ($i < $n) {
+            // every branch below moves $i past the token it pushes before it loops
+            if (count($ends) < count($tokens)) $ends[] = $i;
             $ch = $s[$i];
             if ($ch === ' ') { $i++; continue; }
             if (!empty($opts['qualified']) && ($ch === '[' || $ch === '{')) {
@@ -798,6 +903,7 @@ class Logic
             if ($ch === '!') return ['error' => 'uses "!" — write "not" instead, or "<>" for "not equal".'];
             return ['error' => 'contains an unexpected character "' . $ch . '".'];
         }
+        if (count($ends) < count($tokens)) $ends[] = $i;
         return ['tokens' => $tokens];
     }
 
@@ -1484,11 +1590,24 @@ class Logic
         return ['verdict' => $empty($current) ? 'cleared' : 'changed', 'lockedAt' => $lockedAt, 'changedAt' => $lastAt];
     }
 
-    /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */
-    private static function compare($op, $a, $b, $blank = self::BLANK_PASSES, $caseSensitive = false)
+    /**
+     * A value as compare() reads it before it compares: space, tab, CR and LF
+     * off both ends, and every line break inside as LF. A line break is one
+     * character however it was saved: a Notes value typed on the page holds
+     * LF, the same text read back from the server CR LF, and the two compared
+     * as different across forms (AST-5). Twin: QRID_whenComparable.
+     */
+    public static function comparable($value)
     {
-        $a = trim((string) $a, " \t\r\n");
-        $b = trim((string) $b, " \t\r\n");
+        $v = trim((string) $value, " \t\r\n");
+        return strpos($v, "\r") === false ? $v : str_replace(["\r\n", "\r"], "\n", $v);
+    }
+
+    /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */
+    private static function compare($op, $a, $b, $blank = self::BLANK_PASSES, $caseSensitive = false, $mixed = false)
+    {
+        $a = self::comparable($a);
+        $b = self::comparable($b);
         // "exact": identity of the two strings, before any reading as numbers
         // or folding of case (AST-2).
         if ($caseSensitive === self::EXACT && ($op === '=' || $op === '<>')) {
@@ -1514,9 +1633,12 @@ class Logic
         // cycle, and a rule built on it is unsatisfiable in a way no message
         // could explain.
         // Ordering is therefore defined only WITHIN a domain: both numeric, or
-        // neither. One-of-each yields false for < > <= >=, whichever way round
-        // it is asked, so no cycle can form. Equality is unaffected — "2" and
-        // "1e1" are simply different strings, which is exactly right.
+        // neither. One-of-each yields $mixed for < > <= >=, whichever way round
+        // it is asked, so no cycle can form. $mixed is false at the top of a
+        // condition and flips at each "not" (evaluate), so the condition as a
+        // whole reads false: not([age]>120) used to pass "12O" in a number
+        // field that [age]<=120 reported (AST-7). Equality is unaffected — "2"
+        // and "1e1" are simply different strings, which is exactly right.
         // EMPTY is absence, so an ORDERED comparison against it has NO ANSWER
         // and $blank — the caller's polarity, already flipped by evaluate() for
         // every "not" above this node — is substituted instead. It used to fall
@@ -1531,15 +1653,15 @@ class Logic
             $b = strtr($b, self::ASCII_UPPER, self::ASCII_LOWER);
         }
         $blankSide = ($a === '' || $b === '');
-        $mixed = !$blankSide
+        $apart = !$blankSide
                && ((bool) preg_match(self::NUM_RE, $a) !== (bool) preg_match(self::NUM_RE, $b));
         switch ($op) {
             case '=':  return $a === $b;
             case '<>': return $a !== $b;
-            case '>':  return $blankSide ? $blank : (!$mixed && strcmp($a, $b) > 0);
-            case '<':  return $blankSide ? $blank : (!$mixed && strcmp($a, $b) < 0);
-            case '>=': return $blankSide ? $blank : (!$mixed && strcmp($a, $b) >= 0);
-            case '<=': return $blankSide ? $blank : (!$mixed && strcmp($a, $b) <= 0);
+            case '>':  return $blankSide ? $blank : ($apart ? $mixed : strcmp($a, $b) > 0);
+            case '<':  return $blankSide ? $blank : ($apart ? $mixed : strcmp($a, $b) < 0);
+            case '>=': return $blankSide ? $blank : ($apart ? $mixed : strcmp($a, $b) >= 0);
+            case '<=': return $blankSide ? $blank : ($apart ? $mixed : strcmp($a, $b) <= 0);
         }
         return false;
     }

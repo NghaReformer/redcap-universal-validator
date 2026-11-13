@@ -158,10 +158,18 @@ function boot(cfg, values, opts) {
     INSPIRE_VALIDATOR_CONFIG: JSON.parse(JSON.stringify(cfg)) };
   /* the module's AJAX object: the answer the module gave for these values (justify_live_twin_php.php) */
   const rec = opts.record || 'XE-1';
-  win.EM = { T: { UV: { ajax(action, payload) {
+  const answerFor = (action, payload) => {
     const key = rec + ' ' + action + ' ' + payload.field + ' ' + (payload.values || {})[payload.field];
     asked.push(key);
-    const resp = PAGES.ajax[key];
+    return PAGES.ajax[key];
+  };
+  win.EM = { T: { UV: { ajax(action, payload) {
+    /* the lookups of the page's start arrive as one request (QRID_lookup); the module answers item by item */
+    if (action === 'lookup-batch') {
+      const answers = payload.items.map((it) => { const r = answerFor(it.action, it.payload); return r === undefined ? null : r; });
+      return { then(res) { res(JSON.parse(JSON.stringify({ answers }))); } };
+    }
+    const resp = answerFor(action, payload);
     return { then(res) { if (resp !== undefined) res(JSON.parse(JSON.stringify(resp))); } };
   } } } };
   global.document = doc; global.window = win;

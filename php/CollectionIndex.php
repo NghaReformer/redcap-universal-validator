@@ -30,7 +30,7 @@ final class CollectionIndex
     {
         $this->values = array_values($values);
         foreach ($this->values as $value) {
-            $t = trim((string)$value, " \t\r\n");
+            $t = Logic::comparable($value);   // as Logic::compare() reads it (AST-5)
             $this->exact[$t] = ($this->exact[$t] ?? 0) + 1;
             if ($t === '') $this->blanks++;
             elseif (preg_match(Logic::NUM_RE, $t)) $this->numbers[] = $t;
@@ -56,12 +56,13 @@ final class CollectionIndex
     /**
      * How many members satisfy "member $op $x" with Logic::compare()'s blank
      * polarity and case mode, or null for an operator or value it does not
-     * cover (the caller then compares member by member).
+     * cover (the caller then compares member by member). $mixed is what an
+     * ordered comparison of a number with a text yields there (AST-7).
      */
-    public function count($op, $x, $blank, $case)
+    public function count($op, $x, $blank, $case, $mixed = false)
     {
         if (!in_array($op, self::OPS, true) || !is_scalar($x)) return null;
-        $t = trim((string)$x, " \t\r\n");
+        $t = Logic::comparable($x);
         $n = count($this->values);
         if ($case === Logic::EXACT && ($op === '=' || $op === '<>')) {
             $same = $this->exact[$t] ?? 0;
@@ -69,11 +70,11 @@ final class CollectionIndex
         }
         $kind = $t === '' ? 'blank' : (preg_match(Logic::NUM_RE, $t) ? 'number' : 'text');
         // A member and the value from different classes: = never holds, <> always does,
-        // and an ordered comparison is the blank polarity against a blank, else false.
-        $apart = function ($size, $either) use ($op, $blank) {
+        // and an ordered comparison is the blank polarity against a blank, else $mixed.
+        $apart = function ($size, $either) use ($op, $blank, $mixed) {
             if ($op === '=') return 0;
             if ($op === '<>') return $size;
-            return $either && $blank ? $size : 0;
+            return ($either ? $blank : $mixed) ? $size : 0;
         };
         $count = 0;
         if ($this->blanks) {

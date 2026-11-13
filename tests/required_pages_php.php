@@ -123,12 +123,16 @@ namespace {
         // page 1 of the survey
         'consent'   => f('enrol', '', '', 'yesno'),
         'age'       => f('enrol', '', '', 'text'),
+        'email'     => f('enrol', '', '', 'text'),
         // page 2 (a section header starts it)
         'phone'     => f('enrol', '@UVREQUIRED={"when":"[consent]=\'1\'","blockSave":"hard"}', '', 'text', 'Contact'),
         'phone_alt' => f('enrol', '@UVREQUIRED={"when":"[consent]<>\'0\'","blockSave":"hard"}', '', 'text'),
         'mix'       => f('enrol', '@UVREQUIRED={"when":"[consent]=\'1\' and [phone]<>\'\'","blockSave":"hard"}', '', 'text'),
         // a choice filter on page 2 over page 1's answer (CHO-15)
         'pick'      => f('enrol', '@UVCHOICES={"when":"[consent]=\'1\'","hide":["9"]}', '', 'radio', '', '1, A | 9, Other'),
+        // @UVASSERT on page 2 over page 1's answers (AST-2, AST-6)
+        'email_c'   => f('enrol', '@UVASSERT={"assert":"[email]=[email_c]","message":"The two addresses differ","blockSave":"hard"}'),
+        'gated'     => f('enrol', '@UVASSERT={"assert":"[gated]<>\'bad\'","when":"[consent]=\'1\'","blockSave":"hard"}'),
         // page 3
         'notes'     => f('enrol', '', '', 'notes', 'Notes'),
         // the visit form: branching logic
@@ -256,20 +260,73 @@ namespace {
     check('survey page 1: consent is on this page, so the condition stays live (got ' . json_encode(ruleOf($cfg, 'phone')['whenAst'] ?? null) . ')',
         (ruleOf($cfg, 'phone')['whenAst'] ?? null) === ['cmp', '=', ['ref', 'consent', null], ['lit', '1']]);
 
-    $cfg = pageCfg(mod($resp('1')), '5', null);
-    check('survey, page not given: unchanged, the condition stays live',
-        (ruleOf($cfg, 'phone')['whenAst'] ?? null) === ['cmp', '=', ['ref', 'consent', null], ['lit', '1']]);
-    $cfg = pageCfg(mod($resp('1')), '5', '9');
-    check('survey, a page that does not exist: unchanged',
-        (ruleOf($cfg, 'phone')['whenAst'] ?? null) === ['cmp', '=', ['ref', 'consent', null], ['lit', '1']]);
-    $cfg = pageCfg(mod($resp('1')), '5', '2 or 1');
-    check('survey, a page that is not a number: unchanged',
-        (ruleOf($cfg, 'phone')['whenAst'] ?? null) === ['cmp', '=', ['ref', 'consent', null], ['lit', '1']]);
+    // AST-6: a survey of several pages whose page cannot be told. The whole
+    // instrument was taken to be on the page, so a field of another page went
+    // to the browser as a live reference and read blank there: two matching
+    // addresses were held by the hard block. No field is known to be on the
+    // page, so a rule with a condition is not checked there.
+    $same = ['5' => [351 => ['record_id' => '5', 'consent' => '1', 'age' => '30', 'email' => 'a@x.org', 'email_c' => 'a@x.org']]];
+    foreach ([null, '9', '2 or 1', '0'] as $badPage) {
+        $cfg = pageCfg(mod($same), '5', $badPage);
+        $label = 'survey of several pages, page ' . json_encode($badPage);
+        foreach (['phone', 'email_c', 'gated'] as $field) {
+            $r = ruleOf($cfg, $field);
+            check($label . ': the rule on ' . $field . ' is deferred, never checked against a field that may not be there (got '
+                . json_encode($r) . ')', $r !== null && !empty($r['deferred']));
+            check($label . ': no live reference to another field goes to the page for ' . $field,
+                strpos(json_encode($r), '["ref","consent"') === false && strpos(json_encode($r), '["ref","email"') === false);
+        }
+        check($label . ': no value of the response is in the page', strpos(json_encode($cfg), 'a@x.org') === false);
+    }
 
     \Project::$bySection = 0;
     $cfg = pageCfg(mod($resp('1')), '5', '1');
     check('survey on one page: every field is on it, the condition stays live',
         (ruleOf($cfg, 'phone')['whenAst'] ?? null) === ['cmp', '=', ['ref', 'consent', null], ['lit', '1']]);
+    $cfg = pageCfg(mod($same), '5', null);
+    check('survey on one page, page not given: nothing is deferred, both addresses are live (got ' . json_encode(ruleOf($cfg, 'email_c')) . ')',
+        empty(ruleOf($cfg, 'email_c')['deferred']) && empty(ruleOf($cfg, 'phone')['deferred'])
+        && (ruleOf($cfg, 'email_c')['assertAst'] ?? null) === ['cmp', '=', ['ref', 'email', null], ['ref', 'email_c', null]]);
+    \Project::$bySection = 1;
+
+    // AST-2: what a page of the survey does to a rule over another page's
+    // answer. Nothing blocks on a value the page cannot see.
+    $differ = ['5' => [351 => ['record_id' => '5', 'consent' => '1', 'age' => '30', 'email' => 'a@x.org', 'email_c' => 'b@x.org', 'gated' => 'bad']]];
+    $cfg = pageCfg(mod($differ), '5', '2');
+    $r = ruleOf($cfg, 'email_c');
+    check('AST-2: [email]=[email_c] across pages is deferred on page 2: no verdict from a value the page cannot see (got ' . json_encode($r) . ')',
+        !empty($r['deferred']) && strpos(json_encode($cfg), 'a@x.org') === false);
+    $r = ruleOf($cfg, 'gated');
+    check('AST-2: a "when" over page 1 is settled from the saved response and named as read once, so the page does not block on it (got '
+        . json_encode($r) . ')',
+        ($r['whenAst'] ?? null) === ['const', true] && count($r['snapshotFields'] ?? []) === 1 && !empty($r['snapshotGate'])
+        && empty($r['deferred']));
+    // The data entry form shows the whole instrument, so the study team is
+    // told in the log, once per rule, when a respondent saves a page.
+    $m = mod($differ);
+    $_GET['__page__'] = '2';
+    $m->redcap_save_record(149, '5', 'enrol', 351, null, 'surveyhash', '55', 1);
+    unset($_GET['__page__']);
+    $unc = logged($m, 'uvalidate-unconfigurable');
+    $why = whyFor($unc, 'email_c');
+    check('AST-2: a survey save logs that the rule on email_c reads [email] on another page and does not hold the save there (got '
+        . json_encode($why) . ')',
+        $why !== null && strpos($why, 'reads [email] on another page') !== false && strpos($why, 'does not hold the save') !== false);
+    $why = whyFor($unc, 'gated');
+    check('AST-2: and the rule on gated, for [consent]', $why !== null && strpos($why, 'reads [consent] on another page') !== false);
+    $why = whyFor($unc, 'mix');
+    check('AST-2: a rule that reads its own page too names only the other page\'s field (got ' . json_encode($why) . ')',
+        $why !== null && strpos($why, 'reads [consent] on another page') !== false && strpos($why, '[phone]') === false);
+    check('AST-2: the audit still reports the addresses that differ',
+        in_array('email_c', fieldsOf(logged($m, 'invalid-id-saved')), true));
+    $m = mod($differ);
+    $m->redcap_save_record(149, '5', 'enrol', 351, null, null, null, 1);
+    check('AST-2: a data entry save logs no such note: the form shows every field',
+        whyFor(logged($m, 'uvalidate-unconfigurable'), 'email_c') === null);
+    \Project::$bySection = 0;
+    $m = mod($differ);
+    $m->redcap_save_record(149, '5', 'enrol', 351, null, 'surveyhash', '55', 1);
+    check('AST-2: nor does a survey shown on one page', whyFor(logged($m, 'uvalidate-unconfigurable'), 'email_c') === null);
     \Project::$bySection = 1;
 
     // the data entry form is one page whatever __page__ says

@@ -69,6 +69,13 @@ namespace ExternalModules {
                 $GLOBALS['__AMONG_READS'][] = [$sql, $params];
                 return \uv_among_rows($sql, $params);
             }
+            // How many rows a field has, counted as far as a limit
+            // (FieldValues::moreRowsThan): __FIELD_ROWS, or none.
+            if (strpos($sql, 'SELECT COUNT(*) FROM (SELECT 1 FROM redcap_data WHERE project_id = ? AND field_name = ?') !== false) {
+                $GLOBALS['__COUNT_READS'][] = [$sql, $params];
+                if (!empty($GLOBALS['__NO_TABLE'])) return false;
+                return [[isset($GLOBALS['__FIELD_ROWS']) ? (int) $GLOBALS['__FIELD_ROWS'] : 0]];
+            }
             if (strpos($sql, 'FROM redcap_data WHERE project_id = ? AND field_name = ?') !== false) {
                 $GLOBALS['__TABLE_READS'][] = [$sql, $params];
                 return \REDCap::tableRows($sql, $params);
@@ -331,6 +338,69 @@ namespace {
     $r = ask($m, 'r_plain', ['r_plain' => 'SP-NONE'], '1', 'result');
     check('EXS-4 plain rule not found: no record is read (got ' . count(\REDCap::$calls) . ' reads)',
         $r['state'] === 'not-found' && count(\REDCap::$calls) === 0);
+    // ---- a field too large to read whole: a person's live lookup answers at once -------
+    // (reported 2026-11-11: with the value index not built, a lookup read every
+    // saved value of the field while the person waited at Save.)
+    $m = mod('nurse', $DB, $DATA_B, $FULL);
+    $GLOBALS['__FIELD_ROWS'] = \INSPIRE\UniversalValidator\UniversalValidator::LIVE_WHOLE_READ_ROWS + 1;
+    $GLOBALS['__COUNT_READS'] = [];
+    $r = ask($m, 'r_plain', ['r_plain' => 'SP-77'], '1', 'result');
+    if ($INDEX) {
+        check('large field, index built: answered from the index, nothing counted',
+            $r['state'] === 'found' && $GLOBALS['__COUNT_READS'] === [] && $GLOBALS['__TABLE_READS'] === []);
+    } else {
+        check('large field, no index answer: "could not check", and why (got ' . json_encode($r) . ')',
+            $r['state'] === 'unknown' && ($r['why'] ?? null) === 'the lookup for this field is still being prepared');
+        check('...after one bounded count, with no read of the field and no export',
+            count($GLOBALS['__COUNT_READS']) === 1 && $GLOBALS['__TABLE_READS'] === [] && count(\REDCap::$calls) === 0
+            && strpos($GLOBALS['__COUNT_READS'][0][0], 'LIMIT ' . (\INSPIRE\UniversalValidator\UniversalValidator::LIVE_WHOLE_READ_ROWS + 1) . ')') !== false);
+        $m = mod('nurse', $DB, $DATA_B, $FULL);
+        $GLOBALS['__FIELD_ROWS'] = \INSPIRE\UniversalValidator\UniversalValidator::LIVE_WHOLE_READ_ROWS;
+        $r = ask($m, 'r_plain', ['r_plain' => 'SP-77'], '1', 'result');
+        check('a field at the limit is read as before', $r['state'] === 'found' && count($GLOBALS['__TABLE_READS']) === 1);
+        $m = mod('nurse', $DB, $DATA_B, $FULL);
+        $GLOBALS['__FIELD_ROWS'] = \INSPIRE\UniversalValidator\UniversalValidator::LIVE_WHOLE_READ_ROWS + 1;
+        $m->systemSettings = ['lookup-index-system-off' => '1'] + (isset($m->systemSettings) && is_array($m->systemSettings) ? $m->systemSettings : []);
+        $GLOBALS['__COUNT_READS'] = [];
+        $r = ask($m, 'r_plain', ['r_plain' => 'SP-77'], '1', 'result');
+        check('large field, index turned off: read whatever its size, nothing counted',
+            $r['state'] === 'found' && $GLOBALS['__COUNT_READS'] === [] && count($GLOBALS['__TABLE_READS']) === 1);
+        // The save audit is not a person waiting: it reads in full.
+        $m = mod('nurse', $DB, $DATA_B, $FULL);
+        \REDCap::$data[149]['1'][351]['r_plain'] = 'SP-NONE';
+        \REDCap::reset();
+        $GLOBALS['__COUNT_READS'] = [];
+        $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 1);
+        check('large field: the save audit still reads the field and logs the miss',
+            $GLOBALS['__COUNT_READS'] === [] && count($GLOBALS['__TABLE_READS']) >= 1 && count(logsOf($m, 'invalid-id-saved')) === 1);
+    }
+    unset($GLOBALS['__FIELD_ROWS']);
+    // ---- how long a save waits for a lookup: the system setting reaches the page --------
+    foreach ([[null, null], ['', null], ['0', 0], ['800', 800], ['10000', 10000], ['10001', null], ['-1', null],
+              ['1.5', null], ['abc', null], [' 250 ', 250], [2000, 2000]] as $case) {
+        $m = mod('nurse', $DB, $DATA_B, $FULL);
+        if ($case[0] !== null) $m->systemSettings['lookup-save-hold-ms'] = $case[0];
+        $cfg = pageConfig($m, '1', 'result');
+        check('lookup-save-hold-ms ' . json_encode($case[0]) . ' gives lookupHoldMs ' . json_encode($case[1])
+            . ' (got ' . json_encode($cfg['lookupHoldMs'] ?? null) . ')',
+            is_array($cfg) && ($cfg['lookupHoldMs'] ?? null) === $case[1] && array_key_exists('lookupHoldMs', $cfg) === ($case[1] !== null));
+    }
+    $m = mod('nurse', $DB, $DATA_B, $FULL);
+    $m->systemSettings['lookup-save-hold-ms'] = '800';
+    $cfg = pageConfig($m, '1', 'enrol');
+    check('a page with no live lookup is not sent lookupHoldMs', !is_array($cfg) || !array_key_exists('lookupHoldMs', $cfg));
+    // ---- quiet mode: the project setting reaches the page ----------------------------
+    $m = mod('nurse', $DB, $DATA_B, $FULL);
+    $cfg = pageConfig($m, '1', 'result');
+    check('quiet-ok unset: the page is not sent quietOk', is_array($cfg) && !array_key_exists('quietOk', $cfg));
+    $m = mod('nurse', $DB, $DATA_B, $FULL);
+    $m->settingsBy[149]['quiet-ok'] = true;
+    $cfg = pageConfig($m, '1', 'result');
+    check('quiet-ok checked: the page is sent "quietOk": true', is_array($cfg) && ($cfg['quietOk'] ?? null) === true);
+    $m->settingsBy[150]['quiet-ok'] = true;
+    unset($m->settingsBy[149]['quiet-ok']);
+    $cfg = pageConfig($m, '1', 'result');
+    check('quiet-ok is read per project', is_array($cfg) && !array_key_exists('quietOk', $cfg));
     $m = mod('nurse', $DB, $DATA_B, $FULL);
     $r = ask($m, 'r_ret', ['r_ret' => 'SP-5'], '1', 'result');
     check('EXS-4 return rule: only the record that holds the value is read (got ' . \REDCap::$rowsOut . ' records)',

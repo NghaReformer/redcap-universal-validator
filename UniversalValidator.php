@@ -151,6 +151,138 @@ class UniversalValidator extends AbstractExternalModule
         }
     }
 
+    // -- what the audit found, told to the person who saved ------------------
+
+    /**
+     * The findings the next page tells the person who saved about, as
+     * rule type => reason => what the page says after the field's name. A
+     * live lookup never keeps a save back (it fails open when it has no
+     * answer), so for these the audit after the save can be the first to
+     * know, and the module log alone would leave the person entering the
+     * data unaware. A type or reason not listed here is logged as before and
+     * shown nowhere.
+     */
+    const AFTER_SAVE_TEXT = [
+        'unique' => ['duplicate-value' => 'this value is already recorded in another record.'],
+        'exists' => [
+            'not-found' => 'this value was not found where this field looks it up.',
+            'filtered'  => 'this value was found, but not in an entry this field accepts.',
+        ],
+    ];
+    /** Most findings kept for the next page, seconds they are kept, and the longest label shown. */
+    const AFTER_SAVE_MAX = 10;
+    const AFTER_SAVE_SECONDS = 600;
+    const AFTER_SAVE_LABEL_MAX = 80;
+
+    /** Session key of the findings kept for the next page of project $pid. */
+    private static function afterSaveKey($pid)
+    {
+        return 'uvalidate_after_save_' . (int) $pid;
+    }
+
+    /**
+     * Keep one audit finding for the next page this person opens
+     * (redcap_every_page_top). Only for a form save by a signed-in person:
+     * never a survey respondent's save, never a save with no instrument (an
+     * import, the API), never without a session to keep it in. The project
+     * setting after-save-notice-off turns it off. The value itself is not
+     * kept: the notice names the record the person saved and the field.
+     */
+    private function noteAfterSave($pid, $record, $instrument, array $finding)
+    {
+        try {
+            $type = isset($finding['type']) ? (string) $finding['type'] : '';
+            $reason = isset($finding['reason']) ? (string) $finding['reason'] : '';
+            if (!isset(self::AFTER_SAVE_TEXT[$type][$reason])) return;
+            if ($this->surveySave || !is_string($instrument) || $instrument === '') return;
+            if ($this->currentUsername() === null) return;
+            if (!function_exists('session_status') || session_status() !== PHP_SESSION_ACTIVE) return;
+            if ($this->getProjectSetting('after-save-notice-off', $pid)) return;
+            $key = self::afterSaveKey($pid);
+            $notes = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
+            if (count($notes) >= self::AFTER_SAVE_MAX) return;
+            $notes[] = ['record' => (string) $record, 'field' => (string) $finding['field'], 'type' => $type, 'reason' => $reason, 't' => time()];
+            $_SESSION[$key] = $notes;
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::noteAfterSave');
+        }
+    }
+
+    /**
+     * The findings kept for this person's next page, taken out of the session
+     * (they are shown once). Those older than AFTER_SAVE_SECONDS, and any
+     * that is not of the shape noteAfterSave() writes, are dropped.
+     */
+    private function takeAfterSaveNotes($pid)
+    {
+        if (!function_exists('session_status') || session_status() !== PHP_SESSION_ACTIVE) return [];
+        $key = self::afterSaveKey($pid);
+        if (!isset($_SESSION[$key])) return [];
+        $notes = is_array($_SESSION[$key]) ? $_SESSION[$key] : [];
+        unset($_SESSION[$key]);
+        $out = [];
+        $now = time();
+        foreach ($notes as $n) {
+            if (!is_array($n) || !isset($n['record'], $n['field'], $n['type'], $n['reason'], $n['t'])) continue;
+            if (!is_int($n['t']) || ($now - $n['t']) >= self::AFTER_SAVE_SECONDS) continue;
+            if (!isset(self::AFTER_SAVE_TEXT[(string) $n['type']][(string) $n['reason']])) continue;
+            $out[] = $n;
+            if (count($out) >= self::AFTER_SAVE_MAX) break;
+        }
+        return $out;
+    }
+
+    /**
+     * The notice for the findings kept by noteAfterSave(), as HTML, or '' when
+     * there are none. Every piece of text in it is escaped. A field is named
+     * by its label (tags removed, cut at AFTER_SAVE_LABEL_MAX), or by its
+     * variable name when it has none.
+     */
+    private function afterSaveNoticeHtml($pid, array $notes)
+    {
+        if (!$notes) return '';
+        $dd = [];
+        try { $dd = $this->dataDictionary($pid) ?: []; } catch (\Throwable $e) { Faults::swallow($e, 'UniversalValidator::afterSaveNoticeHtml'); }
+        $esc = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+        $items = '';
+        foreach ($notes as $n) {
+            $field = (string) $n['field'];
+            $label = isset($dd[$field]['field_label']) ? trim(preg_replace('/\s+/', ' ', strip_tags((string) $dd[$field]['field_label']))) : '';
+            if ($label === '') $label = $field;
+            elseif (strlen($label) > self::AFTER_SAVE_LABEL_MAX) {
+                $label = (function_exists('mb_substr') ? mb_substr($label, 0, self::AFTER_SAVE_LABEL_MAX, 'UTF-8') : substr($label, 0, self::AFTER_SAVE_LABEL_MAX)) . '...';
+            }
+            $items .= '<li>Record <b>' . $esc($n['record']) . '</b>, ' . $esc($label) . ' (<code>' . $esc($field) . '</code>): '
+                . $esc(self::AFTER_SAVE_TEXT[(string) $n['type']][(string) $n['reason']]) . '</li>';
+        }
+        return '<div id="uv-after-save-notice" role="status" aria-live="polite" style="margin:8px 0;padding:8px 12px;border:1px solid #d9c48a;'
+            . 'border-radius:4px;background:#fdf8e6;color:#5c4500;font-size:13px;max-width:900px">'
+            . '<button type="button" aria-label="Close" onclick="this.parentNode.style.display=\'none\'" style="float:right;border:0;'
+            . 'background:none;font-size:16px;line-height:1;cursor:pointer;color:inherit">&times;</button>'
+            . '<b>Saved.</b> The check after the save found ' . (count($notes) === 1 ? 'a value' : 'values') . ' to look at again:'
+            . '<ul style="margin:4px 0 0 18px;padding:0">' . $items . '</ul></div>';
+    }
+
+    /**
+     * Shows, once, what the audit of this person's last form save found
+     * (noteAfterSave). Runs on every project page, so it does nothing but
+     * look for the session key unless there is something to show. Never on a
+     * survey page, and only for a signed-in person.
+     */
+    public function redcap_every_page_top($project_id = null)
+    {
+        try {
+            if (!$project_id) return;
+            if (!function_exists('session_status') || session_status() !== PHP_SESSION_ACTIVE) return;
+            if (!isset($_SESSION[self::afterSaveKey($project_id)])) return;
+            if (defined('PAGE') && strpos((string) constant('PAGE'), 'surveys/') === 0) return;
+            if ($this->currentUsername() === null) return;
+            echo $this->afterSaveNoticeHtml($project_id, $this->takeAfterSaveNotes($project_id));
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::redcap_every_page_top');
+        }
+    }
+
     /**
      * Write what this request caught and carried on from (Faults) to the
      * module log as one uvalidate-faults entry, when the project's debug
@@ -307,6 +439,15 @@ class UniversalValidator extends AbstractExternalModule
             if ($own) {
                 $this->logUnconfigurable($ruleIndex, $own, 'configuration error: ' . (string) $r['configError'],
                     $instrument, $event_id, $repeat_instance);
+            }
+        }
+
+        // A survey save of an instrument shown one section per page: a rule
+        // that reads another page's field does not block there. Said once for
+        // each such rule, where the study team reads rule problems (AST-2).
+        if ($this->surveySave && $onForm !== null) {
+            foreach ($this->surveyCrossPageRules($rules, $project_id, $instrument) as $ruleIndex => $note) {
+                $this->logUnconfigurable($ruleIndex, $note['fields'], $note['why'], $instrument, $event_id, $repeat_instance);
             }
         }
 
@@ -611,6 +752,8 @@ class UniversalValidator extends AbstractExternalModule
             if ($justified) $extra['justified_by'] = (string) $v['justifiedBy'];
             $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason'],
                 $extra, $justified ? 'uvalidate-justified' : 'invalid-id-saved');
+            // The person who saved is told on the next page (a reason given with @UVJUSTIFY settles it).
+            if (!$justified) $this->noteAfterSave($project_id, $record, $instrument, $v);
         }
         foreach ((isset($f['unevaluated']) ? $f['unevaluated'] : []) as $u) {
             $this->logNotEvaluated($logMode, $project_id, $record, $ruleIndex, $u, $instrument, $event_id, $repeat_instance);
@@ -1529,6 +1672,7 @@ class UniversalValidator extends AbstractExternalModule
                     $t = $this->existsRecordFromTable($pid, $spec, $value, $read, $ids, $scope, $dag, $self, $prefer, $opts, $filtered,
                         $budgeted ? 'index' : 'any');
                     if ($t !== null) return $t;
+                    if ($this->liveReadSkipped) return $unknown + ['why' => self::LIVE_READ_SKIPPED_WHY];
                 }
                 // REDCap finds a record by its exact name only, so a value that
                 // differs from a record ID in letter case, or a number written
@@ -1579,6 +1723,9 @@ class UniversalValidator extends AbstractExternalModule
             if ($table) {
                 $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, $budgeted ? 'index' : 'any');
                 if ($t !== null) return $t;
+                // A signed-in person's live lookup of a field too large to
+                // read whole (wholeFieldRecords): the exports below cost more.
+                if ($this->liveReadSkipped) return $unknown + ['why' => self::LIVE_READ_SKIPPED_WHY];
             }
             if ($narrow && !$spec['returns'] && !($budgeted && $spec['where'] !== null)) {
                 $fl = self::collisionFilterLogic(array_keys($spec['target']), $spec['target'], $spec['fold'], $spec['marks']);
@@ -2565,6 +2712,35 @@ class UniversalValidator extends AbstractExternalModule
             $this->crossReadFailed[0] = true;
             return false;
         }
+    }
+
+    /**
+     * The action that carries several live lookups in one request, the
+     * lookups it may carry, and how many (LiveLookups::lookupBatch; twins
+     * QRID_LOOKUP_BATCH_ACTION and QRID_LOOKUP_BATCH_MAX in js/engine.js).
+     */
+    const LOOKUP_BATCH_ACTION = 'lookup-batch';
+    const LOOKUP_BATCH_OF = ['unique-check', 'exists-check'];
+    const LOOKUP_BATCH_MAX = 40;
+
+    /** Longest wait the system setting lookup-save-hold-ms may ask for; the engine refuses more (QRID_SAVE_HOLD_MAX_MS). */
+    const LOOKUP_SAVE_HOLD_MAX_MS = 10000;
+
+    /**
+     * The system setting lookup-save-hold-ms: milliseconds a save waits for a
+     * live lookup still on its way, 0 for never. Null when blank, not a whole
+     * number or above LOOKUP_SAVE_HOLD_MAX_MS, and the page keeps its own.
+     */
+    private function lookupSaveHoldMs()
+    {
+        try {
+            $v = $this->getSystemSetting('lookup-save-hold-ms');
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $v = is_int($v) ? (string) $v : trim((string) $v);
+        if (!preg_match('/^(0|[1-9][0-9]{0,4})$/', $v) || (int) $v > self::LOOKUP_SAVE_HOLD_MAX_MS) return null;
+        return (int) $v;
     }
 
     /** A whole-number system setting above zero, or $default when blank or not one. */
@@ -4721,6 +4897,46 @@ class UniversalValidator extends AbstractExternalModule
         return in_array($mode, self::LOG_MODES, true) ? $mode : 'none';
     }
 
+    /** Most field names the project setting shared-reference-fields may list. */
+    const SHARED_REFERENCE_FIELDS_MAX = 50;
+
+    /**
+     * Project setting shared-reference-fields as a set (field => true): the
+     * fields whose saved value a data-entry page may read for a rule on
+     * another form, whatever the person's rights for the form that holds
+     * them (disclosableFields). Names are separated by commas, spaces or new
+     * lines; square brackets around a name are allowed. A name that is not a
+     * field name is left out, and so is everything past
+     * SHARED_REFERENCE_FIELDS_MAX. Unreadable or blank: none.
+     */
+    private function sharedReferenceFields($pid)
+    {
+        try {
+            $raw = $this->getProjectSetting('shared-reference-fields', $pid);
+        } catch (\Throwable $e) {
+            return [];
+        }
+        if (!is_string($raw) || trim($raw) === '') return [];
+        $out = [];
+        foreach (preg_split('/[\s,;]+/', strtolower($raw), -1, PREG_SPLIT_NO_EMPTY) as $name) {
+            $name = trim($name, '[]');
+            if (!preg_match('/^[a-z][a-z0-9_]*$/D', $name)) continue;
+            $out[$name] = true;
+            if (count($out) >= self::SHARED_REFERENCE_FIELDS_MAX) break;
+        }
+        return $out;
+    }
+
+    /** Project setting quiet-ok: the page shows no line for a field that passes. */
+    private function quietOk($pid)
+    {
+        try {
+            return (bool) $this->getProjectSetting('quiet-ok', $pid);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     /** Whether verbose diagnostic detail may be logged (admin opt-in per project). */
     private function debugEnabled($pid)
     {
@@ -5414,6 +5630,17 @@ class UniversalValidator extends AbstractExternalModule
                 break;
             }
         }
+        // How long a save waits for a live lookup still on its way, when an
+        // administrator set another length than the page's own (the engine's
+        // QRID_SAVE_HOLD_MS). Sent only to a page with such a lookup.
+        $hold = $this->lookupSaveHoldMs();
+        if ($hold !== null) {
+            foreach ($config['rules'] as $r) {
+                if (is_array($r) && in_array($r['type'] ?? '', ['unique', 'exists'], true)) { $config['lookupHoldMs'] = $hold; break; }
+            }
+        }
+        // Quiet mode: a field that passes shows no line (QRID_QUIET_OK).
+        if ($pid !== null && $config['rules'] && $this->quietOk($pid)) $config['quietOk'] = true;
         // A form the person may only read, or a locked one, shows the record
         // as it is saved: the page fills no field a rule returns to (EXS-2).
         if ($context !== 'survey' && $record !== null && $record !== '' && $pid !== null) {
@@ -6028,9 +6255,19 @@ class UniversalValidator extends AbstractExternalModule
         // A survey shown one section per page renders only this page's fields,
         // so a field answered on another page is off-page like a field of
         // another form, and is settled here from the saved response (REQ-4).
+        // When the survey has several pages and the one being drawn cannot be
+        // told, the fields on the page are unknown, as with an unknown form:
+        // nothing is live and every rule with a condition is deferred (AST-6).
+        $unknownPage = false;
         if (!$unknownForm && $context === 'survey') {
             $page = $this->surveyPageFields($pid, $instrument);
-            if ($page !== null) $live = array_intersect_key($live, $page);
+            if ($page !== null) {
+                $live = array_intersect_key($live, $page);
+            } elseif ($this->surveyPageUnknown($pid, $instrument)) {
+                $unknownPage = true;
+                $unknownForm = true;
+                $live = [];
+            }
         }
 
         $values = [];
@@ -6325,9 +6562,12 @@ class UniversalValidator extends AbstractExternalModule
         if ($unknownForm) {
             foreach ($rules as $i => $r) {
                 if (!empty($r['deferred']) && empty($rules[$i]['deferredWhy'])) {
-                    $rules[$i]['deferredWhy'] = ['could not read the data dictionary for this project, so the '
-                        . 'fields on this form are unknown — the rule is not checked here rather than '
-                        . 'checked against values that may not be on the page.'];
+                    $rules[$i]['deferredWhy'] = [$unknownPage
+                        ? 'could not tell which page of the survey is shown, so the fields on it are unknown: the rule is '
+                            . 'not checked here rather than checked against values that may not be on the page.'
+                        : 'could not read the data dictionary for this project, so the '
+                            . 'fields on this form are unknown — the rule is not checked here rather than '
+                            . 'checked against values that may not be on the page.'];
                 }
             }
         }
@@ -6359,12 +6599,27 @@ class UniversalValidator extends AbstractExternalModule
     {
         if ($context !== 'form' || !$refs) return [];
         try {
-            $forms = $this->userFormRights($pid);
-            if ($forms === null) return [];
-            $allForms = ($forms === true);
             $dd = $this->dataDictionary($pid);
             if (!$dd) return [];
             $out = [];
+            // SHARED REFERENCE FIELDS (project setting shared-reference-fields):
+            // fields the project named as readable by every signed-in person
+            // at a data-entry form of the record, whatever their rights for
+            // the form that holds them - a consent date every later form
+            // counts its windows from. Gates 1 and 2 still hold: never a
+            // survey page, and only a REDCap-authenticated user. Gate 3 is
+            // what the project waived for these fields, and only these.
+            if ($this->currentUsername() !== null) {
+                $shared = $this->sharedReferenceFields($pid);
+                foreach ($refs as $f) {
+                    if (!isset($shared[$f]) || !isset($dd[$f]['form_name'])) continue;
+                    if ($instrument !== null && $dd[$f]['form_name'] === $instrument) continue;  // already live
+                    $out[$f] = true;
+                }
+            }
+            $forms = $this->userFormRights($pid);
+            if ($forms === null) return $out;
+            $allForms = ($forms === true);
             foreach ($refs as $f) {
                 if (!isset($dd[$f]['form_name'])) continue;          // unknown field -> no
                 $form = $dd[$f]['form_name'];
@@ -8210,6 +8465,13 @@ class UniversalValidator extends AbstractExternalModule
             return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — dates are compared as REDCap '
                 . 'stores them, so write it as Y-M-D, such as \'2026-03-01\'' . ($k === 'dates' ? '' : ' or \'2026-03-01 08:30\'') . '.';
         }
+        // Written the stored way, but no day of the calendar or no time of the
+        // day: '2024-02-31' was accepted and compared as text (AST-8).
+        if (strpos($k, 'dates') === 0 && (!checkdate((int) substr($v, 5, 2), (int) substr($v, 8, 2), (int) substr($v, 0, 4))
+                || (strlen($v) > 10 && ((int) substr($v, 11, 2) > 23 || (int) substr($v, 14, 2) > 59 || (int) substr($v, 17, 2) > 59)))) {
+            return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\', which is not a date in the calendar'
+                . ($k === 'dates' ? '' : ' with a time of the day') . '. For the end of a month, write its last day.';
+        }
         if (strpos($k, 'times') === 0 && !preg_match('/^\d{2}:\d{2}(?::\d{2})?$/D', $v)) {
             return $label . ' compares ' . $shown . ', which holds ' . $k . ', with \'' . $v . '\' — write the time as REDCap stores it, such as \'08:30\'.';
         }
@@ -8219,6 +8481,13 @@ class UniversalValidator extends AbstractExternalModule
         if ($mark($f) !== null && strpos($v, ',') !== false) {
             return $label . ' compares ' . $shown . ', which holds numbers, with \'' . $v . '\' — write numbers in ' . $label . ' with a '
                 . 'decimal point, such as \'' . str_replace(',', '.', $v) . '\'.';
+        }
+        // A number has no order against a text, so < > <= >= with one could
+        // never hold: [n]>='abc' on an integer field was accepted (AST-8).
+        // "assert" and "when" only: a "where" compares stored text.
+        if (!$sameMark && $mark($f) !== null && isset(Logic::ORDERED_OPS[$n[1]]) && !preg_match(Logic::NUM_RE, trim($v, " \t\r\n"))) {
+            return $label . ' compares ' . $shown . ', which holds numbers, with \'' . $v . '\', which is not a number written in digits, '
+                . 'so ' . $n[1] . ' could never hold. Write a number, such as 5 or 12.5.';
         }
         return null;
     }
@@ -10152,9 +10421,20 @@ class UniversalValidator extends AbstractExternalModule
     {
         $page = (isset($_GET['__page__']) && is_scalar($_GET['__page__'])) ? (string) $_GET['__page__'] : '';
         if (!$instrument || !preg_match('/^[1-9][0-9]{0,4}$/D', $page)) return null;
-        if (!$this->surveyBySection($pid, $instrument)) return null;
+        $pages = $this->surveyPages($pid, $instrument);
+        return isset($pages[(int) $page]) ? $pages[(int) $page] : null;
+    }
+
+    /**
+     * The pages of a survey shown one section per page, as page number =>
+     * field => true; [] when $instrument is not such a survey, has one page,
+     * or the dictionary cannot be read.
+     */
+    private function surveyPages($pid, $instrument)
+    {
+        if (!$instrument || !$this->surveyBySection($pid, $instrument)) return [];
         $dd = $this->dataDictionary($pid);
-        if (!$dd) return null;
+        if (!$dd) return [];
         $pk = (string) array_key_first($dd);
         $pages = [];
         $n = 1;
@@ -10165,7 +10445,65 @@ class UniversalValidator extends AbstractExternalModule
             $pages[$n][(string) $name] = true;
             $seen++;
         }
-        return (count($pages) > 1 && isset($pages[(int) $page])) ? $pages[(int) $page] : null;
+        return count($pages) > 1 ? $pages : [];
+    }
+
+    /**
+     * Whether $instrument is a survey of several pages and the page REDCap is
+     * drawing cannot be told: $_GET['__page__'] is absent, not a number, or
+     * names no page. The fields on the page are then unknown. Reading that as
+     * "the whole instrument is on the page" shipped a live reference to a
+     * field of another page, which the browser read as blank: a matching
+     * second e-mail address was then held by a hard block (AST-6).
+     */
+    private function surveyPageUnknown($pid, $instrument)
+    {
+        return $this->surveyPages($pid, $instrument) && $this->surveyPageFields($pid, $instrument) === null;
+    }
+
+    /**
+     * What a survey shown one section per page does to the rules that read a
+     * field of another page than the field they check, as rule index =>
+     * ['fields' => the rule's fields on $instrument, 'why' => text] (AST-2).
+     * The survey page settles such a comparison from the saved response or
+     * leaves the rule unchecked, and no block holds there (foldRuleConditions).
+     * The data entry form shows the whole instrument, so nothing on it tells
+     * the designer; the save audit logs this once for each rule.
+     */
+    private function surveyCrossPageRules(array $rules, $pid, $instrument)
+    {
+        $pageOf = [];
+        foreach ($this->surveyPages($pid, $instrument) as $n => $fields) {
+            foreach ($fields as $f => $_) $pageOf[$f] = $n;
+        }
+        $out = [];
+        if (!$pageOf) return $out;
+        foreach ($rules as $i => $r) {
+            if (!empty($r['configError']) || !isset($r['fields']) || !is_array($r['fields'])) continue;
+            $own = [];
+            foreach ($r['fields'] as $f) if (is_string($f) && isset($pageOf[$f])) $own[$f] = $pageOf[$f];
+            if (!$own) continue;
+            $read = [];
+            foreach (ModeRegistry::conditionTexts($r) as $w) {
+                $p = Logic::parse($w);
+                if (empty($p['ok'])) continue;
+                foreach (Logic::referencedFields($p['ast']) as $ref) $read[$ref[0]] = true;
+            }
+            foreach (ModeRegistry::operandTexts($r) as $text) {
+                $op = ModeRegistry::operandRef($text);
+                if ($op !== null) $read[(string) $op[1]] = true;
+            }
+            $other = [];
+            foreach ($read as $f => $_) {
+                if (isset($pageOf[$f]) && array_diff($own, [$pageOf[$f]])) $other[] = '[' . $f . ']';
+            }
+            if (!$other) continue;
+            $out[$i] = ['fields' => array_keys($own), 'why' => 'on the survey, shown one section per page, this rule reads '
+                . implode(', ', $other) . ' on another page than the field it checks. The survey page then shows no verdict, or shows one '
+                . 'that does not hold the save, whatever "blockSave" says; the audit after a save still checks the value. '
+                . 'Put the fields in one section to check and hold the save on the page.'];
+        }
+        return $out;
     }
 
     /** Whether $instrument is a survey set to show one section per page. */
@@ -10990,7 +11328,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave',
         'returnBarred', 'valueHistoryOverride', 'roleBookOverride', 'auditPid', 'uniqueAuditPlan', 'uniqueAuditReads',
-        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled'];
+        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveStaffLookup', 'liveReadSkipped'];
 
     /** Every SCAN_MEMOS property back to its declared default. */
     private function resetScanMemos()
@@ -11154,8 +11492,16 @@ class UniversalValidator extends AbstractExternalModule
 
     // The Validation scan lives in php/ScanRuns.php (QUA-2).
 
-    /** Per-session window for a signed-in caller of the live lookups (unique-check, exists-check). */
-    const THROTTLE_SIGNED_IN = 60;
+    /**
+     * New questions a signed-in caller of the live lookups (unique-check,
+     * exists-check) may ask per minute and session, when the system setting
+     * lookup-new-values-per-minute is blank (LiveLookups::signedInRateLimited).
+     * A question the session asked before is not counted.
+     */
+    const THROTTLE_SIGNED_IN = 120;
+    /** Seconds a question stays remembered as asked, and the most that are remembered. */
+    const THROTTLE_SEEN_SECONDS = 600;
+    const THROTTLE_SEEN_MAX = 400;
 
     /** Per-session window. Cheap, and keyed on something the caller controls. */
     const THROTTLE_SESSION = 30;
@@ -11350,6 +11696,10 @@ class UniversalValidator extends AbstractExternalModule
         // the budget pays for the table read of a miss.
         $t = $fromTable($mayFullRead === null ? 'any' : 'index');
         if ($t[0]) return $t[1];
+        // A signed-in person's live lookup of a field too large to read whole
+        // (wholeFieldRecords): not settled, and the exports below, which cost
+        // more than the read left out, are not made either.
+        if ($this->liveReadSkipped) return false;
 
         // Live-endpoint amplification guard (F4): the no-auth path would otherwise
         // export the WHOLE project on every call. Narrow the read to candidate
@@ -11420,7 +11770,7 @@ class UniversalValidator extends AbstractExternalModule
             return Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) === $k;
         };
         $recs = $via === 'table' ? null : $this->indexedRecords($pid, $fields, $marks, $value, $eventId, $accept);
-        if ($recs === null && $via !== 'index') $recs = $this->fieldValues()->recordsWhere($pid, $fields, $eventId, $accept);
+        if ($recs === null && $via !== 'index') $recs = $this->wholeFieldRecords($pid, $fields, $eventId, $accept);
         if ($recs === null || $excludeRecord === null || $excludeRecord === '') return $recs;
         $skip = (string) $excludeRecord;
         return array_values(array_filter($recs, function ($r) use ($skip) { return $r !== $skip; }));
@@ -11448,7 +11798,7 @@ class UniversalValidator extends AbstractExternalModule
             return Logic::lookupKey($t, $fold, $mark) === $key;
         };
         $recs = $via === 'table' ? null : $this->indexedRecords($pid, [$field], [$field => $mark], $value, $event, $accept);
-        if ($recs === null && $via !== 'index') $recs = $this->fieldValues()->recordsWhere($pid, [$field], $event, $accept);
+        if ($recs === null && $via !== 'index') $recs = $this->wholeFieldRecords($pid, [$field], $event, $accept);
         if ($recs === null || $skip === null || $skip === '') return $recs;
         $skip = (string) $skip;
         return array_values(array_filter($recs, function ($r) use ($skip) { return $r !== $skip; }));
@@ -11559,6 +11909,39 @@ class UniversalValidator extends AbstractExternalModule
     {
         if ($this->fieldValuesReader === null) $this->fieldValuesReader = new Scan\FieldValues($this);
         return $this->fieldValuesReader;
+    }
+
+    /**
+     * Rows of the searched fields above which a signed-in person's live
+     * lookup does not read the whole field when the value index cannot
+     * answer: the read takes seconds at this size and tens of seconds at
+     * 400,000 rows, and nobody at a form waits for it. The lookup answers
+     * "could not check" at once; the cron builds the index, and the save
+     * audit and the Validation scan read in full as before.
+     */
+    const LIVE_WHOLE_READ_ROWS = 50000;
+    /** What such a lookup tells the person. */
+    const LIVE_READ_SKIPPED_WHY = 'the lookup for this field is still being prepared';
+    /** @var bool this request answers a signed-in person's live lookup (LiveLookups) */
+    private $liveStaffLookup = false;
+    /** @var bool that lookup left a whole-field read out (wholeFieldRecords) */
+    private $liveReadSkipped = false;
+
+    /**
+     * FieldValues::recordsWhere(), which reads every row of $fields; null,
+     * with liveReadSkipped set, when a signed-in person's live lookup would
+     * read more than LIVE_WHOLE_READ_ROWS rows. With the index turned off the
+     * read is made whatever its size: the whole-field read is then the only
+     * way the lookup has.
+     */
+    private function wholeFieldRecords($pid, array $fields, $eventId, callable $accept)
+    {
+        if ($this->liveStaffLookup && $this->lookupIndex() !== null
+                && $this->fieldValues()->moreRowsThan($pid, $fields, self::LIVE_WHOLE_READ_ROWS) === true) {
+            $this->liveReadSkipped = true;
+            return null;
+        }
+        return $this->fieldValues()->recordsWhere($pid, $fields, $eventId, $accept);
     }
 
     /**

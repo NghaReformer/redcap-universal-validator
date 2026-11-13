@@ -225,6 +225,8 @@ logic**:
 One condition may mix `and`, `or` and `not`. `not` binds tightest, then `and`,
 then `or`, as in REDCap; parentheses change the grouping. An unquoted
 `@UVASSERT` or `@UVREQUIRED` condition is read whole, up to the end of the line or the next action tag.
+Text after it on that line is a note only when it is plain words; anything else (`* 2`, `, [a] >= 0`,
+`if [c] = 1`) is a configuration error, not a rule cut short.
 
 Semantics worth knowing before relying on it:
 
@@ -279,7 +281,14 @@ Semantics worth knowing before relying on it:
   is off-page in the same way: REDCap renders only the current page's fields, so
   a comparison over that field is settled on the server from the saved response
   when the page is drawn. A comparison that mixes it with a field of the current
-  page is deferred, as any off-page value on a survey is.
+  page is deferred, as any off-page value on a survey is. Either way the rule
+  does not hold the save on the survey page, whatever its `blockSave` says: a
+  `"when"` over page 1 shows the message on page 2 without a block, and
+  `[email]=[email_confirm]` with the addresses on two pages is not checked until
+  the page is saved. A survey save logs, once for each rule, a `uvalidate-unconfigurable`
+  entry naming the rule and the other page's field. Put the fields in one section
+  to check and block on the page. When the page being shown cannot be told, no
+  rule with a condition is checked on it.
 - **A reference the module cannot resolve is refused, not guessed** (1.6.0).
   Until then an unreadable reference looked exactly like a genuine blank, and the
   rule was checked against a `''` that had never been read. Three cases are now
@@ -388,7 +397,10 @@ enforced with the same message/confirm/block modes as everything else:
   constraint's. Confirm-a-value ("type it twice") takes `"exact":true`:
   `@UVASSERT={"assert":"[id]=[id_confirm]","exact":true}`. Then `=` and `<>` compare
   the two entries character for character, so `00123` does not confirm `123` and
-  `+237677123456` does not confirm `237677123456`.
+  `+237677123456` does not confirm `237677123456`. That holds on number fields
+  too: `100` does not confirm `1e2`, nor `12,5` `12,50`. `"exact"` needs an `=`
+  or `<>` in the `assert`; on a rule with only `<` `>` `<=` `>=` it is a
+  configuration error.
 - **Text is compared without regard to case** (2.1.0-rc.1), like every condition in
   the module: `@UVASSERT="[answer]='yes'"` accepts `Yes` and `YES`. Add
   `"caseSensitive":true` when case carries meaning, such as codes where `ab12` and
@@ -432,7 +444,8 @@ enforced with the same message/confirm/block modes as everything else:
   the write, so the audit logs the violation to the module log once it has
   happened, and the Validation scan can find it later. Deferring buys privacy at
   the cost of both live feedback and the block — someone has to read the log or
-  run the scan.
+  run the scan. A survey shown one section per page defers a comparison between
+  answers of two pages in the same way.
 - **A survey page's source carries no rule detail.** The link is public, so the
   page config of a survey states no condition text, no field a value was read
   from and no reason a rule is not checked: a comparison settled on the server
@@ -621,27 +634,37 @@ enforcement:
   stop the same person submitting twice. Leaving it off costs no data quality —
   survey submissions are still covered by the post-save audit and the scan.
 - **Asked on change, not per keystroke.** The page asks when the value is
-  entered or changed (the field loses focus, or a picked option), and Save asks
-  again first. Typing clears the previous answer. The answer is *not used
+  entered or changed (the field loses focus, or a picked option), and once as
+  the form opens. Typing clears the previous answer. The answer is *not used
   before* (green), *already recorded* (red, enforced per `blockSave`) or *could
   not check* (amber, staff forms only).
+- **Save never asks the server.** Save goes by the answer the page has: an
+  *already recorded* is enforced and a *not used before* lets the save through,
+  however long the form has been open. Only a lookup already on its way (a
+  value typed just before Save) keeps the save back, with no dialog, for at
+  most 1.5 seconds, and the save goes on by itself when the answer lands or the
+  time is up. Nobody is asked to wait and save again. The system setting
+  **Live lookups: how long a save waits** changes the 1.5 seconds; 0 never
+  waits. From 2.3.0-rc.3 to 2.4.0 Save asked again about an answer 30 seconds
+  old or more. On a live server one lookup takes a third of a second to a
+  second, which every such save then paid, and 2.4.0 refused the first Save
+  with "Cannot save yet".
 - **The live check is advisory, and the race is audited.** An answer is as old
-  as the check that gave it. Save asks again about any answer 30 seconds old or
-  more, *already recorded* or *not used before*, and holds the save until the
-  server answers. Up to 2.3.0-rc.2 Save never asked again about *not used
-  before*, so a value another record saved while the page stayed open passed at
-  Save. Two saves within 30 seconds of their last checks can still both pass;
-  the post-save audit re-checks the saved value against every other record and
-  logs a collision (`type: unique`, `reason: duplicate-value`), so review the
-  module log for races. A failed check
-  fails **open** with *could not check* and its reason, so a network error on a
-  first check never traps a save. The exception is the lookup limit (60 lookups
-  a minute per session, shared with `@UVEXISTS`): a rule that can block holds the
-  save until the server answers again, which takes at most a minute, and Save
-  asks again. When Save asks again and gets no answer, the earlier answer
-  stands: an *already recorded* is enforced, and a *not used before* lets the
-  save through. Surveys never show *could not check* and are never held: there a
-  failed check simply lets the save through, and the audit is the net.
+  as the check that gave it, so a value another record saved while the page
+  stayed open passes at Save. The post-save audit re-checks the saved value
+  against every other record and logs a collision (`type: unique`,
+  `reason: duplicate-value`), and the next page the person opens says so (see
+  *Keeping data entry fast* under *How it works*). A failed check fails
+  **open** with *could not check* and its reason, so a network error never
+  traps a save. A lookup over the limit also answers *could not check*, and
+  the save goes through. The limit counts only values
+  the session has not asked about in the last ten minutes (120 a minute,
+  shared with `@UVEXISTS`; system setting **Live lookups: new values a
+  minute**), so opening and saving forms does not use it up. A lookup of a
+  field of more than 50,000 saved values whose value index is not built yet
+  also answers *could not check* at once, in place of reading every value.
+  Surveys never show *could not check* and are never held: there a failed
+  check lets the save through, and the audit is the net.
 - Works on Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields;
   composes with the other modes on the same field.
 
@@ -831,17 +854,16 @@ the specimen ID on the collection form.
   previous answer, typing in a text field a `when` condition reads included.
   The answer is *found* (green), *not found* (red, enforced per `blockSave`) or
   *could not check* (amber, never blocks): a failed read or a `match` field that
-  is blank on another form answers *could not check*. So does a busy server
-  (more than 60 lookups a minute in the session), but then a rule that can block
-  holds the save until the server answers again, at most a minute later, and
-  Save asks again.
-- **Save waits for the answer.** Clicking Save re-checks the field first. A value
-  typed and saved at once is asked before the save is decided, and while an
-  answer is on its way the save is held ("still being checked"). After 10
-  seconds without an answer the value counts as *could not check* and the save
-  goes through. The exception is a *not found* the page has held for 30 seconds
-  or more, which Save asks about again: if that second question gets no answer,
-  the earlier *not found* stands and is enforced.
+  is blank on another form answers *could not check*. So does a lookup over
+  the limit on new values (see `@UVUNIQUE` above), and a field of more than
+  50,000 saved values whose value index is not built yet.
+- **Save never asks the server.** Save goes by the answer the page has: a
+  *not found* is enforced and a *found* lets the save through, however old the
+  answer. A value typed and saved at once is asked as Save re-judges the
+  field, and only then does the save wait, with no dialog, for at most 1.5
+  seconds (system setting **Live lookups: how long a save waits**). It goes on
+  by itself when the answer lands. With no answer by then the value counts as
+  *could not check* and the save goes through.
 - **Branches.** With several `when` branches, the page sends the values its
   conditions read, so the server answers from the branch the page is enforcing,
   also on a record not saved yet.
@@ -851,8 +873,8 @@ the specimen ID on the collection form.
   reason staff see does not name a form or field.
 - **Who gets an answer.** Signed-in users are answered only when they may open
   every form the lookup reads (the searched field, the `match` fields and the
-  `where` fields; a record-ID lookup without `where` needs no extra form), and at most 60 lookups a minute per
-  session, shared with `@UVUNIQUE`. A user in a Data Access Group may check
+  `where` fields; a record-ID lookup without `where` needs no extra form), and at most 120 values a minute that the
+  session has not asked about before, shared with `@UVUNIQUE`. A user in a Data Access Group may check
   only records of their own group; they learn whether a value is saved in
   another group, never which record holds it. Staff in no group see the record the value
   was found in; staff in a group see it only when it is in their group. A
@@ -1427,7 +1449,7 @@ the open ones:
   “Reason for change”)". Once the reason is given the field no longer holds
   the save for those rules; their own notes stay. A reason never lets
   anything else through: a rule with `blockSave` `"off"` still only warns, a
-  lookup still being checked still holds the save, and a field locked by
+  lookup still on its way still makes the save wait its moment, and a field locked by
   `@UVWRITEONCE` stays locked. On a survey page that does not carry the
   reason field, the tag does nothing; the audit after the save still reads
   the reason. On a rule that only warns (`blockSave` `"off"`, or any rule
@@ -1779,6 +1801,42 @@ REDCap settings  ->  UniversalValidator.php  ->  window.INSPIRE_VALIDATOR_CONFIG
                                               ->  js/engine.js (verified engine)
                      redcap_save_record       ->  php/CheckCharacter.php (server guard)
 ```
+
+### Keeping data entry fast
+
+The module must not slow the person entering data. These rules hold on every
+staff form:
+
+- **Save never asks the server.** A `@UVUNIQUE` or `@UVEXISTS` field is asked
+  about when its value changes and once as the form opens. Save goes by the
+  answer the page has. A lookup already on its way holds the save for at most
+  1.5 seconds with no dialog, and the save then goes on by itself.
+- **One request as the form opens.** The lookups a page asks in one pass go out
+  as a single `lookup-batch` request, which the server answers item by item
+  through the same two endpoints. REDCap sends module requests one after
+  another, so six lookup fields used to mean six round trips before the last
+  answer showed. A field that is left later asks alone.
+- **The limit counts new values only.** A value the session asked about in the
+  last ten minutes is answered without being counted. 120 new values a minute
+  are answered (system setting **Live lookups: new values a minute**). Over
+  that a lookup answers *could not check* and the save goes through.
+- **Quiet mode** (project setting). A field that passes shows no line: no green
+  "OK.", "ID verified" or "Not used before.". Problems, notices and what an
+  `@UVEXISTS` lookup found show as before, and the same values are refused.
+- **Shared reference fields** (project setting). A rule that reads a field on
+  another form (`@UVWINDOW={"from":"[icf_date]", ...}`) is checked live only
+  for a person who may open that form; anyone else gets a grey line saying the
+  window is not checked on this page, and the check after the save. List the
+  field in this setting and every data-entry form of the record may read it,
+  whatever the person's form rights. Its value can be worked out from the
+  messages on those forms, so list only fields every project user may know.
+  Surveys never read it.
+- **Notice after a save.** A lookup never keeps a save back, so the audit after
+  the save can be the first to find a value already recorded elsewhere, or one
+  that was not found. The next page the person opens says so once, naming the
+  record and the field (never the value or the other record). The project
+  setting **Notice after a save** turns it off; the module log and the
+  Validation scan keep the finding either way.
 
 ### Lookups on large projects: the value index
 

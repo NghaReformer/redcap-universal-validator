@@ -851,10 +851,10 @@
     "stype": "a"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -1937,10 +1937,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -2434,10 +2434,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -3092,10 +3092,10 @@
     "age": "A"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -3426,10 +3426,10 @@
     "age": "2"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -3562,10 +3562,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -4241,10 +4241,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -6205,10 +6205,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -6854,10 +6854,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -7276,10 +7276,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -7756,10 +7756,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -9961,10 +9961,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -10033,10 +10033,10 @@
     "age": "abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -16710,10 +16710,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "age",
@@ -17313,10 +17313,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -20283,10 +20283,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -20794,10 +20794,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -21291,10 +21291,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -21949,10 +21949,10 @@
     "age": "A"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -22283,10 +22283,10 @@
     "age": "2"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -22419,10 +22419,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -23098,10 +23098,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -25062,10 +25062,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -25711,10 +25711,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -27059,10 +27059,10 @@
     "age": "0"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -36696,10 +36696,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -37345,10 +37345,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -37767,10 +37767,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -38247,10 +38247,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -40452,10 +40452,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -40524,10 +40524,10 @@
     "age": "abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -47120,10 +47120,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -47192,10 +47192,10 @@
     "age": "abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -48361,10 +48361,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -48872,10 +48872,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -49369,10 +49369,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -50027,10 +50027,10 @@
     "age": "A"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -50361,10 +50361,10 @@
     "age": "2"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -50497,10 +50497,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -51176,10 +51176,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -53140,10 +53140,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -53789,10 +53789,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -54211,10 +54211,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -54691,10 +54691,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -62990,10 +62990,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -63062,10 +63062,10 @@
     "age": "abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -64231,10 +64231,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -64742,10 +64742,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -65239,10 +65239,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -65897,10 +65897,10 @@
     "age": "A"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -66231,10 +66231,10 @@
     "age": "2"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -66367,10 +66367,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -67046,10 +67046,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -69010,10 +69010,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -69659,10 +69659,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -70081,10 +70081,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -70561,10 +70561,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -78381,10 +78381,10 @@
     "age": "NO"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -78918,10 +78918,10 @@
     "stype": "2"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -80697,10 +80697,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -81630,10 +81630,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -82546,10 +82546,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -83196,10 +83196,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -84018,10 +84018,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "age",
@@ -84684,10 +84684,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -85285,10 +85285,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "age",
@@ -86033,10 +86033,10 @@
     "age": "Abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -86379,10 +86379,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -86537,10 +86537,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -86637,10 +86637,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -86892,10 +86892,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -89453,10 +89453,10 @@
     "age": "abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -90894,10 +90894,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -91827,10 +91827,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -92743,10 +92743,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -93393,10 +93393,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -94215,10 +94215,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "age",
@@ -94881,10 +94881,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -95482,10 +95482,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "age",
@@ -96230,10 +96230,10 @@
     "age": "Abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -96576,10 +96576,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -96734,10 +96734,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -96834,10 +96834,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -97089,10 +97089,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -99650,10 +99650,10 @@
     "age": "abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -101091,10 +101091,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -102024,10 +102024,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -102940,10 +102940,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -103590,10 +103590,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -104412,10 +104412,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "age",
@@ -105078,10 +105078,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -105679,10 +105679,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "age",
@@ -106427,10 +106427,10 @@
     "age": "Abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -106773,10 +106773,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -106931,10 +106931,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -107031,10 +107031,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -107286,10 +107286,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -109847,10 +109847,10 @@
     "age": "abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -111288,10 +111288,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -112221,10 +112221,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -113137,10 +113137,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -113787,10 +113787,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -114609,10 +114609,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "age",
@@ -115275,10 +115275,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -115876,10 +115876,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "age",
@@ -116624,10 +116624,10 @@
     "age": "Abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -116970,10 +116970,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -117128,10 +117128,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -117228,10 +117228,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "stype",
@@ -117483,10 +117483,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -120044,10 +120044,10 @@
     "age": "abc"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -121485,10 +121485,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "b",
@@ -122418,10 +122418,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "cb",
@@ -123334,10 +123334,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",
@@ -123984,10 +123984,10 @@
     "age": "10"
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "c",
@@ -124806,10 +124806,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "age",
@@ -125472,10 +125472,10 @@
     }
    },
    "ok": true,
-   "js": true,
-   "jsInert": true,
-   "jsCi": true,
-   "jsInertCi": true,
+   "js": false,
+   "jsInert": false,
+   "jsCi": false,
+   "jsInertCi": false,
    "jsRefs": [
     [
      "a",

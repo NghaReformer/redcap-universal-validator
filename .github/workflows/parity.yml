@@ -60,6 +60,12 @@ jobs:
         run: node tests/required_dom_js.cjs
       - name: JS unique (@UVUNIQUE) DOM contract (transport, fail-open, cache)
         run: node tests/unique_dom_js.cjs
+      - name: A save never stops for a lookup that has not answered
+        run: node tests/lookup_save_hold_dom_js.cjs
+      - name: The lookups a page asks as it opens go out as one request
+        run: node tests/lookup_batch_dom_js.cjs
+      - name: Quiet mode shows no line for a field that passes
+        run: node tests/quiet_ok_dom_js.cjs
       - name: JS choices (@UVCHOICES) DOM contract (filter, stale-kept, fixture)
         run: node tests/choices_dom_js.cjs
       - name: JS window (@UVWINDOW) verdict vs fixture, its DOM contract (server clock, snapshot, midnight), and the page's glue vs the server's

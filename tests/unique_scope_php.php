@@ -60,6 +60,13 @@ namespace ExternalModules {
                 $GLOBALS['__AMONG_READS'][] = $sql;
                 return \uv_among_rows($sql, $params);
             }
+            // How many rows a field has, counted as far as a limit
+            // (FieldValues::moreRowsThan): __FIELD_ROWS, or none.
+            if (strpos($sql, 'SELECT COUNT(*) FROM (SELECT 1 FROM redcap_data WHERE project_id = ? AND field_name = ?') !== false) {
+                $GLOBALS['__COUNT_READS'][] = $sql;
+                if (!empty($GLOBALS['__NO_TABLE'])) return false;
+                return [[isset($GLOBALS['__FIELD_ROWS']) ? (int) $GLOBALS['__FIELD_ROWS'] : 0]];
+            }
             if (strpos($sql, 'FROM redcap_data WHERE project_id = ? AND field_name = ?') !== false) {
                 $GLOBALS['__TABLE_READS'][] = $sql;
                 return \REDCap::tableRows($sql, $params);
@@ -238,6 +245,7 @@ namespace {
         \REDCap::$recordReads = [];
         $GLOBALS['__TABLE_READS'] = [];
         $GLOBALS['__AMONG_READS'] = [];
+        $GLOBALS['__COUNT_READS'] = [];
         $m = new UniversalValidator();
         if ($GLOBALS['INDEX']) uv_use_fake_index($m);
         $m->projectSettings = ['log-values' => 'raw'];
@@ -284,6 +292,37 @@ namespace {
     check('dag live: the group is read on its own, so the lookup narrows (a filtered read, no full one)',
         \REDCap::$calls['full'] === 0
         && ($TABLE ? \REDCap::$calls['filtered'] === 0 && count($GLOBALS['__TABLE_READS']) === ($INDEX ? 0 : 1) : \REDCap::$calls['filtered'] === 1));
+
+    // ---- a field too large to read whole: a person's live lookup answers at once -------
+    // (reported 2026-11-11: with the value index not built, a lookup read every
+    // saved value of the field while the person waited at Save.)
+    if ($TABLE) {
+        $GLOBALS['__FIELD_ROWS'] = UniversalValidator::LIVE_WHOLE_READ_ROWS + 1;
+        $m = mk($DAG);
+        $r = ask($m, 'spec', ['spec' => 'Y1'], '3', 'reg', 351, 'coord', null);
+        if ($INDEX) {
+            check('large field, index built: answered from the index, nothing counted',
+                ($r['used'] ?? null) === true && $GLOBALS['__COUNT_READS'] === [] && $GLOBALS['__TABLE_READS'] === []);
+        } else {
+            check('large field, no index answer: "could not check", and why (got ' . json_encode($r) . ')',
+                ($r['unknown'] ?? null) === true && !array_key_exists('used', $r)
+                && ($r['why'] ?? null) === 'the lookup for this field is still being prepared');
+            check('...after one bounded count, with no read of the field and no export',
+                count($GLOBALS['__COUNT_READS']) === 1 && $GLOBALS['__TABLE_READS'] === []
+                && \REDCap::$calls['full'] === 0 && \REDCap::$calls['filtered'] === 0);
+            $GLOBALS['__FIELD_ROWS'] = UniversalValidator::LIVE_WHOLE_READ_ROWS;
+            $m = mk($DAG);
+            $r = ask($m, 'spec', ['spec' => 'Y1'], '3', 'reg', 351, 'coord', null);
+            check('a field at the limit is read as before', ($r['used'] ?? null) === true && count($GLOBALS['__TABLE_READS']) === 1);
+            // The save audit is not a person waiting: it reads in full.
+            $GLOBALS['__FIELD_ROWS'] = UniversalValidator::LIVE_WHOLE_READ_ROWS + 1;
+            $m = mk($DAG);
+            $m->redcap_save_record(149, '3', 'reg', 351, null, null, null, 1);
+            check('large field: the save audit still reads the field and logs the duplicate',
+                $GLOBALS['__COUNT_READS'] === [] && count($GLOBALS['__TABLE_READS']) >= 1 && count(logged($m, 'invalid-id-saved')) === 1);
+        }
+        unset($GLOBALS['__FIELD_ROWS']);
+    }
 
     $saved = function ($rec, $group) use ($DAG) {
         $m = mk($DAG);
@@ -379,8 +418,74 @@ namespace {
     for ($i = 0; $i < UniversalValidator::THROTTLE_SIGNED_IN; $i++) ask($m, 'spec', ['spec' => 'S-NEW-' . $i], '1', 'reg', 351, 'nurse', null);
     $r = ask($m, 'spec', ['spec' => 'S-3'], '1', 'reg', 351, 'nurse', null);
     check('throttle: the next check is "unknown", marked throttled, with a reason (got ' . json_encode($r) . ')',
-        ($r['unknown'] ?? null) === true && ($r['throttled'] ?? null) === true && strpos((string) ($r['why'] ?? ''), 'wait a moment') !== false
+        ($r['unknown'] ?? null) === true && ($r['throttled'] ?? null) === true && ($r['why'] ?? null) === 'too many checks in the last minute'
         && !isset($r['used']) && !isset($r['error']));
+    $r = ask($m, 'spec', ['spec' => 'S-NEW-0'], '1', 'reg', 351, 'nurse', null);
+    check('throttle: a value asked before is answered while new ones are refused (got ' . json_encode($r) . ')',
+        isset($r['used']) && !isset($r['throttled']));
+    $_SESSION = [];
+    for ($i = 0; $i < 3 * UniversalValidator::THROTTLE_SIGNED_IN; $i++) $r = ask($m, 'spec', ['spec' => 'S-3'], '1', 'reg', 351, 'nurse', null);
+    check('throttle: one value asked again and again is not counted', isset($r['used']) && !isset($r['throttled']));
+
+    // ---- 3b) the person who saved is told on the next page what the audit found ------
+    $_SESSION = [];
+    $DUP = $THR;
+    $DUP['6'] = [351 => ['record_id' => '6', 'spec' => 'S-1']];
+    $LABELLED = \REDCap::$dictionary;
+    $LABELLED['spec']['field_label'] = '<b>Specimen</b>   ID <script>x()</script>';
+    \REDCap::$dictionary = $LABELLED;
+    $top = function ($m, $pid = 149) { ob_start(); $m->redcap_every_page_top($pid); return (string) ob_get_clean(); };
+    $m = mk($DUP, 'nurse');
+    check('after save: a page with nothing to say prints nothing', $top($m) === '');
+    $m->redcap_save_record(149, '6', 'reg', 351, null, null, null, 1);
+    check('after save: the duplicate is logged as before', count(logged($m, 'invalid-id-saved')) === 1);
+    $html = $top($m);
+    check('after save: the next page says the value is already recorded, naming the record saved and the field (got ' . $html . ')',
+        strpos($html, 'id="uv-after-save-notice"') !== false && strpos($html, 'Record <b>6</b>') !== false
+        && strpos($html, 'already recorded in another record') !== false && strpos($html, '<code>spec</code>') !== false);
+    check('after save: the field label is shown as text, its tags removed', strpos($html, 'Specimen ID x()') !== false && strpos($html, '<script>') === false);
+    check('after save: neither the value nor the other record is in the notice', strpos($html, 'S-1') === false && strpos($html, 'Record <b>1</b>') === false);
+    check('after save: shown once', $top($m) === '');
+    // A save with nothing wrong says nothing.
+    $m = mk($DUP, 'nurse');
+    $m->redcap_save_record(149, '2', 'reg', 351, null, null, null, 1);
+    check('after save: a save the audit passes says nothing', $top($m) === '');
+    // Not for a survey respondent, an import, or a save with no one signed in.
+    $m = mk($DUP, 'nurse');
+    $m->redcap_save_record(149, '6', 'reg', 351, null, 'hash', null, 1);
+    check('after save: a survey save keeps nothing for the next page', $_SESSION === [] || !isset($_SESSION['uvalidate_after_save_149']));
+    $m = mk($DUP, 'nurse');
+    $m->redcap_save_record(149, '6', null, 351, null, null, null, 1);
+    check('after save: a save with no instrument (an import) keeps nothing', !isset($_SESSION['uvalidate_after_save_149']));
+    $m = mk($DUP, null);
+    $m->redcap_save_record(149, '6', 'reg', 351, null, null, null, 1);
+    check('after save: a save with no one signed in keeps nothing', !isset($_SESSION['uvalidate_after_save_149']));
+    // The project setting turns it off.
+    $m = mk($DUP, 'nurse');
+    $m->projectSettings['after-save-notice-off'] = true;
+    $m->redcap_save_record(149, '6', 'reg', 351, null, null, null, 1);
+    check('after save: "after-save-notice-off" keeps nothing, and the log entry is still written',
+        !isset($_SESSION['uvalidate_after_save_149']) && count(logged($m, 'invalid-id-saved')) === 1);
+    // Kept per project, for a limited time, and no more than the cap.
+    $m = mk($DUP, 'nurse');
+    $m->redcap_save_record(149, '6', 'reg', 351, null, null, null, 1);
+    check('after save: another project\'s page does not show it', $top($m, 150) === '' && isset($_SESSION['uvalidate_after_save_149']));
+    check('after save: no project, nothing', $top($m, null) === '');
+    $_SESSION['uvalidate_after_save_149'][0]['t'] -= UniversalValidator::AFTER_SAVE_SECONDS;
+    check('after save: a finding older than the kept time is dropped', $top($m) === '' && !isset($_SESSION['uvalidate_after_save_149']));
+    for ($i = 0; $i < UniversalValidator::AFTER_SAVE_MAX + 5; $i++) $m->redcap_save_record(149, '6', 'reg', 351, null, null, null, 1);
+    check('after save: no more than ' . UniversalValidator::AFTER_SAVE_MAX . ' findings are kept',
+        count($_SESSION['uvalidate_after_save_149']) === UniversalValidator::AFTER_SAVE_MAX);
+    $_SESSION['uvalidate_after_save_149'] = [['record' => '<i>9</i>', 'field' => 'spec', 'type' => 'unique', 'reason' => 'duplicate-value', 't' => time()],
+        ['record' => '9', 'field' => 'spec', 'type' => 'unique', 'reason' => 'made-up', 't' => time()], 'text', ['record' => '9']];
+    $html = $top($m);
+    check('after save: what is shown is escaped, and an entry of another shape is left out (got ' . $html . ')',
+        strpos($html, '&lt;i&gt;9&lt;/i&gt;') !== false && substr_count($html, '<li>') === 1);
+    $GLOBALS['__TEST_USER'] = null;
+    $_SESSION['uvalidate_after_save_149'] = [['record' => '9', 'field' => 'spec', 'type' => 'unique', 'reason' => 'duplicate-value', 't' => time()]];
+    check('after save: a page with no one signed in shows nothing', $top($m) === '');
+    $_SESSION = [];
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'spec' => uvf('reg', '@UVUNIQUE')];
 
     // ---- 4) PRF-1: the unique rules of one save share one read --------------------------
     $_SESSION = [];   // the signed-in throttle counts per session

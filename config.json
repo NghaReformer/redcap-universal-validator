@@ -13,8 +13,8 @@
   "framework-version": 14,
   "enable-no-auth-logging": true,
 
-  "auth-ajax-actions": ["unique-check", "exists-check", "scan-start", "scan-work", "scan-status", "scan-cancel", "scan-findings"],
-  "no-auth-ajax-actions": ["unique-check", "exists-check"],
+  "auth-ajax-actions": ["unique-check", "exists-check", "lookup-batch", "scan-start", "scan-work", "scan-status", "scan-cancel", "scan-findings"],
+  "no-auth-ajax-actions": ["unique-check", "exists-check", "lookup-batch"],
 
   "links": {
     "project": [
@@ -108,6 +108,16 @@
       "key": "lookup-index-system-off",
       "name": "<b>Live lookups</b> — turn OFF the value index of @UVUNIQUE and @UVEXISTS. Leave this unchecked. The index answers a lookup from a few rows instead of reading every saved value of the field, which is what keeps lookups fast on projects with hundreds of thousands of records. A lookup builds a small field's index itself; the module's cron (every 5 minutes) builds the larger ones, so a lookup reads the data table until its field is built. The index is kept current from the project's log, and the lookups read the data table directly whenever it cannot be proved current. Check this only to rule the index out while you investigate a problem; the lookups then read the data table every time.",
       "type": "checkbox"
+    },
+    {
+      "key": "lookup-save-hold-ms",
+      "name": "<b>Live lookups: how long a save waits</b> — milliseconds a save waits, with no dialog, for a @UVUNIQUE or @UVEXISTS lookup that is still on its way. The save goes on by itself when the answer lands, or after this long without one; the value is then checked after the save (the module log and the Validation scan). Leave blank for 1500. 0 never waits. At most 10000.",
+      "type": "text"
+    },
+    {
+      "key": "lookup-new-values-per-minute",
+      "name": "<b>Live lookups: new values a minute</b> — how many values not asked before one signed-in session may look up per minute with @UVUNIQUE and @UVEXISTS. A value the session already asked in the last ten minutes is not counted, so opening and saving forms does not use the limit up. Over it, a lookup answers \"could not check\" and the save goes through. Leave blank for 120.",
+      "type": "text"
     },
     {
       "key": "scan-system-enable-durable",
@@ -296,6 +306,21 @@
         { "value": "identifier-redacted", "name": "Show values, but redact fields REDCap marks as an Identifier (fails closed: if the data dictionary cannot be read, EVERY value is redacted)" },
         { "value": "raw", "name": "Show every value (only where your governance allows design-rights users to see every field's contents in a downloadable file)" }
       ]
+    },
+    {
+      "key": "shared-reference-fields",
+      "name": "<b>Shared reference fields</b> — field names (separated by commas) that every data-entry form of a record may read for its checks, whatever the person's rights for the form the field is on. Use it for a date many forms count from, such as the consent date in @UVWINDOW={\"from\":\"[icf_date]\", ...}: without it, a person who cannot open the consent form gets no live check on those forms, only the check after the save. The value of a listed field can be worked out from the messages on those forms, so list only fields every project user may know. Never applies on surveys.",
+      "type": "textarea"
+    },
+    {
+      "key": "after-save-notice-off",
+      "name": "<b>Notice after a save</b> — do not show it. A live @UVUNIQUE or @UVEXISTS lookup never keeps a save back, so the check after the save can be the first to find a value already recorded elsewhere, or one that was not found. The next page the person opens then says so once, naming the record and the field. Check this to keep such findings in the module log and the Validation scan only.",
+      "type": "checkbox"
+    },
+    {
+      "key": "quiet-ok",
+      "name": "<b>Quiet mode</b> — show a line under a field only when there is something to act on. A value that passes shows nothing (no green \"OK.\", \"ID verified\" or \"Not used before.\" line); problems, notices and what an @UVEXISTS lookup found show as before. Nothing else changes: the same values are refused, and the same checks run after the save.",
+      "type": "checkbox"
     },
     {
       "key": "debug-log",

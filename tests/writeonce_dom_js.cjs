@@ -448,7 +448,7 @@ for (const order of ['lock first', 'lock last']) {
     __qridBlockMode: 'hard', __qridFieldLabel: 'weight', focus() {} });
   check('... nor one for a rule that reads another field, while that field is as the page opened', save(env) === 'saved');
   open.value = '201'; open.fire('change');
-  check('... which holds the save once that field has changed', save(env) === 'held');
+  check('... which makes the save wait once that field has changed', save(env) === 'prevented');
 }
 
 for (const order of ['lock first', 'lock last']) {

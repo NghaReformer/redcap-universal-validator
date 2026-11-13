@@ -603,10 +603,30 @@ One condition may mix `and`, `or` and `not` with parentheses:
 | | arithmetic and piping |
 | | a character outside printable ASCII, such as `'Yaoundé'` (compare the code a choice stores) |
 | | a field compared with itself, such as `[dose]>[dose]` |
+| | a form's status, `[myform_complete]`: it is not a field of the data dictionary (the error says so) |
+| | in an `@UVASSERT` test, a condition that names no field, such as `1=0` |
+| | `<` `>` `<=` `>=` between a number field and text (`[age]>='abc'`), and a date that is not in the calendar (`[dob]>='2024-02-31'`) |
 
 On a survey shown one section per page, REDCap draws only the current page's
 fields, so a condition over a field of another page reads the answer saved when
 the page was drawn: `[consent]='1'` on page 2 reads the consent given on page 1.
+A rule that reads another page's answer never holds the save on the survey,
+whatever its `blockSave` says:
+
+- a condition that only reads the other page (`"when":"[consent]='1'"`) is settled
+  when the page is drawn, the rule shows its message, and the respondent can still
+  go on;
+- a comparison between this page's answer and the other page's
+  (`@UVASSERT="[email]=[email_confirm]"` with the two addresses on different pages) is
+  not checked on the page at all, since the earlier answer is never sent to a survey
+  page.
+
+The audit after each page is saved still checks the value and logs a failure, and
+a survey save logs a `uvalidate-unconfigurable` entry, once for each rule, that names the rule
+and the other page's field. To check and hold the save on the page, put the fields
+in one section. The data entry form shows the whole instrument and is not affected.
+If the module cannot tell which page of such a survey is shown, no rule with a
+condition is checked on that page.
 
 `not` binds tightest, then `and`, then `or`, as in REDCap:
 `[a]='1' or [b]='1' and [c]='1'` means `[a]='1' or ([b]='1' and [c]='1')`. Add
@@ -623,13 +643,19 @@ character for character, so `00123` does not confirm `123`.
 
 The condition of `@UVASSERT` and `@UVREQUIRED` may be written without quotes:
 `@UVREQUIRED=[consent]='1' and [site]<>'9'` is read whole, up to the end of the line
-or the next action tag. Text after a complete condition is ignored as a note. If that
-text goes on with `and`, `or`, `not (` or `not [`, a comparison, or one of `&&`, `||`,
-`&`, `|` and `!`, and does not finish the condition, the rule is refused with "put the
-whole condition in quotes"; for `&&`, `||` and `!` the error also names the word to
-write. An unquoted condition ends with its line, so a next line that starts the same
-way is refused too: quote a condition that runs over two lines. Earlier releases
-stopped an unquoted condition at the first space.
+or the next action tag. Text after a complete condition on the same line is ignored as
+a note only when it is plain words: it starts with a letter, or `(` and a letter, and
+holds no `[`, `]`, `{`, `}`, `=`, `<` or `>` (`not needed at screening`,
+`(see the SOP)`). If that text goes on with `and`, `or`, `not (` or `not [`, a
+comparison, or one of `&&`, `||`, `&`, `|` and `!`, and does not finish the condition,
+the rule is refused with "put the whole condition in quotes"; for `&&`, `||` and `!`
+the error also names the word to write. Any other text is refused the same way and the
+error quotes it: `@UVASSERT=[dose] <= [max_dose] * 2` is a configuration error, where
+earlier releases checked `[dose] <= [max_dose]` and said nothing. The same holds for
+`+ 7`, `- [c]`, `, [a] >= 0`, `xor [a] >= 0`, `if [c] = 1` and `blockSave=hard` after a
+condition. An unquoted condition ends with its line, so a next line that starts with
+`and`, `or` or another of those words is refused too: quote a condition that runs over
+two lines. Earlier releases stopped an unquoted condition at the first space.
 
 **Behavior worth knowing.**
 
@@ -641,7 +667,9 @@ stopped an unquoted condition at the first space.
   verdict (and any *Compulsory* block) appears or clears at once. Fields on
   **other instruments** use their **saved** values (a brand-new record has none
   yet, so those references read as empty). On a survey shown one section per
-  page, a field answered on another page uses its saved answer in the same way.
+  page, a field answered on another page uses its saved answer in the same way,
+  and a rule that reads it does not hold the save on that page (see the condition
+  language above).
 - **A reference that cannot be resolved is refused, not read as blank** (1.6.0):
   a field on a different repeating instrument, a field not collected in this
   event, or a read that failed. The rule stops checking and reports why — see the
@@ -656,7 +684,9 @@ stopped an unquoted condition at the first space.
   condition of that one rule. Accented letters are not folded. If the sides are in
   different domains — one numeric, one not, both filled in — `=` and `<>` still
   answer, but `<` `>` `<=` `>=` come back false either way round; ordering across
-  domains is not defined. An empty side has no answer at all, and what that means
+  domains is not defined. A `not` around such a comparison is false too, so
+  `not([age]>120)` and `[age]<=120` both report `12O` typed into a number field
+  (earlier releases let the `not` spelling pass). An empty side has no answer at all, and what that means
   depends on the question: in an `@UVASSERT` test a value nobody has entered
   cannot break a rule, so `[end]>=[start]` and `[start]<=[end]` both pass while
   `start` is blank; in a `when` condition it means the rule cannot be shown to
@@ -1089,12 +1119,15 @@ Yes — since 1.3.0 a **Unique** rule (the `@UVUNIQUE` tag, or the Unique kind
 in the Configure dialog) checks the value against every other record when it is
 entered or changed, with optional composite keys (`with`), project/DAG/event
 scopes, and a real save block. When the check cannot be made, staff see "Could
-not check" with the reason, and the save goes through; the exception is the
-limit of 60 lookups a minute, where a blocking rule holds the save until the
-server answers again. The live check is advisory: an answer is as old as the
-check that gave it, so Save asks again about any answer 30 seconds old or more.
-Two saves within 30 seconds of their last checks can both pass, and the post-save
-audit logs such a collision to the module log. Letter case is
+not check" with the reason, and the save goes through; the limit on lookups
+(120 values a minute that the session has not asked about before) is no
+exception. The live check is advisory: an answer is as old as the check that
+gave it. Save never asks the server; it goes by the answer the page has. Only a
+lookup already on its way holds the save, with no dialog, for at most 1.5
+seconds, and the save goes on by itself; nobody is asked to wait and save again.
+A value another record saved while the form stayed open can therefore pass. The
+post-save audit logs such a collision to the module log, and the next page the
+person opens says so once. Letter case is
 ignored, so `SP-1` and `sp-1` count as the same ID, and in a field validated as
 an integer or a number `007` and `7` do too. Add `"caseSensitive":true` when
 case tells two IDs apart.
@@ -1137,7 +1170,8 @@ window unchecked; `notFuture` and `notPast` still apply. A
 this one is open. On a survey, or for a user without rights to that form, the
 `from` date is not sent to the page; the page then checks only `notFuture` and
 `notPast`, and
-the window is checked when the record is saved. The same tag checks dates
+the window is checked when the record is saved. To check it live for every
+user, name the `from` field in the project setting **Shared reference fields**. The same tag checks dates
 counted from today (`"from":"today","window":[-7,0]`), calendar periods
 (`"period":"month","offset":-1` for last month) and `"notPast":true`; those parts
 judge a saved value against the day it was saved, so an old record never turns
@@ -1154,10 +1188,9 @@ Yes. The `@UVEXISTS` tag checks that a value is already saved in the project.
 `"event"` to look in one event, and `"scope":"dag"` to stay inside the record's
 Data Access Group. The page asks the server when the value is entered or
 changed, not on every keystroke, and answers found, not found, or could not
-check. Clicking Save re-checks the field and waits for an answer still on its
-way. "Could not check" never blocks a save, but a "not found" held for 30
-seconds or more is asked again at Save and stands if that second question gets
-no answer. The post-save audit checks the
+check. Save never asks the server: it goes by the answer the page has, and
+waits at most 1.5 seconds for an answer still on its way. "Could not check"
+never blocks a save. The post-save audit checks the
 value again unless a `match` field is still blank. Users are answered only
 about forms they may open. A user in a Data Access Group may check only
 records of their own group, and learns whether a value is saved in another
@@ -1599,7 +1632,11 @@ single-value rules.
 | Expected number of IDs | `expectedIds` | *(none)* | pooled |
 
 Project-level: **log-values** (`hashed` / `none` / `raw` / `off`, default
-`hashed`) and **debug-log** (off). A **log-values** that cannot be read, or that
+`hashed`), **debug-log** (off), **quiet-ok** (off; a field that passes shows no
+line), **shared-reference-fields** (blank; fields every data-entry form may
+read for its checks, whatever the person's form rights) and
+**after-save-notice-off** (off; when off, the next page tells the person who
+saved what the check after the save found for `@UVUNIQUE` and `@UVEXISTS`). A **log-values** that cannot be read, or that
 holds a value other than these four, is treated as `none`: the module log and
 the scan report name records by their keyed hash.
 

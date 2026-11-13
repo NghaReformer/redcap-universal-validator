@@ -273,8 +273,7 @@ function one(value, extra, cfgExtra) {
   t.stub.next = 'HANG';
   const env = boot([t.spec], t.cfg, t.stub);
   check('pending: checking note', /checking/.test(xMsg(env, 'spec').innerHTML));
-  check('pending: a save click waits for the answer', !saved(env)
-    && /still being checked/.test(env.win._alerts.slice(-1)[0] || '') && /wait a moment/.test(env.win._alerts.slice(-1)[0] || ''));
+  check('pending: a save click waits for the answer, with no dialog', !saved(env) && env.win._alerts.length === 0);
   flushAll();
   check('pending: no answer in time counts as could not check', /Could not check/.test(xMsg(env, 'spec').innerHTML)
     && /no answer from the server/.test(xMsg(env, 'spec').innerHTML));
@@ -301,15 +300,21 @@ function one(value, extra, cfgExtra) {
   const msg = xMsg(env, 'spec');
   check('load: not-found shown', /not saved/.test(msg.innerHTML) && t.stub.calls.length === 1);
   check('save: a fresh "not found" decides the save without asking again', !saved(env) && t.stub.calls.length === 1);
-  // M1: an older one is asked again: the value may have been saved elsewhere since.
+  // SAVE NEVER ASKS THE SERVER (reported 2026-11-11): an older answer stands.
   clockShift += 31000;
-  check('save: an older "not found" is asked again before the save is decided', !saved(env) && t.stub.calls.length === 2
-    && t.stub.calls[1].payload.values.spec === 'SP-1');
+  check('save: an older "not found" still blocks, and Save asks nothing', !saved(env) && t.stub.calls.length === 1);
+  clockShift += 20 * 60000;
+  check('save: twenty minutes on, the same', !saved(env) && t.stub.calls.length === 1);
+  // Leaving the field again does not ask either: nothing on the page changed.
+  t.spec.fire('blur');
+  check('blur with the same value asks nothing', t.stub.calls.length === 1);
   t.stub.next = { state: 'found', record: null };
-  clockShift += 31000;
-  check('save: ...and a value saved elsewhere since then lets the save through', saved(env) && t.stub.calls.length === 3
+  t.spec.value = 'SP-1B'; t.spec.fire('input'); t.spec.fire('change');
+  check('save: a changed value is asked, and "found" lets the save through', saved(env) && t.stub.calls.length === 2
     && /Found/.test(msg.innerHTML));
-  check('save: a cached "found" is not asked again', saved(env) && t.stub.calls.length === 3);
+  clockShift += 31000;
+  check('save: an older "found" is not asked again', saved(env) && t.stub.calls.length === 2);
+  t.spec.value = 'SP-1C'; t.spec.fire('input'); t.spec.fire('change');
   t.stub.next = { state: 'not-found' };
   for (const v of ['S', 'SP', 'SP-', 'SP-2']) { t.spec.value = v; t.spec.fire('input'); }
   check('typing: the verdict is cleared at once', msg.style.display === 'none' && t.spec.getAttribute('aria-invalid') === null);
@@ -336,8 +341,9 @@ function one(value, extra, cfgExtra) {
     && t.stub.calls.length === 2 && t.stub.calls[1].payload.values.spec === 'SP-404');
   t.spec.value = 'SP-500'; t.spec.fire('input');
   t.stub.next = 'HANG';
-  check('typed then Save, answer still on its way: the save is held', !saved(env)
-    && /still being checked/.test(env.win._alerts.slice(-1)[0] || ''));
+  { const before = env.win._alerts.length;
+    check('typed then Save, answer still on its way: the save waits, with no dialog', !saved(env)
+      && env.win._alerts.length === before); }
   t.stub.next = { state: 'found' };
   t.spec.value = 'SP-1'; t.spec.fire('input');
   check('typed back to a value already answered: decided from the cache at once', saved(env) && t.stub.calls.length === 3);
@@ -599,82 +605,54 @@ function one(value, extra, cfgExtra) {
 
 check('published in the namespace', (() => { const t = one('x'); const env = boot([t.spec], { rules: [] }, null); return typeof env.NS.existsInit === 'function'; })());
 
-// ---- a real transport answers later: Save waits once, then decides ----------------
+// ---- a real transport answers later: Save goes by the answer it has ---------------
 {
   const stub = makeDeferredStub();
   const spec = makeEl('input'); spec.name = 'spec'; spec.value = 'SP-1';
   const env = boot([spec], { jsmoName: JSMO, rules: [rule({ blockSave: 'hard' })] }, stub);
-  stub.answer({ state: 'not-found' });
   const click = () => { const ev = submitEv(); env.doc.fire('submit', ev); return ev; };
   const fixes = () => env.win._alerts.filter((a) => /fix the flagged/.test(a)).length;
   let ev = click();
-  check('async: a fresh "not found" decides the first click, with no request', ev._prevented && fixes() === 1 && stub.calls.length === 1);
-  clockShift += 31000;
-  ev = click();
-  check('async: an older "not found" is asked again, and the click waits for it',
-    ev._prevented && stub.calls.length === 2 && /still being checked/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
+  check('async: a save while the first answer is on its way waits, with no dialog',
+    ev._prevented && stub.calls.length === 1 && env.win._alerts.length === 0);
   stub.answer({ state: 'not-found' });
+  ev = click();
+  check('async: the answer decides the next click, with no request', ev._prevented && fixes() === 1 && stub.calls.length === 1);
+  clockShift += 31000;
   ev = click(); click();
-  check('async: the next clicks are decided by the answer and ask nothing', ev._prevented && fixes() === 3 && stub.calls.length === 2);
-  clockShift += 31000;
-  click();
-  const errs = errorsDuring(() => stub.answer('ERROR'));
-  ev = click();
-  check('async: a re-ask that fails keeps the known "not found"', ev._prevented && fixes() === 4 && stub.calls.length === 3
-    && /not saved/.test(xMsg(env, 'spec').innerHTML) && errs.length === 1);
-  clockShift += 31000;
-  click();
-  stub.answer({ state: 'unknown', why: 'too many lookups' });
-  ev = click();
-  check('async: an "unknown" re-ask keeps it too', ev._prevented && fixes() === 5 && stub.calls.length === 4);
-  clockShift += 31000;
-  click();
+  check('async: an older "not found" still decides, and Save asks nothing',
+    ev._prevented && stub.calls.length === 1 && fixes() === 3 && env.win._alerts.length === 3);
+  spec.value = 'SP-2'; spec.fire('input'); spec.fire('change');
   stub.answer({ state: 'found', record: null });
-  ev = click();
-  check('async: a value saved elsewhere since then lets the next click save', !ev._prevented && stub.calls.length === 5);
-}
-
-// A re-ask with no answer in time keeps the known "not found".
-{
-  const stub = makeDeferredStub();
-  const spec = makeEl('input'); spec.name = 'spec'; spec.value = 'SP-1';
-  const env = boot([spec], { jsmoName: JSMO, rules: [rule({ blockSave: 'hard' })] }, stub);
-  stub.answer({ state: 'not-found' });
   clockShift += 31000;
-  let ev = submitEv(); env.doc.fire('submit', ev);
-  flushAll();
-  ev = submitEv(); env.doc.fire('submit', ev);
-  check('async: a re-ask with no answer in time keeps the known "not found"',
-    ev._prevented && stub.calls.length === 2 && /not saved/.test(xMsg(env, 'spec').innerHTML)
-    && /fix the flagged/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
+  ev = click();
+  check('async: an older "found" lets the save through, and Save asks nothing', !ev._prevented && stub.calls.length === 2);
 }
 
-// ---- 3) a throttled answer holds a rule that blocks (UNQ-3) -------------------
+// ---- 3) a throttled answer fails open like any other the server cannot give ----
 {
   const t = one('SP-1', { blockSave: 'hard' });
-  t.stub.next = { state: 'unknown', record: null, why: 'too many checks in the last minute — wait a moment', throttled: true };
+  t.stub.next = { state: 'unknown', record: null, why: 'too many checks in the last minute', throttled: true };
   const env = boot([t.spec], t.cfg, t.stub);
   const msg = xMsg(env, 'spec');
-  check('throttled + hard: says so, and that the save waits',
-    /Could not check this value just now \(too many checks in the last minute — wait a moment\)\. The save waits until it can be checked\./.test(msg.innerHTML));
+  check('throttled + hard: says so, and promises no wait',
+    /Could not check this value just now \(too many checks in the last minute\)\.$/.test(msg.innerHTML) && !/save waits/.test(msg.innerHTML));
   const asked = t.stub.calls.length;
-  check('throttled + hard: the save is held', !saved(env));
-  check('throttled + hard: Save asks again', t.stub.calls.length === asked + 1);
-  check('throttled + hard: the alert says to wait', /wait a moment and save again/.test(env.win._alerts.slice(-1)[0] || ''));
-  check('throttled + hard: the alert names the limit, not a check underway',
-    /\(not checked yet: too many checks in the last minute\)/.test(env.win._alerts.slice(-1)[0] || '')
-    && !/still being checked/.test(env.win._alerts.slice(-1)[0] || ''));
-  t.stub.next = { state: 'found', record: '7' };
-  check('throttled + hard: once answered, the save goes through', saved(env) && /Found/.test(msg.innerHTML));
+  check('throttled + hard: the save goes through', saved(env));
+  check('throttled + hard: Save does not ask again', t.stub.calls.length === asked);
+  check('throttled + hard: no dialog', env.win._alerts.length === 0);
+  t.stub.next = { state: 'not-found' };
+  t.spec.value = 'SP-9'; t.spec.fire('change');
+  check('throttled + hard: the next value is asked, and a "not found" blocks', t.stub.calls.length === asked + 1 && !saved(env));
 }
 {
   const t = one('SP-1', {});
-  t.stub.next = { state: 'unknown', record: null, why: 'too many checks in the last minute — wait a moment', throttled: true };
+  t.stub.next = { state: 'unknown', record: null, why: 'too many checks in the last minute', throttled: true };
   const env = boot([t.spec], t.cfg, t.stub);
   check('throttled + blockSave off: never held', saved(env) && !/save waits/.test(xMsg(env, 'spec').innerHTML));
 }
 {
-  // Only a throttle holds: an answer the server cannot give still fails open.
+  // An answer the server cannot give fails open.
   const t = one('SP-1', { blockSave: 'hard' });
   t.stub.next = { state: 'unknown', record: null, why: 'the saved values could not be read just now' };
   const env = boot([t.spec], t.cfg, t.stub);

@@ -12,19 +12,21 @@ final class TemporalLogic
      * $charge(units): bool spends evaluation budget on long exact arithmetic and
      * answers false once the budget is gone, which makes that comparison unknown.
      * Saved-data callers pass AddressResolver::charge(); without it nothing is charged.
+     * $mixed is what an ordered comparison of a number with a text yields: false at
+     * the top, flipped at each "not" as $blank is (Logic::evaluate, AST-7).
      */
-    public static function evaluate(array $ast, callable $read, $blank=true, $case=false, ?callable $charge=null)
+    public static function evaluate(array $ast, callable $read, $blank=true, $case=false, ?callable $charge=null, $mixed=false)
     {
         switch($ast[0]) {
-            case 'temporal': return self::evaluate($ast[1],$read,$blank,$case,$charge);
+            case 'temporal': return self::evaluate($ast[1],$read,$blank,$case,$charge,$mixed);
             case 'const': return (bool)$ast[1];
             case 'unknown': return null;
-            case 'not': $r=self::evaluate($ast[1],$read,!$blank,$case,$charge); return $r===null?null:!$r;
+            case 'not': $r=self::evaluate($ast[1],$read,!$blank,$case,$charge,!$mixed); return $r===null?null:!$r;
             case 'and': case 'or':
                 $unknown=false;$and=$ast[0]==='and';
-                foreach($ast[1] as $child){$r=self::evaluate($child,$read,$blank,$case,$charge);if($r===null)$unknown=true;elseif($r!==$and)return !$and;}
+                foreach($ast[1] as $child){$r=self::evaluate($child,$read,$blank,$case,$charge,$mixed);if($r===null)$unknown=true;elseif($r!==$and)return !$and;}
                 return $unknown?null:$and;
-            case 'cmp': return self::compare($ast[1],self::value($ast[2],$read,$charge),self::value($ast[3],$read,$charge),$blank,$case,$charge);
+            case 'cmp': return self::compare($ast[1],self::value($ast[2],$read,$charge),self::value($ast[3],$read,$charge),$blank,$case,$charge,$mixed);
         }
         return null;
     }
@@ -92,7 +94,7 @@ final class TemporalLogic
     {
         return 'same:'.($fold?'fold':'exact').':'.($mark===null?'text':$mark);
     }
-    public static function compare($op,$a,$b,$blank,$case,?callable $charge=null)
+    public static function compare($op,$a,$b,$blank,$case,?callable $charge=null,$mixed=false)
     {
         if($a===null||$b===null)return null;
         if($op==='identical'||strncmp((string)$op,'same:',5)===0){
@@ -109,27 +111,27 @@ final class TemporalLogic
                 $index=$set['index'];$skip=$set['skip']??null;$size=$index->size()-($skip===null?0:1);
                 if($size<1)return null;
                 $x=$left?$b:$a;$flip=['<'=>'>','<='=>'>=','>'=>'<','>='=>'<='];
-                $held=$index->count($left?$op:($flip[$op]??$op),$x,$blank,$case);
+                $held=$index->count($left?$op:($flip[$op]??$op),$x,$blank,$case,$mixed);
                 if($held===null)$set['values']=$index->values($skip);
                 else{
-                    if($skip!==null&&self::compare($op,$left?$index->value($skip):$a,$left?$b:$index->value($skip),$blank,$case,$charge))$held--;
+                    if($skip!==null&&self::compare($op,$left?$index->value($skip):$a,$left?$b:$index->value($skip),$blank,$case,$charge,$mixed))$held--;
                     return $set['set']==='all'?$held===$size:$held>0;
                 }
             }
             if(!$set['values'])return null;
             $and=$set['set']==='all';$unknown=false;
-            foreach($set['values'] as $v){$r=self::compare($op,$left?$v:$a,$left?$b:$v,$blank,$case,$charge);if($r===null)$unknown=true;elseif($r!==$and)return !$and;}
+            foreach($set['values'] as $v){$r=self::compare($op,$left?$v:$a,$left?$b:$v,$blank,$case,$charge,$mixed);if($r===null)$unknown=true;elseif($r!==$and)return !$and;}
             return $unknown?null:$and;
         }
         if(is_array($a)&&isset($a['date']) || is_array($b)&&isset($b['date'])){
-            if(self::blank($a)||self::blank($b))return Logic::evaluate(['cmp',$op,['lit',is_array($a)?$a['value']:''],['lit',is_array($b)?$b['value']:'']],[],$blank,$case);
+            if(self::blank($a)||self::blank($b))return Logic::evaluate(['cmp',$op,['lit',is_array($a)?$a['value']:''],['lit',is_array($b)?$b['value']:'']],[],$blank,$case,[],[],$mixed);
             if(!is_array($a)||!is_array($b)||!isset($a['date'],$b['date'])||$a['date']!==$b['date'])return null;
-            return Logic::evaluate(['cmp',$op,['lit',$a['value']],['lit',$b['value']]],[],$blank,$case);
+            return Logic::evaluate(['cmp',$op,['lit',$a['value']],['lit',$b['value']]],[],$blank,$case,[],[],$mixed);
         }
         if(is_array($a)||is_array($b)){
             foreach(['a','b'] as $k)if(!is_array($$k))$$k=trim((string)$$k," \t\r\n");
             // Blank against an average or elapsed time: absence, not an unknown.
-            if($a===''||$b==='')return Logic::evaluate(['cmp',$op,['lit',is_array($a)?($a['numerator']??''):''],['lit',is_array($b)?($b['numerator']??''):'']],[],$blank,$case);
+            if($a===''||$b==='')return Logic::evaluate(['cmp',$op,['lit',is_array($a)?($a['numerator']??''):''],['lit',is_array($b)?($b['numerator']??''):'']],[],$blank,$case,[],[],$mixed);
             $a=is_array($a)?$a:['numerator'=>(string)$a,'denominator'=>'1'];$b=is_array($b)?$b:['numerator'=>(string)$b,'denominator'=>'1'];
             if(!isset($a['numerator'],$a['denominator'],$b['numerator'],$b['denominator']))return null;
             // x/1 against y/n needs one multiplication, not two: the long-hand product
@@ -139,7 +141,7 @@ final class TemporalLogic
             $x=self::scaled($a['numerator'],$b['denominator']);$y=self::scaled($b['numerator'],$a['denominator']);
             if($x===null||$y===null)return null;$a=$x;$b=$y;
         }
-        return Logic::evaluate(['cmp',$op,['lit',(string)$a],['lit',(string)$b]],[],$blank,$case);
+        return Logic::evaluate(['cmp',$op,['lit',(string)$a],['lit',(string)$b]],[],$blank,$case,[],[],$mixed);
     }
     /** The margin a date and time gets past "now" (twin of QRID_CLOCK_SLACK_S). */
     const CLOCK_SLACK_S = 120;

@@ -236,7 +236,8 @@ class AnnotationRules
      * non-JSON value ends: 'token' (at the first space, the default) or
      * 'condition' (the whole condition, for the tags whose bare value IS one —
      * see Logic::parsePrefix). A condition that goes on past the point where it
-     * can be read gets an error instead of being cut short.
+     * can be read, or that is followed by text which is not a note in plain
+     * words, gets an error instead of being cut short.
      *
      * A tag starts the annotation or follows whitespace, or the closing quote,
      * brace or parenthesis of another tag's value; inside @IF(...) it may also
@@ -307,12 +308,17 @@ class AnnotationRules
                 ? 'has a quoted value that ends at its second ' . $read['quoteCut'][0] . ', and "' . $read['quoteCut'][1]
                     . '" follows it. A value in ' . $read['quoteCut'][0] . '...' . $read['quoteCut'][0] . ' cannot hold that quote mark:'
                     . ' use the other one inside it, or give the tag its JSON form.'
+                : (isset($read['extra'])
+                    ? 'reads as the condition "' . $read['value'] . '" followed by "' . $read['extra'] . '", which is neither part of '
+                        . 'a condition the module reads nor a note in plain words, so the rule is not cut short there. Put the whole '
+                        . 'condition in quotes, e.g. ' . $eg . ' Arithmetic and functions are not read; a note is words only, with '
+                        . 'no [field], =, < or >.'
                 : (!$read['continues'] ? null
                 : (isset($read['hint'])
                     ? 'reads as the condition "' . $read['value'] . '" followed by more of a condition, which ' . $read['hint']
                         . ' Then put the whole condition in quotes, e.g. ' . $eg
                     : 'reads as the condition "' . $read['value'] . '" followed by more of a condition — put the whole condition in quotes, e.g. '
-                        . $eg)))];
+                        . $eg))))];
             // Advance PAST the consumed value so tag-like text inside a value
             // (e.g. a pattern containing "@UVALIDATE") is never re-read as a
             // second tag. Quoted values also consumed their two quote marks.
@@ -452,7 +458,9 @@ class AnnotationRules
 
      * value — one token, or with $bare 'condition' the longest condition.
      * Returns ['value', 'length' => bytes consumed, 'continues' => bool], plus
-     * 'hint' (Logic::parsePrefix) when a condition goes on with "&&", "||" or "!".
+     * 'hint' (Logic::parsePrefix) when a condition goes on with "&&", "||" or "!",
+     * and 'extra' when text follows it that is neither more of a condition nor
+     * a note in plain words (AST-1).
      */
     private static function readValue($rest, $bare = 'token')
     {
@@ -499,7 +507,7 @@ class AnnotationRules
             $p = Logic::parsePrefix($rest);
             if ($p['length'] > 0) {
                 return ['value' => substr($rest, 0, $p['length']), 'length' => $p['length'], 'continues' => $p['continues'],
-                        'hint' => $p['hint']];
+                        'hint' => $p['hint'], 'extra' => $p['extra']];
             }
             // nothing parses: keep the first token, so the parser reports the
             // condition's own error, as before
@@ -778,6 +786,10 @@ class AnnotationRules
         if (!is_array($cfg)) {
             return ['error' => self::TAG_ASSERT . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        $twice = self::duplicateKey($val);
+        if ($twice !== null) {
+            return ['error' => self::TAG_ASSERT . ' names "' . $twice . '" twice. Only the last one would be read, so keep one.'];
         }
         $strings = ['assert', 'message', 'blockSave', 'when'];
         $allowed = array_merge($strings, ['caseSensitive', 'exact', 'references']);
@@ -2842,7 +2854,23 @@ class AnnotationRules
                 . 'e.g. "[end_date]>=[start_date]".';
         } else {
             $a = Logic::parse($assert, $opts);
-            if (empty($a['ok'])) $errors[] = 'the "assert" condition ' . $a['error'];
+            if (empty($a['ok'])) {
+                $errors[] = 'the "assert" condition ' . $a['error'];
+            } else {
+                // A test that names no field gives every value one answer: 1=0
+                // with "blockSave":"hard" held every save of the form (AST-8).
+                if (!Logic::referencedFields($a['ast']) && !Logic::qualifiedRefs($a['ast'])) {
+                    $errors[] = 'the "assert" condition names no [field], so its answer is the same whatever is entered. '
+                        . 'Compare a field, e.g. "[end_date]>=[start_date]".';
+                }
+                // "exact" changes = and <> only; on a test without either it
+                // read as a setting in force that nothing consulted (AST-8).
+                $ops = Logic::comparisonOps($a['ast']);
+                if (isset($frag['exact']) && $frag['exact'] === true && !isset($ops['=']) && !isset($ops['<>'])) {
+                    $errors[] = '"exact" makes = and <> compare character for character, and the "assert" condition has neither. '
+                        . 'Remove "exact", or compare with = or <>.';
+                }
+            }
         }
         if (isset($frag['when'])) {
             if (!is_string($frag['when'])) {
@@ -2859,7 +2887,73 @@ class AnnotationRules
         if (isset($frag['message']) && !is_string($frag['message'])) {
             $errors[] = '"message" must be a string.';
         }
+        foreach (self::longTexts($frag, 'message') as $e) $errors[] = $e;
         return $errors;
+    }
+
+    /** The most characters a rule's "message" may hold, in each language. */
+    const MAX_MESSAGE_LEN = 2000;
+
+    /**
+     * Why the text $key of a fragment is too long, in any language, as a list
+     * of errors. The text goes to every page that shows the field: a 60,000
+     * character "message" was accepted and shipped whole with each one (AST-8).
+     */
+    private static function longTexts(array $frag, $key)
+    {
+        $texts = [];
+        if (isset($frag[$key]) && is_string($frag[$key])) $texts['"' . $key . '"'] = $frag[$key];
+        if (isset($frag['i18n'][$key]) && is_array($frag['i18n'][$key])) {
+            foreach ($frag['i18n'][$key] as $lang => $text) {
+                if (is_string($text)) $texts['"' . $key . '" for language "' . $lang . '"'] = $text;
+            }
+        }
+        $errors = [];
+        foreach ($texts as $name => $text) {
+            $len = function_exists('mb_strlen') ? mb_strlen($text, 'UTF-8') : strlen($text);
+            if ($len > self::MAX_MESSAGE_LEN) {
+                $errors[] = $name . ' is ' . $len . ' characters long; the most is ' . self::MAX_MESSAGE_LEN . '.';
+            }
+        }
+        return $errors;
+    }
+
+    /**
+     * The first key written twice at the top level of a JSON object text that
+     * json_decode() reads, or null. json_decode() keeps the last of two equal
+     * keys without a word, so {"assert":"[a]>=[b]","assert":"[a]<[b]"}
+     * enforced the second test and dropped the first (AST-8).
+     */
+    private static function duplicateKey($json)
+    {
+        $n = strlen($json);
+        $depth = 0;
+        $seen = [];
+        $i = 0;
+        while ($i < $n) {
+            $ch = $json[$i];
+            if ($ch === '"') {
+                $j = $i + 1;
+                while ($j < $n && $json[$j] !== '"') $j += ($json[$j] === '\\') ? 2 : 1;
+                if ($depth === 1) {
+                    $k = $j + 1;
+                    while ($k < $n && strpos(" \t\r\n", $json[$k]) !== false) $k++;
+                    if ($k < $n && $json[$k] === ':') {
+                        $key = json_decode(substr($json, $i, $j - $i + 1));
+                        if (is_string($key)) {
+                            if (isset($seen[$key])) return $key;
+                            $seen[$key] = true;
+                        }
+                    }
+                }
+                $i = $j + 1;
+                continue;
+            }
+            if ($ch === '{' || $ch === '[') $depth++;
+            elseif ($ch === '}' || $ch === ']') $depth--;
+            $i++;
+        }
+        return null;
     }
 
     /**

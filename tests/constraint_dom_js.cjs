@@ -922,6 +922,56 @@ function submitEv() {
   check('AST-2: "exact" counts letter case', /IDs differ/.test(cMsg(envX, 'pid_c').innerHTML));
 }
 
+// ---- review 2026-11-13: AST-5 line ends, AST-7 text in a number field, AST-8 exact numbers ----
+{
+  // AST-5: a Notes value typed here holds LF; the other form's copy, baked in
+  // by the server, holds CR LF. They are the same text.
+  const note = makeEl('textarea'); note.name = 'note_c'; note.value = 'line 1\nline 2';
+  const envN = boot([note], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['note_c'], assert: '[note]=[note_c]', message: 'Notes differ', blockSave: 'hard',
+              assertAst: ['cmp', '=', ['lit', 'line 1\r\nline 2'], ['ref', 'note_c', null]] }] });
+  check('AST-5: LF typed here equals the CR LF saved on the other form', !/Notes differ/.test(cMsg(envN, 'note_c').innerHTML));
+  let ev = submitEv(); envN.doc.fire('submit', ev);
+  check('AST-5: and the save is not held', ev._prevented === false);
+  note.value = 'line 1\nline 3'; note.fire('change');
+  check('AST-5: a different line still differs', /Notes differ/.test(cMsg(envN, 'note_c').innerHTML));
+
+  // AST-7: text typed into a number field fails both spellings of one rule.
+  const a1 = makeEl('input'); a1.name = 'age1'; a1.value = '12O';
+  const a2 = makeEl('input'); a2.name = 'age2'; a2.value = '12O';
+  const envM = boot([a1, a2], { singleFields: [], pooledFields: [], numberMarks: { age1: 'point', age2: 'point' },
+    rules: [{ type: 'constraint', fields: ['age1'], assert: '[age1]<=120', message: 'Plain', blockSave: 'hard' },
+            { type: 'constraint', fields: ['age2'], assert: 'not([age2]>120)', message: 'Negated', blockSave: 'hard' }] });
+  check('AST-7: [age]<=120 flags 12O', a1.getAttribute('aria-invalid') === 'true');
+  check('AST-7: not([age]>120) flags 12O too', a2.getAttribute('aria-invalid') === 'true');
+  check('AST-7: both say the value is not a number', /not a number/.test(cMsg(envM, 'age1').innerHTML) && /not a number/.test(cMsg(envM, 'age2').innerHTML));
+  ev = submitEv(); envM.doc.fire('submit', ev);
+  check('AST-7: the save is held', ev._prevented === true);
+  a1.value = '50'; a2.value = '50'; a1.fire('change'); a2.fire('change');
+  check('AST-7: a number in range passes both', a1.getAttribute('aria-invalid') === 'false' && a2.getAttribute('aria-invalid') === 'false');
+  a2.value = '500'; a2.fire('change');
+  check('AST-7: a number out of range still fails the negated spelling', a2.getAttribute('aria-invalid') === 'true');
+
+  // AST-8: "exact" reads a number field as typed, and a date as REDCap stores it.
+  const n1 = makeEl('input'); n1.name = 'n1'; n1.value = '100';
+  const n2 = makeEl('input'); n2.name = 'n2'; n2.value = '1e2';
+  const n3 = makeEl('input'); n3.name = 'n3'; n3.value = '1e2';
+  const d1 = makeEl('input'); d1.name = 'd1'; d1.value = '05-01-2024';
+  const d2 = makeEl('input'); d2.name = 'd2'; d2.value = '05-01-2024';
+  const envE = boot([n1, n2, n3, d1, d2], { singleFields: [], pooledFields: [],
+    numberMarks: { n1: 'point', n2: 'point', n3: 'point' }, dateFormats: { d1: ['date', 'dmy'], d2: ['date', 'dmy'] },
+    rules: [{ type: 'constraint', fields: ['n2'], assert: '[n1]=[n2]', exact: true, message: 'Exact differ', blockSave: 'hard' },
+            { type: 'constraint', fields: ['n3'], assert: '[n1]=[n3]', message: 'Loose differ', blockSave: 'hard' },
+            { type: 'constraint', fields: ['d2'], assert: '[d1]=[d2]', exact: true, message: 'Dates differ', blockSave: 'hard' }] });
+  check('AST-8: "exact" on number fields tells 1e2 from 100', /Exact differ/.test(cMsg(envE, 'n2').innerHTML));
+  check('AST-8: without "exact" they are one number', !/Loose differ/.test(cMsg(envE, 'n3').innerHTML));
+  check('AST-8: "exact" on two D-M-Y dates still compares the stored date', !/Dates differ/.test(cMsg(envE, 'd2').innerHTML));
+  n2.value = '100'; n2.fire('change');
+  check('AST-8: the same characters pass "exact"', !/Exact differ/.test(cMsg(envE, 'n2').innerHTML));
+  d2.value = '06-01-2024'; d2.fire('change');
+  check('AST-8: another day fails', /Dates differ/.test(cMsg(envE, 'd2').innerHTML));
+}
+
 // ---- survey page shape (AST-5): placeholder texts, names kept as present only ----
 // A survey page's config carries no condition text next to a settled answer,
 // and a snapshot without its field names (ModeRegistry::clientShape). The

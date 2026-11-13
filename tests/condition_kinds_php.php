@@ -121,6 +121,13 @@ namespace {
         'k_when'     => [a("[wt]>0", ',"when":"[dob]<\'31/12/1999\'"'), '"when" compares "[dob]"'],
         'k_nested'   => [a("[sex]='1' and ([wt]>2 or not [enrol]>='2026/01/01')"), '"assert" compares "[enrol]"'],
         'k_required' => ['@UVREQUIRED={"when":"[enrol]>=\'1.1.2026\'"}', '"when" compares "[enrol]"'],
+        // AST-8 (review 2026-11-13): a literal no value of the field can be ordered against
+        'k_feb31'    => [a("[dob]>='2024-02-31'"), 'with \'2024-02-31\', which is not a date in the calendar'],
+        'k_month13'  => [a("[enrol]<'2024-13-01'"), 'which is not a date in the calendar'],
+        'k_hour25'   => [a("[seen_at]<'2026-03-01 25:00'"), 'which is not a date in the calendar with a time of the day'],
+        'k_num_text' => [a("[wt]>='abc'"), 'with \'abc\', which is not a number written in digits, so >= could never hold'],
+        'k_num_exp'  => [a("[hb]<'1e3'"), 'which is not a number written in digits'],
+        'k_num_when' => [a("[wt]>0", ',"when":"not([wt]>\'high\')"'), '"when" compares "[wt]", which holds numbers, with \'high\''],
         // accepted
         'k_ok_date'  => [a("[dob]>='2000-01-01'"), null],
         'k_ok_dt'    => [a("[seen_at]>='2026-03-01 08:30'"), null],
@@ -132,6 +139,10 @@ namespace {
         'k_ok_cb'    => [a("[cb(1)]='1'"), null],
         'k_ok_blank' => [a("[dob]<>''"), null],
         'k_ok_time'  => [a("[dose_time]>='08:30'"), null],
+        'k_ok_leap'  => [a("[dob]>='2024-02-29'"), null],
+        'k_ok_dt_s'  => [a("[seen_at]<='2026-03-01 23:59'"), null],
+        'k_ok_num_eq' => [a("[wt]<>'abc' and [wt]>='.5' and [wt]<=' +12.50 '"), null],
+        'k_ok_txt_ord' => [a("[note]>='abc'"), null],
     ];
     $DICT = $BASE;
     foreach ($CASES as $fname => $c) $DICT[$fname] = f($c[0]);

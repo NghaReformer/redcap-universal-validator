@@ -37,6 +37,42 @@ trait LiveLookups
         }
     }
 
+    /**
+     * "lookup-batch": the lookups a page asks in one pass (js/engine.js
+     * QRID_lookup), answered in one request.
+     *
+     * Payload {"items": [{"action": "unique-check" | "exists-check",
+     * "payload": {...}}, ...]}; answer {"answers": [...]}, one per item in
+     * the order asked. Each item goes through answerAjax() as a request of
+     * its own would, with this request's record, event, instance, survey
+     * hash and user, so every guard, limit and audit there applies per item
+     * and nothing is answered here that a single request would refuse. An
+     * item that is not one of the two lookups, one past LOOKUP_BATCH_MAX, or
+     * one that threw, is answered null, and the page treats that lookup as
+     * unanswered (it fails open; the audit on save is the net).
+     */
+    private function lookupBatch($payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
+    {
+        $items = (is_array($payload) && isset($payload['items']) && is_array($payload['items'])) ? array_values($payload['items']) : null;
+        if ($items === null) return ['error' => 'malformed request'];
+        $answers = [];
+        foreach ($items as $i => $item) {
+            $action = (is_array($item) && isset($item['action']) && is_string($item['action'])) ? $item['action'] : '';
+            if ($i >= self::LOOKUP_BATCH_MAX || !in_array($action, self::LOOKUP_BATCH_OF, true)
+                || !isset($item['payload']) || !is_array($item['payload'])) {
+                $answers[] = null;
+                continue;
+            }
+            try {
+                $answers[] = $this->answerAjax($action, $item['payload'], $project_id, $record, $instrument, $event_id,
+                    $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id);
+            } catch (\Throwable $e) {
+                $answers[] = null;
+            }
+        }
+        return ['answers' => $answers];
+    }
+
     /** The body of redcap_module_ajax(); see there. */
     private function answerAjax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
     {
@@ -57,6 +93,10 @@ trait LiveLookups
             return $this->scanAction($action, $project_id, $payload);
         }
 
+        if ($action === self::LOOKUP_BATCH_ACTION) {
+            return $this->lookupBatch($payload, $project_id, $record, $instrument, $event_id, $repeat_instance,
+                $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id);
+        }
         if ($action === 'exists-check') {
             return $this->existsCheck($payload, $project_id, $record, $instrument, $event_id, $repeat_instance,
                 $survey_hash, $user_id, $group_id);
@@ -80,6 +120,10 @@ trait LiveLookups
             // this caller"; a survey hash is caller-supplied and proves nothing.
             $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
+            // A signed-in person at a form: a field too large to read whole
+            // answers "could not check" at once (wholeFieldRecords).
+            $this->liveStaffLookup = $isAuthenticated && !$isSurvey;
+            $this->liveReadSkipped = false;
             // One wording for every refusal of a caller REDCap did not sign
             // in: "not a checkable field" for a field with no rule beside "not
             // enabled on surveys" for one with a rule listed the project's
@@ -157,9 +201,9 @@ trait LiveLookups
                 // user has no access to is a read of that form by another door.
                 // Its own answer, as exists-check gives it: the page says
                 // "could not check" and why, instead of nothing (UNQ-3).
-                if ($this->signedInRateLimited($project_id)) {
+                if ($this->signedInRateLimited($project_id, 'q', $field, $values)) {
                     return ['unknown' => true, 'record' => null, 'throttled' => true,
-                            'why' => 'too many checks in the last minute — wait a moment'];
+                            'why' => 'too many checks in the last minute'];
                 }
                 // An "also" field is searched too, so the caller must be able
                 // to open its form as well.
@@ -247,7 +291,8 @@ trait LiveLookups
             // read failed): not "free", which would let a known duplicate
             // through a save that asked again.
             if ($col === false) return ['unknown' => true, 'record' => null]
-                + ($isAuthenticated && !$isSurvey ? ['why' => 'the saved values could not be compared just now'] : []);
+                + ($isAuthenticated && !$isSurvey
+                    ? ['why' => $this->liveReadSkipped ? self::LIVE_READ_SKIPPED_WHY : 'the saved values could not be compared just now'] : []);
             if ($col === null) return ['used' => false, 'record' => null];
 
             // The colliding record id goes ONLY to an authenticated user, and a
@@ -272,6 +317,8 @@ trait LiveLookups
             return ['used' => true, 'record' => $recOut] + ($fieldOut !== null ? ['field' => $fieldOut] : []);
         } catch (\Throwable $e) {
             return ['error' => 'unique check failed']; // client fails open; no detail leaks
+        } finally {
+            $this->liveStaffLookup = false;
         }
     }
 
@@ -310,6 +357,10 @@ trait LiveLookups
         try {
             $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
+            // A signed-in person at a form: a field too large to read whole
+            // answers "could not check" at once (wholeFieldRecords).
+            $this->liveStaffLookup = $isAuthenticated && !$isSurvey;
+            $this->liveReadSkipped = false;
             $refused = $isAuthenticated ? 'not a checkable field' : 'not enabled on surveys';   // one wording, as unique-check (UNQ-9)
             $field = (isset($payload['field']) && is_string($payload['field'])) ? strtolower(trim($payload['field'])) : '';
             if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) return ['error' => $refused];
@@ -349,10 +400,10 @@ trait LiveLookups
                 }
                 if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
             } else {
-                // Flagged, so a rule that blocks holds the save until the next
-                // answer instead of letting the value through (UNQ-3).
-                if ($this->signedInRateLimited($project_id)) {
-                    return $unknown('too many checks in the last minute — wait a moment') + ['throttled' => true];
+                // Flagged "throttled"; the page says it could not check and
+                // lets the save through.
+                if ($this->signedInRateLimited($project_id, 'x', $field, $values)) {
+                    return $unknown('too many checks in the last minute') + ['throttled' => true];
                 }
                 // Generic on purpose: naming the field would tell the page where
                 // the rule looks. The fields a rule copies ("return") are read
@@ -596,20 +647,50 @@ trait LiveLookups
      * in and meets the survey path's guards instead. One budget covers both
      * endpoints. Fails open (no session, unreadable state), like the survey
      * throttle: the live check is a convenience and the audit is the net.
+     *
+     * ONLY A QUESTION NOT ASKED BEFORE IS COUNTED. What the limit bounds is
+     * how fast a signed-in person can try values, and that takes a new value
+     * each time. Data entry asks the same ones again: every lookup field asks
+     * once as its form opens, and again when the field is left. Counting those
+     * (as 2.4.0 did, 60 a minute) refused the lookups of a person saving a few
+     * forms a minute. A question this session asked in the last
+     * THROTTLE_SEEN_SECONDS is answered without being counted, also while the
+     * limit refuses new ones. The newest THROTTLE_SEEN_MAX questions are
+     * remembered, as 16 hex characters of a hash each, never the value.
+     *
+     * $kind 'q' (@UVUNIQUE) or 'x' (@UVEXISTS), $field and $values name the
+     * question. The limit is the system setting lookup-new-values-per-minute
+     * (THROTTLE_SIGNED_IN when blank).
      */
-    private function signedInRateLimited($pid)
+    private function signedInRateLimited($pid, $kind = '', $field = '', array $values = [])
     {
         try {
             if (!function_exists('session_status') || session_status() !== PHP_SESSION_ACTIVE) return false;
-            $key = 'uvalidate_lookup_hits_' . (int) $pid;
             $now = time();
+            $seenKey = 'uvalidate_lookup_seen_' . (int) $pid;
+            $seen = (isset($_SESSION[$seenKey]) && is_array($_SESSION[$seenKey])) ? $_SESSION[$seenKey] : [];
+            foreach ($seen as $h => $t) {
+                if (!is_int($t) || ($now - $t) >= self::THROTTLE_SEEN_SECONDS) unset($seen[$h]);
+            }
+            ksort($values);
+            $ask = substr(md5($kind . "\x1F" . $field . "\x1F" . json_encode($values)), 0, 16);
+            if (isset($seen[$ask])) { $_SESSION[$seenKey] = $seen; return false; }
+            $key = 'uvalidate_lookup_hits_' . (int) $pid;
             $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
             $hits = array_values(array_filter($hits, function ($t) use ($now) {
                 return is_int($t) && ($now - $t) < 60;
             }));
-            if (count($hits) >= self::THROTTLE_SIGNED_IN) { $_SESSION[$key] = $hits; return true; }
+            $_SESSION[$seenKey] = $seen;
+            if (count($hits) >= $this->systemCount('lookup-new-values-per-minute', self::THROTTLE_SIGNED_IN)) {
+                $_SESSION[$key] = $hits;
+                return true;
+            }
             $hits[] = $now;
             $_SESSION[$key] = $hits;
+            // Oldest first, so the cap drops the questions asked longest ago.
+            $seen[$ask] = $now;
+            if (count($seen) > self::THROTTLE_SEEN_MAX) $seen = array_slice($seen, -self::THROTTLE_SEEN_MAX, null, true);
+            $_SESSION[$seenKey] = $seen;
             return false;
         } catch (\Throwable $e) {
             return false;
