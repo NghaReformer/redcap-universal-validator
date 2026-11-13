@@ -856,8 +856,13 @@ the specimen ID on the collection form.
 - **Branches.** With several `when` branches, the page sends the values its
   conditions read, so the server answers from the branch the page is enforcing,
   also on a record not saved yet.
-- **The page config never says where the rule looks.** `in`, `event`, `scope`,
-  `match` and `where` stay on the server, which reads them from the stored rule. On a
+- **The page config does not say where the rule looks.** `in`, `event`, `scope`,
+  `match` and `where` stay on the server, which reads them from the stored rule.
+  One exception: when the searched field is on the tagged field's own form,
+  the page is given its name, since it must send that field's value with the
+  lookup (see "`in` on this form"). The field is one the person filling in
+  the form sees anyway; a field of another form, event or project is never
+  named. On a
   survey a misconfigured rule shows only a general notice, and the "no access"
   reason staff see does not name a form or field.
 - **Who gets an answer.** Signed-in users are answered only when they may open

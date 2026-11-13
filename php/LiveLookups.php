@@ -466,7 +466,14 @@ trait LiveLookups
                     if ($dag === null) return $unknown('your Data Access Group could not be read');
                 }
             }
-            $opts = ['self' => $record];
+            // A record the page drew as new is not left out (EXI-12, as UNQ-6
+            // for unique-check): its ID is REDCap's guess, and another user
+            // may have saved a record under it since, which this lookup must
+            // find. A forged flag only widens the search to the caller's own
+            // record, whose values they hold already.
+            $nr = isset($payload['newRecord']) ? $payload['newRecord'] : null;
+            $isNew = ($nr === true || $nr === 1 || $nr === '1' || $nr === 'true');
+            $opts = ['self' => $isNew ? null : $record];
             if (!$isAuthenticated) {
                 // Anyone can produce misses, and a miss is confirmed by a read of
                 // the whole searched field: a budget per project keeps that
@@ -486,7 +493,7 @@ trait LiveLookups
             if (empty($rule['existsPid']) && !empty($rule['existsSelfIn']) && $inField === (string) $rule['existsSelfIn']
                     && $inField !== $field && array_key_exists($inField, $values)) {
                 $selfIn = Logic::lookupTrim($values[$inField]);
-                if ($record !== null && $record !== '') {
+                if ($record !== null && $record !== '' && !$isNew) {
                     $opts['skip'] = ['record' => $record, 'event' => $event_id, 'instance' => $repeat_instance, 'form' => $instrument];
                 }
             }

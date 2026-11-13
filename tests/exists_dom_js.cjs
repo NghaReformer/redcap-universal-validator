@@ -196,6 +196,19 @@ function one(value, extra, cfgExtra) {
   return { stub, spec, cfg: Object.assign({ jsmoName: JSMO, rules: [rule(extra)] }, cfgExtra || {}) };
 }
 
+// ---- 0) a record not saved yet says so with the lookup (EXI-12) ------------------
+{
+  let t = one('25', {}, { newRecord: true });
+  boot([t.spec], t.cfg, t.stub);
+  check('new record: the request says the record is not saved yet', t.stub.calls.length === 1 && t.stub.calls[0].payload.newRecord === true);
+  t = one('25', {});
+  boot([t.spec], t.cfg, t.stub);
+  check('saved record: the request carries no newRecord', t.stub.calls.length === 1 && !('newRecord' in t.stub.calls[0].payload));
+  t = one('25', {}, { newRecord: 'yes' });
+  boot([t.spec], t.cfg, t.stub);
+  check('newRecord other than true is not sent', !('newRecord' in t.stub.calls[0].payload));
+}
+
 // ---- 1) found / not-found / unknown -------------------------------------------
 {
   const t = one('SP-2', { blockSave: 'hard' });

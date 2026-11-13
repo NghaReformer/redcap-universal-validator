@@ -2275,7 +2275,9 @@ this record.
   conditions read, and the server answers from that branch, also on a new record.
 - **Where the rule looks stays on the server.** The page config holds the rule's
   message, `whereMessage` and enforcement but not `in`, `event`, `scope`, `match`
-  or `where`; the server reads them from the stored rule. On a survey, a configuration error shows as a
+  or `where`; the server reads them from the stored rule. The one exception is
+  a searched field on the tagged field's own form: the page is given its
+  name, because it sends that field's value with the lookup. On a survey, a configuration error shows as a
   general notice, and the "no access" reason does not name a form or field.
 - **Rights.** A signed-in user is answered only when they may open the forms that
   hold the searched field, the `match` fields and the `where` fields, and, for a

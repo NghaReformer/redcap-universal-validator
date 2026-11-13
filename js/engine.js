@@ -9368,6 +9368,10 @@ function QRIDExistsInit(QRID_CONFIG){
         if(lv === "" || QRID_isMissingCode(lv)){ ++seq; pendingKey = null; inert(); dropStale(quiet); return; }
       }
       var payload = { field: fieldName, values: vals, cond: QRID_condValues(VS.all) };
+      /* A record not saved yet: its id is REDCap's guess, so the server must
+         not leave out a record another user saved under it since (EXI-12,
+         as the @UVUNIQUE lookup says it). */
+      if(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.newRecord === true) payload.newRecord = true;
       var key = lookupKey(vals, payload.cond);
       var cached = answers.get(key);
       /* A found answer of a rule that fills fields ages too: the entry it

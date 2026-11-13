@@ -792,6 +792,34 @@ namespace {
     check('EXI-13 a person in a group still learns the value is saved in another, unnamed', $r === ['state' => 'found', 'record' => null]);
     \REDCap::$confineTo = null;
 
+    // ---- EXI-12: a record the page drew as new is not left out of the lookup ------------------
+    $DR = ['record_id' => f('enrol'), 'parent' => f('result', '@UVEXISTS={"in":"record","blockSave":"hard"}'),
+           'sample_id' => f('result'), 'origin' => f('result', '@UVEXISTS=[sample_id]')];
+    $DATA_R = ['25' => [351 => ['record_id' => '25', 'sample_id' => 'S-25']]];
+    $new = function ($m, $field, array $values, $flag) {
+        return $m->redcap_module_ajax('exists-check', ['field' => $field, 'values' => $values] + ($flag === null ? [] : ['newRecord' => $flag]),
+            149, '25', 'result', 351, 1, null, null, null, '', '', $GLOBALS['__TEST_USER'], null);
+    };
+    foreach ([true, '1'] as $flag) {
+        list($a, $b) = both(function () use ($DR, $DATA_R, $FULL, $new, $flag) {
+            return core($new(mod('nurse', $DR, $DATA_R, $FULL), 'parent', ['parent' => '25'], $flag));
+        });
+        check('EXI-12 a page drawn for new record 25, saved by someone else since: its ID is found (newRecord ' . json_encode($flag)
+            . ', got ' . json_encode($a) . ')', $a['state'] === 'found' && $b['state'] === 'found');
+    }
+    foreach ([null, false, 'no'] as $flag) {
+        $r = core($new(mod('nurse', $DR, $DATA_R, $FULL), 'parent', ['parent' => '25'], $flag));
+        check('EXI-12 a saved record never finds its own ID (newRecord ' . json_encode($flag) . ')', $r['state'] === 'not-found');
+    }
+    $r = core($new(mod('nurse', $DR, $DATA_R, $FULL), 'origin', ['origin' => 'S-25', 'sample_id' => 'S-9'], true));
+    check('EXI-12 ..."in" on this form: what the other user saved under that ID counts (got ' . json_encode($r) . ')', $r['state'] === 'found');
+    $r = core($new(mod('nurse', $DR, $DATA_R, $FULL), 'origin', ['origin' => 'S-25', 'sample_id' => 'S-9'], null));
+    check('EXI-12 ...while the saved entry of the record being edited is left out as before', $r['state'] === 'not-found');
+    $m = mod('nurse', $DR, [], $FULL);
+    check('EXI-12 a page for a record not saved yet carries newRecord for a lookup rule', (pageConfig($m, '26', 'result')['newRecord'] ?? null) === true);
+    $m = mod('nurse', $DR, $DATA_R, $FULL);
+    check('EXI-12 a page for a saved record does not', !array_key_exists('newRecord', pageConfig($m, '25', 'result') ?: ['newRecord' => 1]));
+
     fwrite(STDOUT, "exists_table_php: $n checks, $fail failure(s)" . ($INDEX ? ' through the lookup index' : '') . "\n");
     if (!$INDEX) {
         passthru(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__) . ' --index', $rc);

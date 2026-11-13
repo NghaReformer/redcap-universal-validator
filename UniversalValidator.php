@@ -5762,7 +5762,10 @@ class UniversalValidator extends AbstractExternalModule
         }
         $config['rules'] = self::hoistChoicesAll($config['rules']);
         // Where an @UVEXISTS lookup searches stays on the server: the endpoint
-        // re-reads it from the stored rule, so the page never needs it.
+        // re-reads it from the stored rule, so the page never needs it. The
+        // one name the page gets is existsSelfIn, the searched field when it
+        // is on this same form: the page sends its value (EXS-6), and the
+        // endpoint still takes where to look from the stored rule (EXI-15).
         foreach ($config['rules'] as $i => $r) {
             if (is_array($r)) $config['rules'][$i] = ModeRegistry::clientShape($r, $context === 'survey');
         }
@@ -5784,14 +5787,13 @@ class UniversalValidator extends AbstractExternalModule
         // A record not saved yet carries REDCap's guess at its id. The live
         // uniqueness check must not skip a record another user saves under that
         // id meanwhile (UNQ-6), so the page says so. Unknown counts as saved:
-        // the check then skips the record, as it always did.
-        if ($record !== null && $record !== '' && $pid !== null) {
-            foreach ($config['rules'] as $r) {
-                if (!is_array($r) || ($r['type'] ?? '') !== 'unique') continue;
-                $rd = $this->recordDagOf($pid, $record);
-                if (is_array($rd) && $rd['found'] === false) $config['newRecord'] = true;
-                break;
-            }
+        // the check then skips the record, as it always did. The live
+        // @UVEXISTS lookup leaves the record being edited out too (a record
+        // ID never finds itself), so every mode that asks the server
+        // (php/modes.json "needs": "transport") gets the flag (EXI-12).
+        if ($record !== null && $record !== '' && $pid !== null && ModeRegistry::rulesNeed($config['rules'], 'transport')) {
+            $rd = $this->recordDagOf($pid, $record);
+            if (is_array($rd) && $rd['found'] === false) $config['newRecord'] = true;
         }
         // How long a save waits for a live lookup still on its way, when an
         // administrator set another length than the page's own (the engine's
