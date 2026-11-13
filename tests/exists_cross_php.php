@@ -93,6 +93,26 @@ namespace ExternalModules {
             if ($this->queryThrowsAll) throw new \RuntimeException('no database');
             if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) return [[$this->lastInsertId]];
             if (strpos($sql, 'SELECT ROW_COUNT()') !== false) return [[1]];
+            // The data table, for the checks that turn it on (EXI-5): the rows
+            // of one field of one project, as Scan\FieldValues reads them.
+            if (!empty($GLOBALS['__X_TABLE'])) {
+                if (strpos($sql, 'SELECT data_table FROM redcap_projects') !== false) return [['redcap_data']];
+                if (strpos($sql, 'SELECT COUNT(*) FROM (SELECT 1 FROM redcap_data') !== false) return [[0]];
+                if (strpos($sql, 'FROM redcap_data WHERE project_id = ? AND field_name = ?') !== false) {
+                    $GLOBALS['__X_TABLE_READS'][] = $params;
+                    $rows = [];
+                    foreach (isset(\REDCap::$data[(int) $params[0]]) ? \REDCap::$data[(int) $params[0]] : [] as $rec => $node) {
+                        foreach ($node as $evt => $row) {
+                            if ($evt === 'repeat_instances' || !is_array($row)) continue;
+                            if (isset($params[2]) && (int) $evt !== (int) $params[2]) continue;
+                            if (isset($row[$params[1]]) && !is_array($row[$params[1]]) && (string) $row[$params[1]] !== '') {
+                                $rows[] = [(string) $rec, (string) $params[1], (string) $row[$params[1]]];
+                            }
+                        }
+                    }
+                    return $rows;
+                }
+            }
             if (strpos($sql, 'FROM redcap_projects') !== false) {
                 $this->projectReads[] = (int) $params[0];
                 if (!in_array((int) $params[0], $this->projectsWithRows, true)) return [];
@@ -476,6 +496,47 @@ namespace {
     check('a failed read there is unknown', (ask($m, 'x_spec', ['x_spec' => 'SP-1'])['state'] ?? null) === 'unknown');
     $r = ask(mod('stranger'), 'x_spec', ['x_spec' => 'SP-1']);
     check('rights here are still needed', ($r['state'] ?? null) === 'unknown' && strpos($r['why'], 'every form this lookup reads') !== false);
+
+    // ---- 3b) the other project's data table (EXI-5) -------------------------------------
+    // The module reads the table itself, so a miss there exports no record,
+    // and needs no evidence of what a getData of that project could see.
+    $GLOBALS['__X_TABLE'] = true;
+    $GLOBALS['__X_TABLE_READS'] = [];
+    $m = mod();
+    $r = ask($m, 'x_spec', ['x_spec' => 'SP-404']);
+    check('table: a miss in another project reads its data table and exports no record (got ' . json_encode($r['state'] ?? null) . ', '
+        . count(readsOf(300)) . ' reads)', ($r['state'] ?? null) === 'not-found' && !readsOf(300)
+        && $GLOBALS['__X_TABLE_READS'] && (int) $GLOBALS['__X_TABLE_READS'][0][0] === 300);
+    $m = mod();
+    $r = ask($m, 'x_spec', ['x_spec' => 'SP-1']);
+    check('table: a hit reads only the records that hold the value', ($r['state'] ?? null) === 'found' && $r['record'] === null
+        && readsOf(300) && !array_filter(readsOf(300), function ($c) { return empty($c['records']); }));
+    $m = mod(); \REDCap::$emptyFor = [300];
+    $r = ask($m, 'x_spec', ['x_spec' => 'SP-404']);
+    check('table: a value saved nowhere there is not found though REDCap shows this request no record of that project',
+        ($r['state'] ?? null) === 'not-found');
+    $m = mod(); \REDCap::$emptyFor = [300];
+    $r = ask($m, 'x_spec', ['x_spec' => 'SP-1']);
+    check('table: ...and a value saved there is found from its row', ($r['state'] ?? null) === 'found' && $r['record'] === null);
+    $m = mod(); \REDCap::$emptyFor = [300];
+    $r = ask($m, 'x_m', ['x_m' => 'SP-1']);
+    check('table: ...while a rule with "match" cannot be judged on a record it cannot read (got ' . json_encode($r['state'] ?? null) . ')',
+        ($r['state'] ?? null) === 'unknown');
+    check('table: a record ID there', (ask(mod(), 'x_rec', ['x_rec' => 'L2'])['state'] ?? null) === 'found'
+        && (ask(mod(), 'x_rec', ['x_rec' => 'L9'])['state'] ?? null) === 'not-found');
+    check('table: "match" and "event" answer as the export does',
+        (ask(mod(), 'x_m', ['x_m' => 'SP-1'])['state'] ?? null) === 'found' && (ask(mod(), 'x_m', ['x_m' => 'SP-2'])['state'] ?? null) === 'not-found'
+        && (ask(mod(), 'x_ev', ['x_ev' => 'SP-1'])['state'] ?? null) === 'found' && (ask(mod(), 'x_ev', ['x_ev' => 'SP-EV2'])['state'] ?? null) === 'not-found');
+    $m = mod('grouped');
+    check('table: a user in a group there is still confined to it', (ask($m, 'x_spec', ['x_spec' => 'SP-1'])['state'] ?? null) === 'found'
+        && (ask($m, 'x_spec', ['x_spec' => 'SP-2'])['state'] ?? null) === 'not-found');
+    $m = mod('grouped'); \REDCap::$confineTo = [300 => 'lab_south'];
+    $r = ask($m, 'x_spec', ['x_spec' => 'SP-1']);
+    check('table: confined, a record of the caller\'s group that the read does not hand back is not "not found" (got '
+        . json_encode($r['state'] ?? null) . ')', ($r['state'] ?? null) === 'unknown');
+    $m = mod(); \REDCap::$failFor = [300];
+    check('table: a failed read of the records there is unknown', (ask($m, 'x_spec', ['x_spec' => 'SP-1'])['state'] ?? null) === 'unknown');
+    $GLOBALS['__X_TABLE'] = false;
 
     // ---- 4) the endpoint under "answer" -------------------------------------------------
     $ANS = [consent('answer', 'specimen_id, site_code, record')];

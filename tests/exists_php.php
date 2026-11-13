@@ -889,7 +889,15 @@ namespace {
     \REDCap::$calls = [];
     $r = askSurvey($m, 'res_s', ['res_s' => 'SP-405']);
     check('survey budget: past it, a miss is unknown and nothing more is read', ($r['state'] ?? null) === 'unknown' && fullReads() === 0);
-    check('survey budget: a hit needs no whole-field read and is still answered', (askSurvey($m, 'res_s', ['res_s' => 'SP-2'])['state'] ?? null) === 'found');
+    // EXI-7: the narrowed read costs REDCap what the full one does, so it is
+    // on the budget too. (With the lookup index a hit is answered outside it.)
+    \REDCap::$calls = [];
+    check('survey budget: past it, a hit where no index or table answers is unknown too, and nothing is read',
+        (askSurvey($m, 'res_s', ['res_s' => 'SP-2'])['state'] ?? null) === 'unknown' && !\REDCap::$calls);
+    $m = mod(null);
+    check('survey budget: within it, a hit is answered', (askSurvey($m, 'res_s', ['res_s' => 'SP-2'])['state'] ?? null) === 'found');
+    $bucket = isset($m->rateBuckets['149|' . $tier2]) ? $m->rateBuckets['149|' . $tier2] : 0;
+    check('survey budget: ...and its narrowed read was counted (got ' . $bucket . ')', $bucket === 1);
     $m = mod(null); $m->queryThrows = true;
     check('survey budget: a counter that cannot be kept refuses the read (fail closed)', (askSurvey($m, 'res_s', ['res_s' => 'SP-404'])['state'] ?? null) === 'unknown');
     $m = mod(); $m->rateBuckets['149|' . $tier2] = 10000;

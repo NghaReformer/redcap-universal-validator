@@ -556,6 +556,10 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
             foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
+            // The fields a rule fills, on its own form: what they hold decides
+            // whether a lookup that copies nothing leaves them (EXI-4,
+            // returnsExists). The scan reads them too (scanPlan).
+            foreach (ModeRegistry::returnFields($r) as $f) $readSet[$f] = true;
             // and what a required field's branching logic reads (REQ-1)
             foreach ($this->requiredBranchingRefs($project_id, $r) as $f) $readSet[$f] = true;
         }
@@ -656,13 +660,13 @@ class UniversalValidator extends AbstractExternalModule
                             $this->auditRule($rule, $ruleIndex, $hctx['values'], $dupes, $ownFields, $logMode,
                                 $project_id, $record, $hostForm, $hctx['event_id'], $hctx['instance'],
                                 isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null,
-                                $depResolution[$hk], ['callerGroup' => $group_id]);
+                                $depResolution[$hk], ['callerGroup' => $group_id, 'returnsHeld' => true]);
                         }
                     }
                     continue;
                 }
                 $this->auditRule($rule, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance,
-                    isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution, ['callerGroup' => $group_id]);
+                    isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution, ['callerGroup' => $group_id, 'returnsHeld' => true]);
             } catch (\Throwable $e) {
                 $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'rule ' . ($ruleIndex + 1));
             }
@@ -1225,14 +1229,48 @@ class UniversalValidator extends AbstractExternalModule
             return ['values' => $out, 'problem' => null, 'field' => $field];
         }
         if (isset($r['returnConflict'])) {
-            return $keep((int) $r['returnConflict'] . ' saved entries hold this value with different values to copy, so ' . $targets
-                . ' keep their values — narrow the lookup with "match"');
+            // The fields keep what they hold only while that is what one of
+            // the entries holds (EXI-4). Values copied for the value looked
+            // up before belong to none of them, and are emptied. Judged only
+            // where the audit read those fields ($meta['returnsHeld'], set
+            // by auditPhase): a blank that was not read is not a blank.
+            $options = (!empty($meta['returnsHeld']) && isset($r['returnOptions']) && is_array($r['returnOptions'])) ? $r['returnOptions'] : null;
+            if (self::returnedIsAnOption($ret, $options, $values, $this->dataDictionary($project_id))) {
+                return $keep((int) $r['returnConflict'] . ' saved entries hold this value with different values to copy, so ' . $targets
+                    . ' keep their values — narrow the lookup with "match"');
+            }
+            return ['values' => array_fill_keys(array_values($ret), ''), 'field' => $field,
+                    'problem' => (int) $r['returnConflict'] . ' saved entries hold this value with different values to copy, and '
+                        . $targets . ' held the values of none of them, so they are left empty — narrow the lookup with "match"'];
         }
         if (!empty($r['returnWithheld'])) {
             return $keep('the value is saved only outside the Data Access Group of the person who saved, so ' . $targets
                 . ' keep their values');
         }
         return $keep();
+    }
+
+    /**
+     * Whether the fields a rule fills ($ret: field there => field here) hold,
+     * in $values, the values of one of $options (existsReturnOutcome
+     * 'returnOptions': field there => value). A field that holds numbers
+     * compares by value, as the save compares before it writes
+     * (ReturnedValues::returnedDiffers). True when the options are not known:
+     * what cannot be compared is kept.
+     */
+    private static function returnedIsAnOption(array $ret, $options, array $values, $dd)
+    {
+        if (!is_array($options)) return true;
+        foreach ($options as $opt) {
+            if (!is_array($opt)) continue;
+            foreach ($ret as $s => $t) {
+                $cur = (isset($values[$t]) && !is_array($values[$t])) ? (string) $values[$t] : '';
+                $loose = is_array($dd) && isset($dd[$t]) && self::numberMarkOf($dd[$t]) !== null;
+                if (self::returnedDiffers($cur, isset($opt[$s]) ? (string) $opt[$s] : '', $loose)) continue 2;
+            }
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -1629,11 +1667,23 @@ class UniversalValidator extends AbstractExternalModule
         if ($scope === 'dag' && $dag === false) return $unknown;
         $prefer = isset($opts['callerDag']) ? $opts['callerDag'] : null;
         $budgeted = isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']);
-        // The record being edited, when its own value of the searched field
+        // The entry being edited, when its own value of the searched field
         // came with the request (EXS-6): the saved one is not what it holds.
-        if (isset($opts['skip']) && $opts['skip'] !== null && $opts['skip'] !== '' && $spec['in'] !== 'record') {
-            $spec['skip'] = (string) $opts['skip'];
+        // Only that entry is left out (EXI-1): another instance or event of
+        // the same record holds what it holds, as the audit reads it.
+        if (isset($opts['skip']) && is_array($opts['skip']) && $spec['in'] !== 'record') {
+            $spec['skip'] = $this->existsSkipSlot($pid, $opts['skip']);
         }
+        // A person in a Data Access Group has "match" and "where" judged on
+        // the entries of their own group only (EXI-3). Judged on another
+        // group's entries, found against "saved, but filtered" or "not
+        // found" told them what those entries hold: a status, a guessed date
+        // of birth. An entry of another group that holds the value answers
+        // unknown, whether REDCap confines the read or not.
+        $spec['judgeIn'] = ($prefer !== null && ($spec['where'] !== null
+            || count($spec['target']) > ($spec['in'] === 'record' ? 0 : 1))) ? $prefer : null;
+        $beyond = false;
+        $beyondWhy = $unknown + ['why' => self::EXISTS_BEYOND_GROUP_WHY];
         try {
             if ($spec['in'] === 'record') {
                 $pk = $this->recordIdFieldOf($pid);
@@ -1657,7 +1707,7 @@ class UniversalValidator extends AbstractExternalModule
                     $hit = self::recordIdMatch($ids, $value, $spec['fold'], $scope, $dag, $self, $mark);
                 } else {
                     $hit = self::recordWhereHit($spec, self::recordIdMatches($ids, $value, $spec['fold'], $scope, $dag, $self, $mark),
-                                                $data, $filtered);
+                                                $data, $filtered, $beyond);
                 }
                 if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
                 // The data table names every record whose ID matches, in any
@@ -1668,9 +1718,10 @@ class UniversalValidator extends AbstractExternalModule
                 // it names, and keeps the reads below when it cannot answer.
                 // With "where" a survey keeps them always: the reads an answer
                 // takes must not tell "saved, but filtered" from "absent".
-                if (empty($opts['foreign']) && (!$budgeted || $spec['where'] === null)) {
+                // Another project's table is read the same way (EXI-5).
+                if (!$budgeted || $spec['where'] === null) {
                     $t = $this->existsRecordFromTable($pid, $spec, $value, $read, $ids, $scope, $dag, $self, $prefer, $opts, $filtered,
-                        $budgeted ? 'index' : 'any');
+                        $budgeted ? 'index' : 'any', $beyond);
                     if ($t !== null) return $t;
                     if ($this->liveReadSkipped) return $unknown + ['why' => self::LIVE_READ_SKIPPED_WHY];
                 }
@@ -1691,10 +1742,11 @@ class UniversalValidator extends AbstractExternalModule
                     } else {
                         // The records the exact read already judged are not judged again.
                         $more = array_diff_key(self::recordIdMatches($all, $value, $spec['fold'], $scope, $dag, $self, $mark), $ids);
-                        $hit = self::recordWhereHit($spec, $more, $rows, $filtered);
+                        $hit = self::recordWhereHit($spec, $more, $rows, $filtered, $beyond);
                     }
                     if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
                 }
+                if ($beyond) return $beyondWhy;
                 return self::existsFilteredMiss($this->existsMiss($pid, $scope, $opts, $dag), $filtered);
             }
             $fields = array_keys($spec['target']);
@@ -1715,17 +1767,36 @@ class UniversalValidator extends AbstractExternalModule
             // A caller without a budget (staff, the save audit) reads the data
             // table first (existsFromTable): the records that hold the value,
             // then those records only, in place of a read of every record
-            // (EXS-4). A survey keeps its narrowed read, whose hit costs no
-            // budget, and reads the table in place of the full read below.
-            // A survey asks the lookup index first, outside the budget: it
-            // reads only the records it names.
-            $table = empty($opts['foreign']) && !($budgeted && $spec['where'] !== null);
+            // (EXS-4). A survey asks the lookup index first, outside the
+            // budget: it reads only the records it names. Every read after
+            // that is on the budget: the table, then the narrowed read, then
+            // the full one (EXI-7).
+            //
+            // A lookup in another project reads its data table the same way
+            // (EXI-5): the module reads the table itself, so the read is not
+            // subject to what REDCap applies to a getData of that project
+            // from this one, and a miss there needs no export of every
+            // record. Who may ask was settled before (crossLookup).
+            $table = !($budgeted && $spec['where'] !== null);
             if ($table) {
                 $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, $budgeted ? 'index' : 'any');
                 if ($t !== null) return $t;
                 // A signed-in person's live lookup of a field too large to
                 // read whole (wholeFieldRecords): the exports below cost more.
                 if ($this->liveReadSkipped) return $unknown + ['why' => self::LIVE_READ_SKIPPED_WHY];
+            }
+            // A caller under a read budget pays for every read past the lookup
+            // index out of it, the narrowed one too (EXI-7): REDCap applies a
+            // filterLogic to records it has already read, so that read costs
+            // what the full one does, and 200 misses a minute from a survey
+            // link were 200 of them. The budget is asked once per lookup, and
+            // the data table, which settles hit and miss alike, is read first.
+            if ($narrow && $budgeted && !call_user_func($opts['mayFullRead'])) {
+                return $unknown + ['why' => 'too many lookups in the last minute'];
+            }
+            if ($table && $budgeted) {
+                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, 'table');
+                if ($t !== null) return $t;
             }
             if ($narrow && !$spec['returns'] && !($budgeted && $spec['where'] !== null)) {
                 $fl = self::collisionFilterLogic(array_keys($spec['target']), $spec['target'], $spec['fold'], $spec['marks']);
@@ -1747,27 +1818,21 @@ class UniversalValidator extends AbstractExternalModule
                     }
                 }
             }
-            if ($narrow && isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']) && !call_user_func($opts['mayFullRead'])) {
-                return $unknown + ['why' => 'too many lookups in the last minute'];
-            }
-            if ($table && $budgeted) {
-                $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, 'table');
-                if ($t !== null) return $t;
-            }
             $data = $spec['returns'] ? $this->existsFullRead($params) : \REDCap::getData($params);
             if (!is_array($data)) return $unknown;
             $filtered = false;
             if ($spec['returns']) {
-                $hits = self::existsHitsIn($data, $spec, $scope, $dag, $filtered);
+                $hits = self::existsHitsIn($data, $spec, $scope, $dag, $filtered, $beyond);
                 if ($hits) {
                     $best = self::bestExistsHit($hits, $prefer);
                     return ['state' => 'found', 'record' => $best['record'], 'dag' => $best['dag']]
                         + self::existsReturnOutcome($hits, $spec['returns'], $prefer);
                 }
             } else {
-                $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered);
+                $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered, $beyond);
                 if ($hit !== null) return ['state' => 'found'] + $hit;
             }
+            if ($beyond) return $beyondWhy;
             // The read just made is the evidence of what this request can see
             // there; it spares existsMiss a second read of that project.
             if (!empty($opts['foreign'])) $this->noteGroupsSeen($pid, $data, false);
@@ -1775,6 +1840,73 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             return $unknown;
         }
+    }
+
+    /**
+     * The entry a live lookup leaves out of its search (EXI-1): the one being
+     * edited, whose value of the searched field the page sent. $at is
+     * ['record', 'event', 'instance', 'form'] as REDCap names the page. The
+     * result adds 'repeat': 'form' when that form repeats on its own in the
+     * event, 'event' when the event repeats as a whole, 'none' when neither,
+     * null when what repeats cannot be read. Null for no record: nothing is
+     * saved to leave out.
+     */
+    private function existsSkipSlot($pid, array $at)
+    {
+        $record = isset($at['record']) ? (string) $at['record'] : '';
+        if ($record === '') return null;
+        $event = (isset($at['event']) && $at['event'] !== null && $at['event'] !== '') ? (string) $at['event'] : null;
+        $form = isset($at['form']) ? (string) $at['form'] : '';
+        $instance = (isset($at['instance']) && (int) $at['instance'] > 1) ? (int) $at['instance'] : 1;
+        $repeat = null;
+        $map = $this->repeatingMap($pid);
+        if ($map === false) {
+            $repeat = 'none';
+        } elseif (is_array($map) && $event !== null) {
+            $repeat = 'none';
+            if (array_key_exists($event, $map)) {
+                $node = $map[$event];
+                if (is_array($node) && $form !== '' && array_key_exists($form, $node)) {
+                    $repeat = 'form';
+                } else {
+                    $whole = !is_array($node);
+                    foreach (is_array($node) ? $node : [] as $f => $_) {
+                        if (!is_string($f) || $f === '') $whole = true;
+                    }
+                    if ($whole) $repeat = 'event';
+                }
+            }
+        }
+        return ['record' => $record, 'event' => $event, 'instance' => $instance, 'form' => $form, 'repeat' => $repeat];
+    }
+
+    /**
+     * Whether $ctx (a recordContexts context of record $rec) is the entry
+     * existsSkipSlot named, or shows only that entry's saved value:
+     *   - the form repeats on its own: its instance of that number;
+     *   - the event repeats as a whole: the event's instance of that number;
+     *   - neither: the event's row, and with it every repeat instance of
+     *     another form in that event, which carries the row's values;
+     *   - not known: the row or instance of that number only. Leaving too
+     *     little out can answer "found" from the value saved before the
+     *     edit, which the audit corrects after the save; leaving too much out
+     *     would refuse a value that is saved.
+     * A page without an event leaves the whole record out, as before.
+     */
+    private static function existsEntrySkipped($skip, $rec, array $ctx)
+    {
+        if (!is_array($skip) || (string) $rec !== $skip['record']) return false;
+        if ($skip['event'] === null) return true;
+        if ((string) $ctx['event_id'] !== $skip['event']) return false;
+        $key = $ctx['repeatKey'];
+        $same = (int) $ctx['instance'] === (int) $skip['instance'];
+        if ($skip['repeat'] === 'form') return $key !== null && (string) $key === $skip['form'] && $same;
+        if ($skip['repeat'] === 'event') return $key === '' && $same;
+        // An instance of the page's own form, or of the event, where the map
+        // says nothing repeats: the data disagrees with the map, so only the
+        // instance of that number is left out.
+        if ($skip['repeat'] === 'none' && $key !== '' && (string) $key !== $skip['form']) return true;
+        return $same && ($key === null || $key === '' || (string) $key === $skip['form']);
     }
 
     /**
@@ -1789,15 +1921,17 @@ class UniversalValidator extends AbstractExternalModule
      * there, without its name; with either, the answer is unknown. Under
      * "scope":"dag" such a record is outside the group the rule looks in.
      */
-    private function existsRecordFromTable($pid, array $spec, $value, array $read, array $ids, $scope, $dag, $self, $prefer, array $opts, &$filtered, $via = 'any')
+    private function existsRecordFromTable($pid, array $spec, $value, array $read, array $ids, $scope, $dag, $self, $prefer, array $opts, &$filtered, $via = 'any', &$beyond = false)
     {
         $pk = $this->recordIdFieldOf($pid);
         if ($pk === '') return null;
         $cands = $this->existsCandidates($pid, $pk, $value, $spec['fold'], $spec['recordMark'], [], null, $self, $via);
         if ($cands === null) return null;
         $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
+        // A record of another group that the caller's "where" is not judged on (EXI-3).
+        $beyondWhy = ['state' => 'unknown', 'record' => null, 'dag' => null, 'why' => self::EXISTS_BEYOND_GROUP_WHY];
         $more = array_values(array_filter($cands, function ($r) use ($ids) { return !array_key_exists($r, $ids); }));
-        if (!$more) return self::existsFilteredMiss($notFound, $filtered);
+        if (!$more) return $beyond ? $beyondWhy : self::existsFilteredMiss($notFound, $filtered);
         $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'records' => $more,
                                   'fields' => $read, 'exportDataAccessGroups' => true]);
         if (!is_array($data)) return ['state' => 'unknown', 'record' => null, 'dag' => null];
@@ -1805,18 +1939,20 @@ class UniversalValidator extends AbstractExternalModule
         $mark = $spec['recordMark'];
         $hit = $spec['where'] === null
             ? self::recordIdMatch($got, $value, $spec['fold'], $scope, $dag, $self, $mark)
-            : self::recordWhereHit($spec, self::recordIdMatches($got, $value, $spec['fold'], $scope, $dag, $self, $mark), $data, $filtered);
+            : self::recordWhereHit($spec, self::recordIdMatches($got, $value, $spec['fold'], $scope, $dag, $self, $mark), $data, $filtered, $beyond);
         if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
+        if ($beyond) return $beyondWhy;
         $unseen = array_values(array_filter($more, function ($r) use ($got) { return !array_key_exists($r, $got); }));
-        if ($unseen && $scope !== 'dag') {
-            if ($spec['where'] === null && !$spec['returns']) return ['state' => 'found', 'record' => $unseen[0], 'dag' => false];
-            return ['state' => 'unknown', 'record' => null, 'dag' => null,
-                    'why' => isset($opts['callerDag']) && $opts['callerDag'] !== null
-                        ? 'a value saved in another Data Access Group may not be visible from yours'
-                        : 'the saved values could not be read just now'];
-        }
+        if ($unseen && $scope !== 'dag') return $this->existsUnseenAnswer($spec['where'] === null && !$spec['returns'], $opts);
+        // Another project, under "scope":"dag": the reads below decide (existsFromTable).
+        if ($unseen && !empty($opts['foreign'])) return null;
         return self::existsFilteredMiss($notFound, $filtered);
     }
+
+    /** What a person in a Data Access Group is told when the value is saved in another group and the rule tests more than the value. */
+    const EXISTS_BEYOND_GROUP_WHY = 'a value saved in another Data Access Group may not be visible from yours';
+    /** The different sets of values a live answer lists when the entries found disagree on what to copy (existsCheck). */
+    const EXISTS_RETURN_OPTIONS_MAX = 10;
 
     /**
      * A miss ($miss, from existsMiss) where the value IS saved, in entries
@@ -1843,11 +1979,17 @@ class UniversalValidator extends AbstractExternalModule
      * with no row there has no entry, so it fails. The values come from the
      * read that found the IDs, so judging costs no read of its own.
      */
-    private static function recordWhereHit(array $spec, array $cands, array $d, &$filtered)
+    private static function recordWhereHit(array $spec, array $cands, array $d, &$filtered, &$beyond = false)
     {
         if (!$cands) return null;
+        $only = isset($spec['judgeIn']) ? $spec['judgeIn'] : null;
         foreach ($cands as $rec => $rdag) {
             $rec = (string) $rec;
+            // A record of another group than the caller's is not judged (EXI-3).
+            if ($only !== null && $rdag !== $only) {
+                $beyond = true;
+                continue;
+            }
             $filtered = true;
             $node = (isset($d[$rec]) && is_array($d[$rec])) ? $d[$rec] : [];
             foreach (self::recordContexts($node) as $ctx) {
@@ -2149,6 +2291,22 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Whether one entry holds the value looked up in the searched field, the
+     * "match" fields and "where" left aside: all that is read of an entry of
+     * another Data Access Group than the caller's (EXI-3, existsSpec
+     * 'judgeIn'). A saved Missing Data Code holds nothing.
+     */
+    private static function existsRowHoldsValue(array $ctx, array $spec)
+    {
+        $in = $spec['in'];
+        if (!isset($spec['keys'][$in])) return false;
+        $row = $ctx['values'];
+        $rv = (isset($row[$in]) && !is_array($row[$in])) ? Logic::lookupTrim($row[$in]) : '';
+        if ($rv === '' || ($spec['codes'] && self::isMissingCode($rv, $spec['codes']))) return false;
+        return Logic::lookupKey($rv, $spec['fold'], $spec['marks'][$in]) === $spec['keys'][$in];
+    }
+
+    /**
      * Whether one entry (a recordContexts context) meets the rule's "where"
      * condition; true for a rule without one. The condition reads the entry
      * as REDCap stores it, with the rule's letter case (existsSpec 'fold'),
@@ -2191,18 +2349,24 @@ class UniversalValidator extends AbstractExternalModule
      * matches nothing. An entry that fails "where" is skipped and sets
      * $filtered (existsRowMatch).
      */
-    private static function existsMatchIn(array $data, array $spec, $scope, $dag, $prefer = null, &$filtered = null)
+    private static function existsMatchIn(array $data, array $spec, $scope, $dag, $prefer = null, &$filtered = null, &$beyond = false)
     {
         $best = null;
         $bestScore = -1;
         $top = ($prefer !== null ? 2 : 0) + 1;
-        $skip = isset($spec['skip']) ? (string) $spec['skip'] : null;
+        $skip = isset($spec['skip']) ? $spec['skip'] : null;
+        $only = isset($spec['judgeIn']) ? $spec['judgeIn'] : null;
         foreach ($data as $rec => $node) {
-            if (!is_array($node) || ($skip !== null && (string) $rec === $skip)) continue;
+            if (!is_array($node)) continue;
             $rdag = self::dagOfRecordNode($node);
             if ($scope === 'dag' && $rdag !== $dag) continue;
             foreach (self::recordContexts($node) as $ctx) {
                 if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
+                if ($skip !== null && self::existsEntrySkipped($skip, $rec, $ctx)) continue;
+                if ($only !== null && $rdag !== $only) {
+                    if (self::existsRowHoldsValue($ctx, $spec)) $beyond = true;
+                    continue;
+                }
                 $exact = self::existsRowMatch($ctx, $spec, $filtered);
                 if ($exact === null) continue;
                 $score = ($prefer !== null && $rdag === $prefer ? 2 : 0) + ($exact ? 1 : 0);
@@ -2227,16 +2391,22 @@ class UniversalValidator extends AbstractExternalModule
      * hits, so values are copied only from them; one that fails it sets
      * $filtered.
      */
-    private static function existsHitsIn(array $data, array $spec, $scope, $dag, &$filtered = null)
+    private static function existsHitsIn(array $data, array $spec, $scope, $dag, &$filtered = null, &$beyond = false)
     {
         $hits = [];
-        $skip = isset($spec['skip']) ? (string) $spec['skip'] : null;
+        $skip = isset($spec['skip']) ? $spec['skip'] : null;
+        $only = isset($spec['judgeIn']) ? $spec['judgeIn'] : null;
         foreach ($data as $rec => $node) {
-            if (!is_array($node) || ($skip !== null && (string) $rec === $skip)) continue;
+            if (!is_array($node)) continue;
             $rdag = self::dagOfRecordNode($node);
             if ($scope === 'dag' && $rdag !== $dag) continue;
             foreach (self::recordContexts($node) as $ctx) {
                 if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
+                if ($skip !== null && self::existsEntrySkipped($skip, $rec, $ctx)) continue;
+                if ($only !== null && $rdag !== $only) {
+                    if (self::existsRowHoldsValue($ctx, $spec)) $beyond = true;
+                    continue;
+                }
                 $exact = self::existsRowMatch($ctx, $spec, $filtered);
                 if ($exact === null) continue;
                 $hits[] = ['record' => (string) $rec, 'dag' => $rdag, 'exact' => $exact,
@@ -2286,6 +2456,8 @@ class UniversalValidator extends AbstractExternalModule
      *   ['returned' => field => value]  every visible entry holds the same values;
      *   ['returnConflict' => n]          the n visible entries do not all hold
      *                                    the same ones: nothing is copied;
+     *                                    'returnOptions' lists the different
+     *                                    values they hold (field => value);
      *   ['returnWithheld' => true]       the value is saved only outside group
      *                                    $visible: nothing is copied.
      * $visible is the Data Access Group of the person the lookup runs for
@@ -2307,7 +2479,7 @@ class UniversalValidator extends AbstractExternalModule
             $tuples[serialize($vals)] = $vals;
         }
         if (!$tuples) return ['returnWithheld' => true];
-        if (count($tuples) > 1) return ['returnConflict' => $seen];
+        if (count($tuples) > 1) return ['returnConflict' => $seen, 'returnOptions' => array_values($tuples)];
         return ['returned' => reset($tuples)];
     }
 
@@ -5640,7 +5812,10 @@ class UniversalValidator extends AbstractExternalModule
         }
         $config['rules'] = self::hoistChoicesAll($config['rules']);
         // Where an @UVEXISTS lookup searches stays on the server: the endpoint
-        // re-reads it from the stored rule, so the page never needs it.
+        // re-reads it from the stored rule, so the page never needs it. The
+        // one name the page gets is existsSelfIn, the searched field when it
+        // is on this same form: the page sends its value (EXS-6), and the
+        // endpoint still takes where to look from the stored rule (EXI-15).
         foreach ($config['rules'] as $i => $r) {
             if (is_array($r)) $config['rules'][$i] = ModeRegistry::clientShape($r, $context === 'survey');
         }
@@ -5662,14 +5837,13 @@ class UniversalValidator extends AbstractExternalModule
         // A record not saved yet carries REDCap's guess at its id. The live
         // uniqueness check must not skip a record another user saves under that
         // id meanwhile (UNQ-6), so the page says so. Unknown counts as saved:
-        // the check then skips the record, as it always did.
-        if ($record !== null && $record !== '' && $pid !== null) {
-            foreach ($config['rules'] as $r) {
-                if (!is_array($r) || ($r['type'] ?? '') !== 'unique') continue;
-                $rd = $this->recordDagOf($pid, $record);
-                if (is_array($rd) && $rd['found'] === false) $config['newRecord'] = true;
-                break;
-            }
+        // the check then skips the record, as it always did. The live
+        // @UVEXISTS lookup leaves the record being edited out too (a record
+        // ID never finds itself), so every mode that asks the server
+        // (php/modes.json "needs": "transport") gets the flag (EXI-12).
+        if ($record !== null && $record !== '' && $pid !== null && ModeRegistry::rulesNeed($config['rules'], 'transport')) {
+            $rd = $this->recordDagOf($pid, $record);
+            if (is_array($rd) && $rd['found'] === false) $config['newRecord'] = true;
         }
         // How long a save waits for a live lookup still on its way, when an
         // administrator set another length than the page's own (the engine's
@@ -5739,8 +5913,9 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * Whether this person sees $instrument of $record read only (EXS-2): their
-     * rights to the form are "read only", or the form (this event and
-     * instance) or the whole record is locked. REDCap then disables every
+     * rights to the form are "read only", the form (this event and
+     * instance) or the whole record (in this event's arm) is locked, or the
+     * form is a completed survey response not opened for editing. REDCap then disables every
      * field, and a page that filled the returned fields would show values the
      * record does not hold. A lock that cannot be read counts as none: the
      * page fills as it did before.
@@ -5759,12 +5934,36 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             Faults::swallow($e, 'UniversalValidator::formReadOnly');
         }
+        // A whole-record lock is kept per arm (EXI-11): a record of the same
+        // name locked in another arm leaves this one open, so the lock is
+        // read for the arm of the event shown.
         try {
-            $r = $db->select('SELECT 1 FROM redcap_locking_records WHERE project_id = ? AND record = ? LIMIT 1',
-                [(int) $pid, (string) $record]);
+            $r = $db->select('SELECT 1 FROM redcap_locking_records l JOIN redcap_events_metadata m ON m.arm_id = l.arm_id'
+                . ' WHERE l.project_id = ? AND l.record = ? AND m.event_id = ? LIMIT 1',
+                [(int) $pid, (string) $record, (int) $event_id]);
             if (is_array($r) && $r) return true;
         } catch (\Throwable $e) {
             Faults::swallow($e, 'UniversalValidator::formReadOnly');
+        }
+        // A completed survey response (EXI-11): REDCap shows it read only on
+        // the data-entry form until a person with the "Edit survey
+        // responses" right opens it for editing, which reloads the page with
+        // editresp in its address. Wrongly taken as read only, the page
+        // fills nothing and the save still writes the values.
+        $right = (is_array($rights) && isset($rights[$instrument])) ? (string) $rights[$instrument] : null;
+        $editing = !empty($_GET['editresp']) && ($right === null || $right === '3');
+        if (!$editing) {
+            try {
+                $r = $db->select('SELECT 1 FROM redcap_surveys s'
+                    . ' JOIN redcap_surveys_participants p ON p.survey_id = s.survey_id'
+                    . ' JOIN redcap_surveys_response r ON r.participant_id = p.participant_id'
+                    . ' WHERE s.project_id = ? AND s.form_name = ? AND p.event_id = ? AND r.record = ? AND r.instance = ?'
+                    . ' AND r.completion_time IS NOT NULL LIMIT 1',
+                    [(int) $pid, $instrument, (int) $event_id, (string) $record, (int) ($instance ?: 1)]);
+                if (is_array($r) && $r) return true;
+            } catch (\Throwable $e) {
+                Faults::swallow($e, 'UniversalValidator::formReadOnly');
+            }
         }
         return false;
     }
@@ -8219,6 +8418,8 @@ class UniversalValidator extends AbstractExternalModule
                 return $refuse('"event" "' . $frag['existsEvent'] . '" is not an event of this project — use its unique event name.');
             }
         }
+        $why = $this->existsMatchProblem($frag, $name, $dd, $dd, $pid, '');
+        if ($why !== null) return $refuse($why);
         if (isset($frag['existsWhere'])) {
             $why = $this->existsWhereProblem($frag, $name, $dd, $dd, $pid, '');
             if ($why !== null) return $refuse($why);
@@ -8402,6 +8603,34 @@ class UniversalValidator extends AbstractExternalModule
                     . ' — the entry found there has no value for it. Name an "event" that holds both forms, or ' . $verb
                     . ' fields of a form every such event holds.';
             }
+        }
+        return null;
+    }
+
+    /**
+     * Why a "match" target of an exists rule on $name cannot be read from the
+     * entry the lookup finds in project $pidThere, or null (EXI-10): it is on
+     * another form that repeats, or on a form missing from an event the
+     * entry can be in (existsEntryPlacement, as "where" and "return" are
+     * checked). Such a rule was accepted, and then every value was "not
+     * found": the entry never holds the target. Where what repeats, or which
+     * forms an event holds, cannot be read, the rule is left as it is: it
+     * may be one that works. Another project's forms and events are not
+     * named: its refusal is CROSS_UNAVAILABLE.
+     */
+    private function existsMatchProblem(array $frag, $name, array $ddThere, array $ddHere, $pidThere, $there)
+    {
+        $match = (isset($frag['existsMatch']) && is_array($frag['existsMatch'])) ? $frag['existsMatch'] : [];
+        if (!$match) return null;
+        $shape = $this->existsEntryShape($frag, $name, $ddThere, $ddHere, $pidThere, $there, '"match"', 'matched');
+        if (isset($shape['problem'])) return null;
+        $pkThere = $ddThere ? (string) array_keys($ddThere)[0] : null;
+        foreach ($match as $t => $_) {
+            $t = (string) $t;
+            if (!isset($ddThere[$t]) || !is_array($ddThere[$t])) continue;
+            $why = self::existsEntryPlacement($shape, $frag, $ddThere[$t], '"match" target "[' . $t . ']"' . $there, 'Match',
+                'match', $t !== $pkThere);
+            if ($why !== null) return $there === '' ? $why : sprintf(self::CROSS_UNAVAILABLE, (int) $pidThere);
         }
         return null;
     }
@@ -8844,6 +9073,8 @@ class UniversalValidator extends AbstractExternalModule
                     . 'users with rights there instead ("Who gets an answer").');
             }
         }
+        $why = $this->existsMatchProblem($frag, $name, $ddB, $ddA, $b, ' of project ' . $b);
+        if ($why !== null) return $refuse($why);
         // crossGate already required every "where" field to be on the
         // agreement's list of fields it may search.
         if (isset($frag['existsWhere'])) {
@@ -11952,39 +12183,89 @@ class UniversalValidator extends AbstractExternalModule
     private function existsFromTable($pid, array $spec, array $params, $scope, $dag, $prefer, $value, array $opts, $via = 'any')
     {
         $in = $spec['in'];
-        $skip = isset($spec['skip']) ? $spec['skip'] : null;
+        // The record being edited stays a candidate (EXI-1): only its entry
+        // on the page is left out, by existsMatchIn and existsHitsIn.
         $cands = $this->existsCandidates($pid, $in, $value, $spec['fold'], isset($spec['marks'][$in]) ? $spec['marks'][$in] : null,
-            $spec['codes'], $spec['event'], $skip, $via);
+            $spec['codes'], $spec['event'], null, $via);
         if ($cands === null) return null;
         $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
         if (!$cands) return $notFound;
-        $data = \REDCap::getData($params + ['records' => $cands]);
-        if (!is_array($data)) return ['state' => 'unknown', 'record' => null, 'dag' => null];
+        // The candidates are read EXISTS_CANDIDATE_CHUNK records at a time,
+        // and no further than the answer needs (EXI-9): a site code 5,000
+        // records hold was 5,000 records exported for a rule the first one
+        // settles. A rule that copies values reads on until two entries
+        // disagree; a miss reads every candidate, a chunk in memory at a time.
         $filtered = false;
-        if ($spec['returns']) {
-            $hits = self::existsHitsIn($data, $spec, $scope, $dag, $filtered);
-            if ($hits) {
-                $best = self::bestExistsHit($hits, $prefer);
-                return ['state' => 'found', 'record' => $best['record'], 'dag' => $best['dag']]
-                    + self::existsReturnOutcome($hits, $spec['returns'], $prefer);
+        $beyond = false;
+        $unseen = false;
+        $hits = [];
+        $fallback = null;
+        $read = 0;
+        $plain = count($spec['target']) === 1 && $spec['where'] === null && !$spec['returns'];
+        foreach (array_chunk($cands, self::EXISTS_CANDIDATE_CHUNK) as $chunk) {
+            $data = \REDCap::getData($params + ['records' => $chunk]);
+            if (!is_array($data)) return ['state' => 'unknown', 'record' => null, 'dag' => null];
+            $read += count($chunk);
+            foreach ($chunk as $rec) {
+                if (!isset($data[$rec]) || !is_array($data[$rec])) { $unseen = true; break; }
             }
-        } else {
-            $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered);
-            if ($hit !== null) return ['state' => 'found'] + $hit;
-        }
-        $seen = [];
-        foreach ($data as $rec => $node) if (is_array($node)) $seen[(string) $rec] = true;
-        $unseen = array_values(array_filter($cands, function ($r) use ($seen) { return !isset($seen[$r]); }));
-        if ($unseen && $scope !== 'dag') {
-            if (count($spec['target']) === 1 && $spec['where'] === null && !$spec['returns']) {
-                return ['state' => 'found', 'record' => $unseen[0], 'dag' => false];
+            if ($spec['returns']) {
+                foreach (self::existsHitsIn($data, $spec, $scope, $dag, $filtered, $beyond) as $h) $hits[] = $h;
+                if ($hits && isset(self::existsReturnOutcome($hits, $spec['returns'], $prefer)['returnConflict'])) break;
+                continue;
             }
-            return ['state' => 'unknown', 'record' => null, 'dag' => null,
-                    'why' => isset($opts['callerDag']) && $opts['callerDag'] !== null
-                        ? 'a value saved in another Data Access Group may not be visible from yours'
-                        : 'the saved values could not be read just now'];
+            $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered, $beyond);
+            if ($hit !== null) {
+                // In the caller's group (or the caller is in none): the one to show.
+                if ($prefer === null || $hit['dag'] === $prefer) return ['state' => 'found'] + $hit;
+                if ($fallback === null) $fallback = $hit;
+            }
+            // Found, but only outside the caller's group so far: a few more
+            // records may hold one inside it that can be named, no more.
+            if (($fallback !== null || ($plain && $unseen)) && $read >= self::EXISTS_PREFER_READS) break;
         }
+        if ($hits) {
+            $best = self::bestExistsHit($hits, $prefer);
+            return ['state' => 'found', 'record' => $best['record'], 'dag' => $best['dag']]
+                + self::existsReturnOutcome($hits, $spec['returns'], $prefer);
+        }
+        if ($fallback !== null) return ['state' => 'found'] + $fallback;
+        // Saved in another group, where "match" and "where" are not judged (EXI-3).
+        if ($beyond) return ['state' => 'unknown', 'record' => null, 'dag' => null, 'why' => self::EXISTS_BEYOND_GROUP_WHY];
+        if ($unseen && $scope !== 'dag') return $this->existsUnseenAnswer($plain, $opts);
+        // Another project, confined to the caller's group there: a record
+        // not handed back may be one of that group that this project's
+        // restrictions kept from the read. The export decides, with the
+        // evidence it needs (existsMiss).
+        if ($unseen && !empty($opts['foreign'])) return null;
         return self::existsFilteredMiss($notFound, $filtered);
+    }
+
+    /** Records one getData call reads of the candidates the data table names (existsFromTable). */
+    const EXISTS_CANDIDATE_CHUNK = 200;
+    /** Candidates read looking for a holder in the caller's own group, once one outside it is known. */
+    const EXISTS_PREFER_READS = 1000;
+
+    /**
+     * The answer when the data table names a record that holds the value and
+     * getData does not hand it back (existsFromTable, existsRecordFromTable).
+     * For a caller in a Data Access Group that is a record of another group,
+     * which REDCap confined the read to: a rule that tests only the value
+     * ($plain) has its whole test in the table row, so the value is found,
+     * and the record is never named. Any other rule cannot be judged on a
+     * record it cannot read: unknown. For a caller in no group REDCap confines
+     * nothing, so the row belongs to no record that can be read (a row left
+     * behind, or a record deleted in between): unknown, never "found" in a
+     * record staff would then be shown by name (EXI-13). A lookup in another
+     * project keeps "found" for a plain rule: its read may be confined by
+     * this project's restrictions, and the row is saved there.
+     */
+    private function existsUnseenAnswer($plain, array $opts)
+    {
+        $inGroup = isset($opts['callerDag']) && $opts['callerDag'] !== null;
+        if ($plain && ($inGroup || !empty($opts['foreign']))) return ['state' => 'found', 'record' => null, 'dag' => false];
+        return ['state' => 'unknown', 'record' => null, 'dag' => null,
+                'why' => $inGroup ? self::EXISTS_BEYOND_GROUP_WHY : 'the saved values could not be read just now'];
     }
 
     /**

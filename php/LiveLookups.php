@@ -466,7 +466,14 @@ trait LiveLookups
                     if ($dag === null) return $unknown('your Data Access Group could not be read');
                 }
             }
-            $opts = ['self' => $record];
+            // A record the page drew as new is not left out (EXI-12, as UNQ-6
+            // for unique-check): its ID is REDCap's guess, and another user
+            // may have saved a record under it since, which this lookup must
+            // find. A forged flag only widens the search to the caller's own
+            // record, whose values they hold already.
+            $nr = isset($payload['newRecord']) ? $payload['newRecord'] : null;
+            $isNew = ($nr === true || $nr === 1 || $nr === '1' || $nr === 'true');
+            $opts = ['self' => $isNew ? null : $record];
             if (!$isAuthenticated) {
                 // Anyone can produce misses, and a miss is confirmed by a read of
                 // the whole searched field: a budget per project keeps that
@@ -477,15 +484,18 @@ trait LiveLookups
                 if ($opts['callerDag'] === null) return $unknown('your Data Access Group could not be read');
             }
             // "in" on this form (EXS-6): the page sent what that field holds
-            // now. The search leaves the record being edited out, and that
-            // value counts for it below, so the page judges what the audit
-            // judges once the record is saved.
+            // now. The search leaves the entry being edited out (this event
+            // and instance of the record, EXI-1: its other entries count),
+            // and that value counts for it below, so the page judges what the
+            // audit judges once the record is saved.
             $selfIn = null;
             $inField = isset($rule['existsIn']) ? (string) $rule['existsIn'] : '';
             if (empty($rule['existsPid']) && !empty($rule['existsSelfIn']) && $inField === (string) $rule['existsSelfIn']
                     && $inField !== $field && array_key_exists($inField, $values)) {
                 $selfIn = Logic::lookupTrim($values[$inField]);
-                if ($record !== null && $record !== '') $opts['skip'] = $record;
+                if ($record !== null && $record !== '' && !$isNew) {
+                    $opts['skip'] = ['record' => $record, 'event' => $event_id, 'instance' => $repeat_instance, 'form' => $instrument];
+                }
             }
             // "return": values go only to a signed-in person on a data-entry
             // form. Any other caller's lookup asks for none, so none is read,
@@ -527,6 +537,21 @@ trait LiveLookups
                 } elseif (isset($r['returnConflict'])) {
                     $resp['fill'] = 'conflict';
                     $resp['count'] = (int) $r['returnConflict'];
+                    // The different values those entries hold, keyed by the
+                    // field here (EXI-4): the page keeps what its fields
+                    // show only while that is one of them, as the save does
+                    // (returnsExists). Too many to send, or values of another
+                    // project (its log line names one entry handed over, not
+                    // several): the save decides.
+                    $options = (isset($r['returnOptions']) && is_array($r['returnOptions'])) ? $r['returnOptions'] : [];
+                    if ($options && empty($rule['existsPid']) && count($options) <= self::EXISTS_RETURN_OPTIONS_MAX) {
+                        $resp['options'] = [];
+                        foreach ($options as $opt) {
+                            $vals = [];
+                            foreach ($ret as $s => $t) $vals[$t] = isset($opt[$s]) ? (string) $opt[$s] : '';
+                            $resp['options'][] = $this->displayFormOf($project_id, $vals);
+                        }
+                    }
                 } elseif (!empty($r['returnWithheld'])) {
                     $resp['fill'] = 'withheld';
                 }

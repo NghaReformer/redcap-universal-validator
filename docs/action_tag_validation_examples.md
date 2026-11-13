@@ -1937,6 +1937,16 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   entries the user can see, agreeing or not), and the post-save audit logs a
   rule problem. Narrow the lookup with `match`. Copying `record` from two
   records is a disagreement too.
+- **Values of the entry looked up before.** The fields keep what they hold
+  only while it goes with the value in the field. When the value is changed
+  and the new lookup copies nothing (*could not check*, entries that
+  disagree, an entry outside the user's group), the page empties the fields
+  and says so; kept, the save would store one specimen beside another
+  specimen's site. When entries disagree, the fields are kept only if they
+  hold the values of one of those entries; the save judges the same way and
+  empties them otherwise. An import or API write has no page: there the save
+  empties them for disagreeing entries, and leaves them, with a rule problem
+  in the module log, when the lookup could not be made.
 - **Data Access Groups.** A user in a group gets values only from entries of
   their own group. When REDCap lets the module see the other groups' records
   for that user, a value found only in another group is still *found*, nothing
@@ -1948,7 +1958,8 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   the form that holds a `match` field, by someone with read-only rights to the
   form the rule fills, leaves the copied fields, and the module log gets a
   rule problem when the values would have changed. On a locked form, a locked
-  record, or a form the user may only read, the page fills nothing; when the
+  record (locked in the arm shown), a completed survey response not opened
+  for editing, or a form the user may only read, the page fills nothing; when the
   entry found now holds other values than the ones shown, an amber line says
   so.
 - **Where the values come from.** The entry where `in` and every `match`
@@ -2234,7 +2245,11 @@ this record.
 
 - **Eligible fields:** Text, dropdown, radio and SQL fields. The searched field and
   each `match` target must exist and hold one value (no checkbox, file or
-  descriptive field).
+  descriptive field). A `match` target must be readable from the entry the
+  lookup finds: on the form of `in`, or on a form that does not repeat and is
+  in every event that entry can be in. Any other is refused when the rule is
+  read, since the entry would never hold it and every value would be *not
+  found*.
 - **How values compare.** Values are trimmed (spaces, tabs, line breaks and the
   no-break space) and letter case is ignored, so `sp-1` finds `SP-1`. Add
   `"caseSensitive":true` to compare letter for letter. Only A to Z fold:
@@ -2286,7 +2301,9 @@ this record.
   conditions read, and the server answers from that branch, also on a new record.
 - **Where the rule looks stays on the server.** The page config holds the rule's
   message, `whereMessage` and enforcement but not `in`, `event`, `scope`, `match`
-  or `where`; the server reads them from the stored rule. On a survey, a configuration error shows as a
+  or `where`; the server reads them from the stored rule. The one exception is
+  a searched field on the tagged field's own form: the page is given its
+  name, because it sends that field's value with the lookup. On a survey, a configuration error shows as a
   general notice, and the "no access" reason does not name a form or field.
 - **Rights.** A signed-in user is answered only when they may open the forms that
   hold the searched field, the `match` fields and the `where` fields, and, for a
@@ -2306,8 +2323,11 @@ this record.
   the module's read of the data table is not. A value saved nowhere is *not
   found* for a user in a group too, and the audit logs a violation. A value
   saved only in another group is *found*, without naming the record. A rule
-  with `match`, `where` or `return` cannot judge an entry REDCap does not let
-  the user read, and answers *could not check* there. When the data table
+  with `match` or `where` is judged only on the entries of the user's own
+  group: when the value is saved in another group and no entry of their own
+  passes, the answer is *could not check*, whether or not REDCap confines the
+  read, so the answer never tells what another group's entry holds. A rule
+  with `return` copies values from the user's own group only. When the data table
   cannot be read, a *not found* from a rule that looks across groups is kept
   only when the module sees other groups' records in the same request;
   otherwise it is *could not check*, and the audit reports a rule problem.

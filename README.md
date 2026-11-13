@@ -841,7 +841,9 @@ the specimen ID on the collection form.
   index cannot answer, the module reads the searched field's rows of every
   record from the data table; where that cannot be read either, the searched
   fields of every record through REDCap, as before. A lookup in another
-  project (`"project"`) and a survey lookup with `where` skip the index
+  project (`"project"`) reads that project's index and data table the same
+  way, once the project has agreed to answer; a survey lookup with `where`
+  skips the index
   (see [Lookups on large projects](#lookups-on-large-projects-the-value-index)).
 - **`in` on this form.** When the searched field is on the tagged field's own
   form, the page sends what that field holds now, and the record being edited
@@ -867,8 +869,13 @@ the specimen ID on the collection form.
 - **Branches.** With several `when` branches, the page sends the values its
   conditions read, so the server answers from the branch the page is enforcing,
   also on a record not saved yet.
-- **The page config never says where the rule looks.** `in`, `event`, `scope`,
-  `match` and `where` stay on the server, which reads them from the stored rule. On a
+- **The page config does not say where the rule looks.** `in`, `event`, `scope`,
+  `match` and `where` stay on the server, which reads them from the stored rule.
+  One exception: when the searched field is on the tagged field's own form,
+  the page is given its name, since it must send that field's value with the
+  lookup (see "`in` on this form"). The field is one the person filling in
+  the form sees anyway; a field of another form, event or project is never
+  named. On a
   survey a misconfigured rule shows only a general notice, and the "no access"
   reason staff see does not name a form or field.
 - **Who gets an answer.** Signed-in users are answered only when they may open
@@ -883,9 +890,13 @@ the specimen ID on the collection form.
   group, but not the module's read of the data table. A value saved nowhere is
   therefore *not found* for a user in a group too, and the post-save audit
   logs it as a violation. A value saved only in another group is *found*,
-  without naming the record. A rule with `match`, `where` or `return` cannot
-  judge a record REDCap does not let the user read, and answers *could not
-  check* there. When the data table cannot be read, a *not found* from a rule
+  without naming the record. A rule with `match` or `where` is judged only on
+  the entries of the user's own group: when the value is saved in another
+  group and no entry of their own passes, the answer is *could not check*,
+  never *found* or *saved, but filtered*, which would tell them what the other
+  group's entry holds. This holds whether or not REDCap confines the read. A
+  rule with `return` copies values from the user's own group only. When the
+  data table cannot be read, a *not found* from a rule
   that looks across groups is kept only when the module sees records of other
   groups in the same request; otherwise the answer is *could not check*.
 - **Surveys: opt-in, and never on an Identifier.** `"surveys":true` enables the
@@ -893,8 +904,9 @@ the specimen ID on the collection form.
   throttle. It is refused when any field the lookup touches is an Identifier
   (the field, the `match` fields, the searched field, the `where` fields, or the
   record-ID field for a record-ID lookup), and when the Identifier flags cannot
-  be read. Where the value index cannot answer, a *not
-  found* costs a read of the whole searched field, so survey lookups may cause
+  be read. Where the value index cannot answer, an `@UVEXISTS` answer costs a
+  read of the searched field (from the data table, or through REDCap when
+  that cannot be read, narrowed or not), so survey lookups may cause
   at most 60 such reads a minute per project; past that they answer *could not
   check*, which a survey shows as nothing. Every survey lookup, `@UVUNIQUE`
   and `@UVEXISTS` together, also counts in the survey throttle: 30 a minute per
@@ -942,7 +954,11 @@ the specimen ID on the collection form.
   `@HIDDEN` (or the `-FORM` form) on the data-entry form; a field a person
   could type into is refused. Several entries with
   different values copy nothing and an amber line says so; a user in a Data
-  Access Group gets values only from their own group. The page fills the
+  Access Group gets values only from their own group. Fields left this way
+  keep what they hold only while it goes with the value in the field: once
+  the value is changed and the lookup copies nothing, the page empties them,
+  and the save empties fields that hold the values of none of several
+  disagreeing entries. The page fills the
   fields for a user who may open every form the lookup reads, and the
   post-save audit, checking the same rights, writes the values that differ as
   the person who saved (the project setting "@UVEXISTS returned values" turns

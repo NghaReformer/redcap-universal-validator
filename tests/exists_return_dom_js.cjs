@@ -254,6 +254,54 @@ for (const [label, reply, note] of [
   check(label + ': the fields keep what they hold (got ' + f.snapshot() + ')', f.snapshot() === HELD_SNAP && f.events() === 0);
   check(label + ': the note says so', note.test(xMsg(env, 'spec').innerHTML));
 }
+// ---- 3b) ...but not once the value looked up is another one (EXI-4) -----------------------------------
+// The fields then hold what the entry looked up before holds; kept, the save would
+// store a specimen beside another specimen's site.
+for (const [label, reply, note] of [
+  ['unknown', { state: 'unknown', why: 'the saved values could not be read just now' }, /Could not check[\s\S]*were emptied: they held the values of the entry looked up before/],
+  ['a transport error', 'ERROR', /Could not check[\s\S]*were emptied/],
+  ['several entries that disagree', { state: 'found', record: null, fill: 'conflict', count: 3 }, /3 saved entries[\s\S]*held the values of none of them, so they were emptied/],
+  ['an entry outside the user\'s group', { state: 'found', record: null, fill: 'withheld' }, /outside your Data Access Group, so nothing is copied[\s\S]*were emptied/],
+  ['a found answer without values', { state: 'found', record: null }, /Found[\s\S]*were emptied/],
+]) {
+  const f = form('SP-1', HELD);
+  const stub = makeTransportStub();
+  stub.next = reply;
+  const env = boot(f.list, { rules: [rule()] }, stub);
+  f.spec.value = 'SP-9'; f.spec.fire('change');
+  check('EXI-4 ' + label + ' for another value: the fields are emptied (got ' + f.snapshot() + ')', f.snapshot() === '||||||---');
+  check('EXI-4 ' + label + ': REDCap hears it, so the form is marked changed', f.from._events.join(',') === 'input,change');
+  check('EXI-4 ' + label + ': the note says so (got ' + xMsg(env, 'spec').innerHTML + ')', note.test(xMsg(env, 'spec').innerHTML));
+  check('EXI-4 ' + label + ': and never blocks', saved(env));
+  f.clearEvents();
+  f.spec.fire('change');
+  check('EXI-4 ' + label + ': asked again about the same value, nothing more is written', f.events() === 0 && f.snapshot() === '||||||---');
+}
+{
+  // With the values the entries hold in hand, the page judges as the save does.
+  const mine = { r_site: '1', r_date: '09-09-2020', r_dose: '1', r_from: 'old', r_arm: '2' };
+  const other = { r_site: '2', r_date: '01-01-2021', r_dose: '5', r_from: 'new', r_arm: '3' };
+  let f = form('SP-1', HELD);
+  let stub = makeTransportStub();
+  stub.next = { state: 'found', record: null, fill: 'conflict', count: 2, options: [other, mine] };
+  let env = boot(f.list, { rules: [rule()] }, stub);
+  check('EXI-4 a disagreement where the fields show one of the entries: kept (got ' + f.snapshot() + ')', f.snapshot() === HELD_SNAP && f.events() === 0);
+  check('EXI-4 ...with the note that they are left', /left as they are/.test(xMsg(env, 'spec').innerHTML));
+  f.spec.value = 'SP-9'; f.spec.fire('change');
+  check('EXI-4 ...and kept for another value whose entries include them too', f.snapshot() === HELD_SNAP);
+  f = form('SP-1', HELD);
+  stub = makeTransportStub();
+  stub.next = { state: 'found', record: null, fill: 'conflict', count: 2, options: [other, Object.assign({}, mine, { r_from: 'older' })] };
+  env = boot(f.list, { rules: [rule()] }, stub);
+  check('EXI-4 a disagreement where the fields show none of the entries: emptied, also as the page opens (got ' + f.snapshot() + ')',
+    f.snapshot() === '||||||---' && /held the values of none of them/.test(xMsg(env, 'spec').innerHTML));
+  f = form('SP-1', HELD);
+  stub = makeTransportStub();
+  stub.next = { state: 'found', record: null, fill: 'conflict', count: 2, options: [other] };
+  env = boot(f.list, { rules: [rule()], formReadOnly: true }, stub);
+  f.spec.value = 'SP-9'; f.spec.fire('change');
+  check('EXI-4 a form that cannot be changed here is left as saved', f.snapshot() === HELD_SNAP && f.events() === 0);
+}
 {
   const f = form('SP-1', HELD);
   const stub = makeTransportStub();

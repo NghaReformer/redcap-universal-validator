@@ -84,7 +84,20 @@ namespace ExternalModules {
                 return in_array(implode('|', $params), \REDCap::$locked, true) ? [[1]] : [];
             }
             if (strpos($sql, 'FROM redcap_locking_records') !== false) {
-                return in_array((string) $params[1], \REDCap::$lockedRecords, true) ? [[1]] : [];
+                // A lock is kept per arm (EXI-11): "record@event" is a record
+                // locked in the arm of that event only, which a statement
+                // that names no event would match for every arm.
+                $byArm = strpos($sql, 'm.event_id = ?') !== false;
+                foreach (\REDCap::$lockedRecords as $l) {
+                    $at = explode('@', (string) $l) + [1 => null];
+                    if ($at[0] !== (string) $params[1]) continue;
+                    if ($at[1] === null || !$byArm || (int) $at[1] === (int) $params[2]) return [[1]];
+                }
+                return [];
+            }
+            // Completed survey responses: "pid|form|event|record|instance".
+            if (strpos($sql, 'FROM redcap_surveys s') !== false && strpos($sql, 'completion_time IS NOT NULL') !== false) {
+                return in_array(implode('|', $params), \REDCap::$completed, true) ? [[1]] : [];
             }
             if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) return [[$this->lastInsertId]];
             if (strpos($sql, 'SELECT ROW_COUNT()') !== false) return [[1]];
@@ -129,6 +142,7 @@ namespace {
         public static $groupIds = ['north' => 7, 'south' => 8];
         public static $locked = [];          // "pid|record|event|form|instance" of locked forms
         public static $lockedRecords = [];
+        public static $completed = [];       // completed survey responses
         public static function reset() { self::$calls = []; self::$saves = []; self::$rowsOut = 0; $GLOBALS['__TABLE_READS'] = []; $GLOBALS['__AMONG_READS'] = []; }
         private static function dagOf(array $node) {
             foreach ($node as $k => $v) {
@@ -222,7 +236,8 @@ namespace {
             if (!isset(self::$dictionaries[(int) $pid])) throw new \RuntimeException('no such project');
             return self::$dictionaries[(int) $pid];
         }
-        public static function getRepeatingFormsEvents($pid = null) { return []; }
+        public static $repeats = [];         // event id => form => label, as REDCap lists what repeats
+        public static function getRepeatingFormsEvents($pid = null) { return self::$repeats; }
         public static function getEventNames($unique = false, $assoc = false, $id = null) { return [351 => 'enrolment_arm_1']; }
         public static function getGroupNames($unique = false, $g = null) { return [7 => 'north', 8 => 'south'][$g] ?? ''; }
         public static function getRecordIdField() { return 'record_id'; }
@@ -235,7 +250,7 @@ namespace {
         public function __construct($pid) { $this->project = ['missing_data_codes' => '']; }
         public function getUniqueEventNames() { return []; }
         public function getUniqueGroupNames() { return []; }
-        public function getRepeatingFormsEvents() { return []; }
+        public function getRepeatingFormsEvents() { return REDCap::$repeats; }
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
@@ -259,8 +274,9 @@ namespace {
                 'select_choices_or_calculations' => ''];
     }
     function named(array $dd) { foreach ($dd as $k => $_) $dd[$k]['field_name'] = $k; return $dd; }
-    function mod($user, array $dict, array $data, array $rights) {
+    function mod($user, array $dict, array $data, array $rights, array $repeats = []) {
         $GLOBALS['__TEST_USER'] = $user;
+        \REDCap::$repeats = $repeats;
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectIdReturn = 149;
         $m->settingsBy = [149 => ['log-values' => 'raw']];
@@ -270,6 +286,8 @@ namespace {
         \REDCap::$confineTo = null;
         \REDCap::$locked = [];
         \REDCap::$lockedRecords = [];
+        \REDCap::$completed = [];
+        unset($_GET['editresp']);
         \REDCap::reset();
         if ($GLOBALS['INDEX']) uv_use_fake_index($m);
         return $m;
@@ -277,6 +295,11 @@ namespace {
     function ask($m, $field, array $values, $record, $form, $group = null) {
         return $m->redcap_module_ajax('exists-check', ['field' => $field, 'values' => $values],
             149, $record, $form, 351, 1, null, null, null, '', '', $GLOBALS['__TEST_USER'], $group);
+    }
+    /** ask() from one event and instance of the record. */
+    function askAt($m, $field, array $values, $record, $form, $event, $instance) {
+        return $m->redcap_module_ajax('exists-check', ['field' => $field, 'values' => $values],
+            149, $record, $form, $event, $instance, null, null, null, '', '', $GLOBALS['__TEST_USER'], null);
     }
     function askSurvey($m, $field, array $values, $record, $form) {
         return $m->redcap_module_ajax('exists-check', ['field' => $field, 'values' => $values],
@@ -532,6 +555,25 @@ namespace {
     \REDCap::$locked = [];
     \REDCap::$lockedRecords = ['9'];
     check('EXS-2 a locked record: formReadOnly', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    // EXI-11: a whole-record lock is kept per arm, and a completed survey response is read only too.
+    \REDCap::$lockedRecords = ['9@999'];
+    check('EXI-11 a record of that name locked in another arm leaves this one open', !array_key_exists('formReadOnly', pageConfig($m, '9', 'result')));
+    \REDCap::$lockedRecords = ['9@351'];
+    check('EXI-11 ...and one locked in this arm is read only', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    \REDCap::$lockedRecords = [];
+    \REDCap::$completed = ['149|result|351|9|1'];
+    check('EXI-11 a completed survey response opened in data entry: formReadOnly', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    check('EXI-11 ...that of another record is not', !array_key_exists('formReadOnly', pageConfig($m, '1', 'result')));
+    $_GET['editresp'] = '1';
+    check('EXI-11 ...nor editable for a person without the "Edit survey responses" right, whatever the address says',
+        (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    $m = mod('editor', $DA, $DATA_A, ['editor' => ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '3'], 'group_id' => null, 'expiration' => '']]);
+    \REDCap::$completed = ['149|result|351|9|1'];
+    check('EXI-11 ...a person with that right sees it read only at first', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    $_GET['editresp'] = '1';
+    check('EXI-11 ...and editable once they open it for editing', !array_key_exists('formReadOnly', pageConfig($m, '9', 'result')));
+    unset($_GET['editresp']);
+    \REDCap::$completed = [];
     $m = mod('ro', $DB, $DATA_B, ['ro' => ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '2'], 'group_id' => null, 'expiration' => '']]);
     $DBX = $DB; unset($DBX['r_ret']);
     $m = mod('ro', $DBX, $DATA_B, ['ro' => ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '2'], 'group_id' => null, 'expiration' => '']]);
@@ -610,6 +652,208 @@ namespace {
         });
         check("EXS-5 scan $fld=" . json_encode($val) . ': the table index and the export agree (' . json_encode($a) . ' / ' . json_encode($b) . ')', $a === $b);
     }
+
+    // ---- EXI-1: "in" on the same form leaves out the entry being edited, not the record ----
+    // An aliquot names its parent sample, saved in another instance of the same record.
+    $DE = ['record_id' => f('enrol'), 'sample_id' => f('result'),
+           'parent' => f('result', '@UVEXISTS={"in":"[sample_id]","blockSave":"hard"}')];
+    $DATA_E = ['1' => [351 => ['record_id' => '1'],
+                       'repeat_instances' => [351 => ['result' => [1 => ['sample_id' => 'S-1', 'parent' => ''],
+                                                                     2 => ['sample_id' => 'S-2', 'parent' => 'S-1']]]]]];
+    $REP = [351 => ['result' => null]];
+    foreach ([$REP, []] as $rp) {
+        $how = $rp ? 'the form listed as repeating' : 'the repeat map naming nothing';
+        list($a, $b) = both(function () use ($DE, $DATA_E, $FULL, $rp) {
+            $m = mod('nurse', $DE, $DATA_E, $FULL, $rp);
+            return core(askAt($m, 'parent', ['parent' => 'S-1', 'sample_id' => 'S-2'], '1', 'result', 351, 2));
+        });
+        check("EXI-1 a value saved in another instance of the record being edited is found ($how; got " . json_encode($a) . ')',
+            $a['state'] === 'found' && $a['record'] === '1');
+        check("EXI-1 ...without the data table too ($how)", $b['state'] === 'found');
+        list($a, $b) = both(function () use ($DE, $DATA_E, $FULL, $rp) {
+            $m = mod('nurse', $DE, $DATA_E, $FULL, $rp);
+            return core(askAt($m, 'parent', ['parent' => 'S-1', 'sample_id' => 'S-9'], '1', 'result', 351, 1));
+        });
+        check("EXI-1 the saved value of the instance being edited does not count once the page changed it ($how; got " . json_encode($a) . ')',
+            $a['state'] === 'not-found' && $b['state'] === 'not-found');
+        list($a, $b) = both(function () use ($DE, $DATA_E, $FULL, $rp) {
+            $m = mod('nurse', $DE, $DATA_E, $FULL, $rp);
+            return core(askAt($m, 'parent', ['parent' => 'S-2', 'sample_id' => 'S-1'], '1', 'result', 351, 1));
+        });
+        check("EXI-1 instance 1 finds what instance 2 holds ($how)", $a['state'] === 'found' && $b['state'] === 'found');
+    }
+    $m = mod('nurse', $DE, $DATA_E, $FULL, $REP);
+    $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 2);
+    check('EXI-1 the audit of the saved instance agrees: no finding', !logsOf($m, 'invalid-id-saved'));
+    $m = mod('nurse', $DE, $DATA_E, $FULL, $REP);
+    $o = $scan($m, 'parent', 'S-1', '1');
+    check('EXI-1 the scan agrees: no finding', !$o['invalid'] && !$o['unconfigurable']);
+    // Two events of one record, a form that does not repeat.
+    $DATA_E2 = ['1' => [351 => ['record_id' => '1', 'hh_id' => 'H-A', 'hh_site' => 'A'],
+                        352 => ['record_id' => '1', 'hh_id' => 'H-B', 'hh_site' => 'A']]];
+    list($a, $b) = both(function () use ($DC, $DATA_E2, $FULL) {
+        $m = mod('nurse', $DC, $DATA_E2, $FULL);
+        return core(askAt($m, 'hh_ref', ['hh_ref' => 'H-A', 'hh_id' => 'H-B'], '1', 'hh', 352, 1));
+    });
+    check('EXI-1 a value saved in another event of the record being edited is found (got ' . json_encode($a) . ')',
+        $a['state'] === 'found' && $a['record'] === '1' && $b['state'] === 'found');
+    list($a, $b) = both(function () use ($DC, $DATA_E2, $FULL) {
+        $m = mod('nurse', $DC, $DATA_E2, $FULL);
+        return core(askAt($m, 'hh_ref', ['hh_ref' => 'H-B', 'hh_id' => 'H-Z'], '1', 'hh', 352, 1));
+    });
+    check('EXI-1 ...and the saved value of the event being edited does not count once the page changed it',
+        $a['state'] === 'not-found' && $b['state'] === 'not-found');
+    // The event row's value shows in every instance of another, repeating form of that event.
+    $DATA_E3 = ['1' => [351 => ['record_id' => '1', 'hh_id' => 'H-A', 'hh_site' => 'A'],
+                        'repeat_instances' => [351 => ['visits' => [1 => ['hh_id' => ''], 2 => ['hh_id' => '']]]]]];
+    list($a, $b) = both(function () use ($DC, $DATA_E3, $FULL) {
+        $m = mod('nurse', $DC, $DATA_E3, $FULL, [351 => ['visits' => null]]);
+        return core(askAt($m, 'hh_ref', ['hh_ref' => 'H-A', 'hh_id' => 'H-Z'], '1', 'hh', 351, 1));
+    });
+    check('EXI-1 the event row being edited is left out of the instances of another form that carry it (got ' . json_encode($a) . ')',
+        $a['state'] === 'not-found' && $b['state'] === 'not-found');
+
+    // ---- EXI-3: "where" and "match" are judged on the caller's own group only ----------------
+    // Reads NOT confined to the group, which is how a module's getData may run.
+    $DG = [
+        'record_id' => f('enrol'),
+        'pid_code'  => f('enrol'),
+        'hiv'       => f('enrol'),
+        'dob'       => f('enrol'),
+        'my_dob'    => f('result'),
+        'g_where'   => f('result', '@UVEXISTS={"in":"[pid_code]","where":"[hiv]=\'1\'"}'),
+        'g_match'   => f('result', '@UVEXISTS={"in":"[pid_code]","match":{"dob":"[my_dob]"}}'),
+        'g_plain'   => f('result', '@UVEXISTS=[pid_code]'),
+        'g_rec'     => f('result', '@UVEXISTS={"in":"record","where":"[hiv]=\'1\'"}'),
+    ];
+    $DATA_G = [
+        '1' => [351 => ['record_id' => '1', 'pid_code' => 'N-POS', 'hiv' => '1', 'dob' => '1970-07-07', 'redcap_data_access_group' => 'north']],
+        '2' => [351 => ['record_id' => '2', 'pid_code' => 'S-POS', 'hiv' => '1', 'dob' => '1990-01-02', 'redcap_data_access_group' => 'south']],
+        '3' => [351 => ['record_id' => '3', 'pid_code' => 'S-NEG', 'hiv' => '0', 'dob' => '1985-05-05', 'redcap_data_access_group' => 'south']],
+        '4' => [351 => ['record_id' => '4', 'pid_code' => 'N-NEG', 'hiv' => '0', 'redcap_data_access_group' => 'north']],
+        '5' => [351 => ['record_id' => '5', 'redcap_data_access_group' => 'north']],
+    ];
+    $GN = ['north' => ['forms' => ['enrol' => '1', 'result' => '1'], 'group_id' => 7, 'expiration' => '']];
+    $asks = [
+        'where, another group, passes'  => ['g_where', ['g_where' => 'S-POS']],
+        'where, another group, fails'   => ['g_where', ['g_where' => 'S-NEG']],
+        'match, another group, right'   => ['g_match', ['g_match' => 'S-POS', 'my_dob' => '1990-01-02']],
+        'match, another group, wrong'   => ['g_match', ['g_match' => 'S-POS', 'my_dob' => '1990-01-03']],
+        'record ID, another group, passes' => ['g_rec', ['g_rec' => '2']],
+        'record ID, another group, fails'  => ['g_rec', ['g_rec' => '3']],
+    ];
+    foreach ($asks as $label => list($fld, $vals)) {
+        list($a, $b) = both(function () use ($DG, $DATA_G, $GN, $fld, $vals) {
+            return core(ask(mod('north', $DG, $DATA_G, $GN), $fld, $vals, '5', 'result', 7));
+        });
+        check("EXI-3 $label: unknown, with nothing of what the entry holds (got " . json_encode($a) . ' / ' . json_encode($b) . ')',
+            $a === ['state' => 'unknown', 'record' => null] && $b === $a);
+    }
+    list($a, $b) = both(function () use ($DG, $DATA_G, $GN) {
+        return core(ask(mod('north', $DG, $DATA_G, $GN), 'g_where', ['g_where' => 'N-POS'], '5', 'result', 7));
+    });
+    check('EXI-3 the caller\'s own group is judged as before: found, named', $a === ['state' => 'found', 'record' => '1'] && $b === $a);
+    list($a, $b) = both(function () use ($DG, $DATA_G, $GN) {
+        return core(ask(mod('north', $DG, $DATA_G, $GN), 'g_where', ['g_where' => 'N-NEG'], '5', 'result', 7));
+    });
+    check('EXI-3 ...and "saved, but filtered" is said of their own group\'s entry (got ' . json_encode($a) . ')',
+        $a === ['state' => 'not-found', 'record' => null, 'filtered' => true] && $b === $a);
+    list($a, $b) = both(function () use ($DG, $DATA_G, $GN) {
+        return core(ask(mod('north', $DG, $DATA_G, $GN), 'g_where', ['g_where' => 'NOWHERE'], '5', 'result', 7));
+    });
+    check('EXI-3 a value saved nowhere is still not found', $a === ['state' => 'not-found', 'record' => null] && $b === $a);
+    list($a, $b) = both(function () use ($DG, $DATA_G, $GN) {
+        return core(ask(mod('north', $DG, $DATA_G, $GN), 'g_plain', ['g_plain' => 'S-NEG'], '5', 'result', 7));
+    });
+    check('EXI-3 a rule that tests only the value still finds it in another group, unnamed', $a === ['state' => 'found', 'record' => null] && $b === $a);
+    list($a, $b) = both(function () use ($DG, $DATA_G, $GN) {
+        return core(ask(mod('north', $DG, $DATA_G, $GN), 'g_rec', ['g_rec' => '1'], '5', 'result', 7));
+    });
+    check('EXI-3 a record ID of their own group that passes "where" is found', $a['state'] === 'found' && $b['state'] === 'found');
+    // The save audit of the same person judges the same way.
+    $DATA_G['5'][351]['g_where'] = 'S-NEG';
+    $m = mod('north', $DG, $DATA_G, $GN);
+    $m->redcap_save_record(149, '5', 'result', 351, 7, null, null, 1);
+    check('EXI-3 the audit of a person in a group reports no finding from another group\'s entry',
+        !logsOf($m, 'invalid-id-saved') && count(array_filter(logsOf($m, 'uvalidate-unconfigurable'), function ($e) {
+            return strpos((string) ($e['why'] ?? ''), 'another Data Access Group') !== false;
+        })) === 1);
+    // Staff in no group are answered in full.
+    $r = core(ask(mod('nurse', $DG, $DATA_G, $FULL), 'g_where', ['g_where' => 'S-NEG'], '5', 'result'));
+    check('EXI-3 staff in no group: judged on every entry', $r === ['state' => 'not-found', 'record' => null, 'filtered' => true]);
+
+    // ---- EXI-9: the candidates are read in chunks, and no further than the answer needs -------
+    $DK = ['record_id' => f('enrol'), 'site_code' => f('enrol'), 'site_kind' => f('enrol'), 'my_kind' => f('result'),
+           'k_plain' => f('result', '@UVEXISTS=[site_code]'),
+           'k_match' => f('result', '@UVEXISTS={"in":"[site_code]","match":{"site_kind":"[my_kind]"}}'),
+           'k_ret'   => f('result', '@UVEXISTS={"in":"[site_code]","return":{"site_kind":"[k_kind]"}}'),
+           'k_kind'  => f('result', '@READONLY')];
+    $big = [];
+    for ($i = 1; $i <= 1500; $i++) $big[(string) $i] = [351 => ['record_id' => (string) $i, 'site_code' => 'KLA', 'site_kind' => $i === 1400 ? 'B' : 'A']];
+    $m = mod('nurse', $DK, $big, $FULL);
+    $r = ask($m, 'k_plain', ['k_plain' => 'KLA'], '9999', 'result');
+    check('EXI-9 a value 1,500 records hold: found from the first chunk of records (exported ' . \REDCap::$rowsOut . ')',
+        $r['state'] === 'found' && \REDCap::$rowsOut <= 200);
+    $m = mod('nurse', $DK, $big, $FULL);
+    $r = ask($m, 'k_match', ['k_match' => 'KLA', 'my_kind' => 'B'], '9999', 'result');
+    check('EXI-9 a "match" only a late record meets is still found (got ' . json_encode(core($r)) . ')', $r['state'] === 'found' && $r['record'] === '1400');
+    $m = mod('nurse', $DK, $big, $FULL);
+    $r = ask($m, 'k_match', ['k_match' => 'KLA', 'my_kind' => 'Z'], '9999', 'result');
+    $most = 0;
+    foreach (\REDCap::$calls as $c) $most = max($most, count($c['records'] ?? []));
+    check('EXI-9 a miss reads every candidate, never more than a chunk in one read (largest read ' . $most . ' records)',
+        $r['state'] === 'not-found' && \REDCap::$rowsOut === 1500 && $most <= 200);
+    $m = mod('nurse', $DK, $big, $FULL);
+    $r = ask($m, 'k_ret', ['k_ret' => 'KLA'], '9999', 'result');
+    check('EXI-9 a rule that copies values reads on until two entries disagree, then stops (exported ' . \REDCap::$rowsOut . ')',
+        ($r['fill'] ?? null) === 'conflict' && \REDCap::$rowsOut === 1400);
+    $same = [];
+    for ($i = 1; $i <= 450; $i++) $same[(string) $i] = [351 => ['record_id' => (string) $i, 'site_code' => 'KLA', 'site_kind' => 'A']];
+    $m = mod('nurse', $DK, $same, $FULL);
+    $r = ask($m, 'k_ret', ['k_ret' => 'KLA'], '9999', 'result');
+    check('EXI-9 ...and copies them when every entry agrees', ($r['values'] ?? null) === ['k_kind' => 'A'] && \REDCap::$rowsOut === 450);
+
+    // ---- EXI-13: a table row whose record cannot be read is not "found" by name ---------------
+    // Staff in no group: REDCap confines nothing, so a record getData does not
+    // hand back is a row left behind, or a record deleted in between.
+    $m = mod('nurse', $DG, $DATA_G, $FULL);
+    \REDCap::$confineTo = 'north';
+    $r = core(ask($m, 'g_plain', ['g_plain' => 'S-NEG'], '5', 'result'));
+    check('EXI-13 staff in no group, a row whose record is not handed back: could not check, no record named (got ' . json_encode($r) . ')',
+        $r === ['state' => 'unknown', 'record' => null]);
+    $m = mod('north', $DG, $DATA_G, $GN);
+    \REDCap::$confineTo = 'north';
+    $r = core(ask($m, 'g_plain', ['g_plain' => 'S-NEG'], '5', 'result', 7));
+    check('EXI-13 a person in a group still learns the value is saved in another, unnamed', $r === ['state' => 'found', 'record' => null]);
+    \REDCap::$confineTo = null;
+
+    // ---- EXI-12: a record the page drew as new is not left out of the lookup ------------------
+    $DR = ['record_id' => f('enrol'), 'parent' => f('result', '@UVEXISTS={"in":"record","blockSave":"hard"}'),
+           'sample_id' => f('result'), 'origin' => f('result', '@UVEXISTS=[sample_id]')];
+    $DATA_R = ['25' => [351 => ['record_id' => '25', 'sample_id' => 'S-25']]];
+    $new = function ($m, $field, array $values, $flag) {
+        return $m->redcap_module_ajax('exists-check', ['field' => $field, 'values' => $values] + ($flag === null ? [] : ['newRecord' => $flag]),
+            149, '25', 'result', 351, 1, null, null, null, '', '', $GLOBALS['__TEST_USER'], null);
+    };
+    foreach ([true, '1'] as $flag) {
+        list($a, $b) = both(function () use ($DR, $DATA_R, $FULL, $new, $flag) {
+            return core($new(mod('nurse', $DR, $DATA_R, $FULL), 'parent', ['parent' => '25'], $flag));
+        });
+        check('EXI-12 a page drawn for new record 25, saved by someone else since: its ID is found (newRecord ' . json_encode($flag)
+            . ', got ' . json_encode($a) . ')', $a['state'] === 'found' && $b['state'] === 'found');
+    }
+    foreach ([null, false, 'no'] as $flag) {
+        $r = core($new(mod('nurse', $DR, $DATA_R, $FULL), 'parent', ['parent' => '25'], $flag));
+        check('EXI-12 a saved record never finds its own ID (newRecord ' . json_encode($flag) . ')', $r['state'] === 'not-found');
+    }
+    $r = core($new(mod('nurse', $DR, $DATA_R, $FULL), 'origin', ['origin' => 'S-25', 'sample_id' => 'S-9'], true));
+    check('EXI-12 ..."in" on this form: what the other user saved under that ID counts (got ' . json_encode($r) . ')', $r['state'] === 'found');
+    $r = core($new(mod('nurse', $DR, $DATA_R, $FULL), 'origin', ['origin' => 'S-25', 'sample_id' => 'S-9'], null));
+    check('EXI-12 ...while the saved entry of the record being edited is left out as before', $r['state'] === 'not-found');
+    $m = mod('nurse', $DR, [], $FULL);
+    check('EXI-12 a page for a record not saved yet carries newRecord for a lookup rule', (pageConfig($m, '26', 'result')['newRecord'] ?? null) === true);
+    $m = mod('nurse', $DR, $DATA_R, $FULL);
+    check('EXI-12 a page for a saved record does not', !array_key_exists('newRecord', pageConfig($m, '25', 'result') ?: ['newRecord' => 1]));
 
     fwrite(STDOUT, "exists_table_php: $n checks, $fail failure(s)" . ($INDEX ? ' through the lookup index' : '') . "\n");
     if (!$INDEX) {

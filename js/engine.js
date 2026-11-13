@@ -9349,6 +9349,10 @@ function QRIDExistsInit(QRID_CONFIG){
        while (QRID_SAVE_HOLD_MS) */
     function setPending(on){ if(GITEM){ GITEM.__qridPending = !!on; } }
     function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); setPending(false); QRID_setModeState(input, "x", null); }
+    /* On a form the person may only read, or a locked one, nothing is filled
+       (QRID_writeReturned), and the person is told when what the lookup
+       would copy differs from what the fields show (EXS-2). */
+    var READ_ONLY = !!(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.formReadOnly === true);
     var seq = 0;            /* stale-response guard: only the LATEST request may render */
     var pendingKey = null;  /* payload already asked, awaiting an answer */
     var answers = QRID_answerCache(16);   /* found / not-found answers only */
@@ -9368,6 +9372,7 @@ function QRIDExistsInit(QRID_CONFIG){
       setPending(false);
       msg.innerHTML = "&#9888; Could not check this value just now" +
         (why ? " (" + QRID_escapeHtml(String(why)) + ")" : "") + ".";
+      if(dropStale(false)) msg.innerHTML += amberLine(STALE_NOTE);
     }
     /* What gives up the lookup now on its way, as for @UVUNIQUE. */
     var lapseNow = null;
@@ -9381,6 +9386,7 @@ function QRIDExistsInit(QRID_CONFIG){
     function fill(vals, quiet){
       var lost = [];
       if(!OWNED_ANY || QRID_IS_SURVEY || QRID_returnDepth >= QRID_RETURN_DEPTH_MAX) return lost;
+      filledFor = current();
       QRID_returnDepth++;
       try {
         for(var fi = 0; fi < OWNED.length; fi++){
@@ -9390,10 +9396,31 @@ function QRIDExistsInit(QRID_CONFIG){
       } finally { QRID_returnDepth--; }
       return lost;
     }
-    function emptyOwned(quiet){
+    function emptyOwned(quiet){ fill(allEmpty(), quiet); }
+    function allEmpty(){
       var none = {};
       for(var ei = 0; ei < OWNED.length; ei++) none[OWNED[ei]] = "";
-      fill(none, quiet);
+      return none;
+    }
+    /* The value of this field that the fields the rule fills go with: the
+       one the page opened with, then the one of the last answer that
+       filled, emptied or kept them (EXI-4). An answer that copies nothing
+       for another value (could not check, several entries that disagree,
+       an entry outside the user's group) would leave them holding what the
+       entry looked up before holds, and the save would keep that: a
+       specimen saved beside another specimen's site. They are emptied
+       then. A form that cannot be changed here is left as saved. */
+    function current(){ return trim(QRID_WHEN.readRef(fieldName, null)); }
+    var filledFor = current();
+    var STALE_NOTE = "The fields this lookup fills were emptied: they held the values of the entry looked up before.";
+    /* Empties the fields when they go with another value than the field
+       holds now; says whether anything was emptied. */
+    function dropStale(quiet){
+      if(!OWNED_ANY || READ_ONLY || QRID_IS_SURVEY) return false;
+      if(current() === filledFor) return false;
+      var had = differsFromShown(allEmpty());
+      emptyOwned(quiet);
+      return had;
     }
     function returnsOf(V){ return (V && V.returns) ? V.returns : []; }
     /* What a found answer copies: the picked branch's fields get the values
@@ -9411,10 +9438,14 @@ function QRIDExistsInit(QRID_CONFIG){
     }
     /* Why a found answer copied nothing: the fields keep what they hold, and
        the save leaves them too (UniversalValidator::returnsExists). */
-    function keptNote(resp){
+    function keptNote(resp, emptied){
       if(resp.fill === "conflict"){
         var n = typeof resp.count === "number" && resp.count > 1 ? String(Math.floor(resp.count)) : "Several";
+        if(emptied) return n + " saved entries hold this value with different values to copy, and the fields this lookup fills held the values of none of them, so they were emptied.";
         return n + " saved entries hold this value with different values to copy, so the fields this lookup fills are left as they are.";
+      }
+      if(resp.fill === "withheld" && emptied){
+        return "It is saved outside your Data Access Group, so nothing is copied. " + STALE_NOTE;
       }
       if(resp.fill === "withheld"){
         return "It is saved outside your Data Access Group, so the fields this lookup fills are left as they are.";
@@ -9422,10 +9453,15 @@ function QRIDExistsInit(QRID_CONFIG){
       return "";
     }
     function amberLine(text){ return '<div style="margin-top:4px;color:#7a5c00">&#9888; ' + QRID_escapeHtml(text) + "</div>"; }
-    /* On a form the person may only read, or a locked one, nothing is filled
-       (QRID_writeReturned). Whether what the lookup would copy differs from
-       what the fields show, so the person can be told (EXS-2). */
-    var READ_ONLY = !!(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.formReadOnly === true);
+    /* Whether the fields show the values of one of the entries a conflict
+       answer lists (each: field here -> text, as the page shows it). */
+    function shownIsOption(V, options){
+      for(var oi = 0; oi < options.length; oi++){
+        if(options[oi] && typeof options[oi] === "object" && !differsFromShown(foundValues(V, options[oi]))) return true;
+      }
+      return false;
+    }
+    /* Whether what the lookup would copy differs from what the fields show. */
     function differsFromShown(vals){
       for(var k in vals){
         if(!Object.prototype.hasOwnProperty.call(vals, k)) continue;
@@ -9444,11 +9480,26 @@ function QRIDExistsInit(QRID_CONFIG){
         QRID_setModeState(input, "x", "ok");
         setGuard(false);
         var kept = returnsOf(V).length ? keptNote(resp) : "";
+        /* Nothing to copy: the fields keep what they show only while it
+           goes with this value. With the values the entries hold in hand
+           ("options"), that is while they show one of them, as the save
+           judges it (UniversalValidator::returnsExists); otherwise while
+           the value is the one they were filled for. */
+        var drop = false;
+        if(kept && !READ_ONLY && !QRID_IS_SURVEY){
+          var opts = (resp.fill === "conflict" && Object.prototype.toString.call(resp.options) === "[object Array]") ? resp.options : null;
+          drop = opts ? !shownIsOption(V, opts) : current() !== filledFor;
+          if(drop && !differsFromShown(allEmpty())) drop = false;
+          if(drop) kept = keptNote(resp, true);
+          else filledFor = current();
+        }
         var html = "&#10003; Found" +
           (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + "." +
           (kept ? amberLine(kept) : "");
         msg.innerHTML = html;
-        if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object" && READ_ONLY){
+        if(drop){
+          emptyOwned(quiet);
+        } else if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object" && READ_ONLY){
           if(differsFromShown(foundValues(V, resp.values))){
             msg.innerHTML = html + amberLine("The entry found now holds other values than this saved copy. This form cannot be changed here, so they are left as saved.");
           }
@@ -9462,6 +9513,9 @@ function QRIDExistsInit(QRID_CONFIG){
             }
             msg.innerHTML = html;
           }
+        } else if(!kept && returnsOf(V).length){
+          /* found, with no values and no reason: the same test */
+          if(dropStale(quiet)) msg.innerHTML = html + amberLine(STALE_NOTE);
         }
       } else if(resp.state === "not-found"){
         styleMsg(msg, "bad");
@@ -9543,10 +9597,15 @@ function QRIDExistsInit(QRID_CONFIG){
         if(!Object.prototype.hasOwnProperty.call(vals, V.locals[li])) continue;
         var lv = vals[V.locals[li]];
         /* A match field on this page that is blank: nothing to narrow by
-           yet, and the fields keep what they hold (as the save does). */
-        if(lv === "" || QRID_isMissingCode(lv)){ ++seq; pendingKey = null; inert(); return; }
+           yet, and the fields keep what they hold (as the save does),
+           unless they go with another value than this one (dropStale). */
+        if(lv === "" || QRID_isMissingCode(lv)){ ++seq; pendingKey = null; inert(); dropStale(quiet); return; }
       }
       var payload = { field: fieldName, values: vals, cond: QRID_condValues(VS.all) };
+      /* A record not saved yet: its id is REDCap's guess, so the server must
+         not leave out a record another user saved under it since (EXI-12,
+         as the @UVUNIQUE lookup says it). */
+      if(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.newRecord === true) payload.newRecord = true;
       var key = lookupKey(vals, payload.cond);
       var cached = answers.get(key);
       /* A found answer of a rule that fills fields ages too: the entry it
