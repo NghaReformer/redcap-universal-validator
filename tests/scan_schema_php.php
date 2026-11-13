@@ -141,6 +141,12 @@ namespace {
          */
         public $recordCalls = false;
         public $calls = [];
+        /**
+         * What GET_LOCK answers migrate() (JUS-9): '1' this request holds the
+         * lock, '0' another connection does, null no answer at all (a server
+         * or a mock that does not know the function).
+         */
+        public $lockAnswer = null;
 
         public function query($sql, $params = []) {
             if ($this->noQuery) throw new \RuntimeException('no query()');
@@ -154,6 +160,7 @@ namespace {
                 $c = $this->failWith;
                 throw new $c('simulated failure');
             }
+            if (strpos($sql, 'SELECT GET_LOCK(') === 0) return $this->lockAnswer === null ? [] : [[$this->lockAnswer]];
             if (strpos($sql, 'SELECT MAX(version)') === 0) {
                 if ($this->versionReadThrows !== null) {
                     throw new \RuntimeException($this->versionReadThrows);
@@ -1139,6 +1146,45 @@ namespace INSPIRE\UniversalValidator\Scan {
                 $stamps !== [] && count(array_filter($stamps, $inUtc)) === count($stamps));
         }
         date_default_timezone_set($zone);
+    }
+
+    // ---- JUS-9: one request migrates at a time -------------------------------------------
+    // Two web nodes that enable the module together both read the old version.
+    // A named lock lets one of them run the statements; the other leaves the
+    // schema alone and says so, without waiting.
+    {
+        $ddl = function ($m) { return array_values(array_filter($m->sql, function ($q) { return preg_match('/^(CREATE|ALTER|INSERT|UPDATE|DELETE)/', $q) === 1; })); };
+        $m = new \FakeModule();
+        $m->lockAnswer = '0';
+        $r = Schema::migrate($m);
+        check('JUS-9: while another request holds the migration lock, this one runs no statement',
+            $r['ok'] === false && $r['applied'] === 0 && $ddl($m) === [] && strpos((string) $r['why'], 'another request is installing the schema') === 0, [$r, $ddl($m)]);
+        check('JUS-9: ... and does not release a lock it does not hold', !array_filter($m->sql, function ($q) { return strpos($q, 'RELEASE_LOCK') !== false; }));
+        $m = new \FakeModule();
+        $m->lockAnswer = '1';
+        $r = Schema::migrate($m);
+        $lockAt = null; $firstDdl = null; $freeAt = null;
+        foreach ($m->sql as $i => $q) {
+            if ($lockAt === null && strpos($q, 'SELECT GET_LOCK(') === 0) $lockAt = $i;
+            if ($firstDdl === null && strpos($q, 'CREATE TABLE') === 0) $firstDdl = $i;
+            if (strpos($q, 'SELECT RELEASE_LOCK(') === 0) $freeAt = $i;
+        }
+        check('JUS-9: with the lock, the schema is installed between taking it and releasing it',
+            $r['ok'] === true && $lockAt !== null && $firstDdl !== null && $lockAt < $firstDdl && $freeAt === count($m->sql) - 1, [$r['ok'], $lockAt, $firstDdl, $freeAt, count($m->sql)]);
+        $m = new \FakeModule();
+        $m->lockAnswer = '1';
+        $m->failOn = 'CREATE TABLE IF NOT EXISTS uv_finding';
+        $r = Schema::migrate($m);
+        check('JUS-9: a migration that fails still releases the lock', $r['ok'] === false && strpos((string) end($m->sql), 'SELECT RELEASE_LOCK(') === 0, end($m->sql));
+        $m = new \FakeModule();
+        $r = Schema::migrate($m);
+        check('JUS-9: a server that says nothing about the lock migrates as before', $r['ok'] === true && $ddl($m) !== []
+            && !array_filter($m->sql, function ($q) { return strpos($q, 'RELEASE_LOCK') !== false; }));
+        $m = new \FakeModule();
+        $m->version = (string) Schema::VERSION;
+        $m->lockAnswer = '0';
+        $r = Schema::migrate($m);
+        check('JUS-9: a schema that is current asks for no lock', $r['ok'] === true && !array_filter($m->sql, function ($q) { return strpos($q, 'GET_LOCK') !== false; }));
     }
 
     echo "scan_schema_php: $n checks, $fail failure(s)\n";

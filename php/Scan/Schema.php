@@ -2,6 +2,10 @@
 
 namespace INSPIRE\UniversalValidator\Scan;
 
+require_once __DIR__ . '/../Faults.php';
+
+use INSPIRE\UniversalValidator\Faults;
+
 /**
  * The durable scan's tables: what they are, and whether this installation has
  * them.
@@ -1158,6 +1162,62 @@ final class Schema
                            . 'install its own schema'];
         }
 
+        // ONE REQUEST MIGRATES AT A TIME (JUS-9). Two web nodes that enable
+        // the module together both read the old version and both ran the
+        // statements: the second ALTER of a pair failed on a duplicate
+        // column and left the scan off until the next hook. A named lock of
+        // the database lets one of them work. The other returns at once,
+        // without waiting, and finds the schema done on its next request.
+        // A server that gives no answer about the lock migrates as before:
+        // every statement is still safe to run twice.
+        $lock = self::migrationLock($module);
+        if ($lock === false) {
+            return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => 0,
+                    'why' => 'another request is installing the schema now, so this one left it alone. '
+                           . 'The next request finds it installed.'];
+        }
+        try {
+            if ($lock === true && $from > 0) {
+                // what the request that held the lock before this one finished
+                $now = self::currentVersion($module);
+                if ($now !== null && $now > $from) $from = $now;
+            }
+            return self::migrateFrom($module, $from);
+        } finally {
+            if ($lock === true) self::migrationUnlock($module);
+        }
+    }
+
+    /**
+     * Take the migration lock without waiting: true when this request holds
+     * it, false when another connection does, null when the server gave no
+     * answer (migrate() then goes on without one).
+     */
+    private static function migrationLock($module)
+    {
+        try {
+            $q = $module->query("SELECT GET_LOCK(CONCAT('uvschema', MD5(COALESCE(DATABASE(), ''))), 0)", []);
+            $row = $q ? self::firstRow($q) : null;
+            if ($row === null || !isset($row[0])) return null;
+            return (string) $row[0] === '1';
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    private static function migrationUnlock($module)
+    {
+        try {
+            $module->query("SELECT RELEASE_LOCK(CONCAT('uvschema', MD5(COALESCE(DATABASE(), ''))))", []);
+        } catch (\Throwable $e) {
+            // The connection ends with the request, and the lock with it.
+            Faults::swallow($e, 'Schema::migrationUnlock');
+        }
+    }
+
+    /** Apply every version after $from (migrate(), under its lock). */
+    private static function migrateFrom($module, $from)
+    {
         $applied = 0;
         for ($v = $from + 1; $v <= self::VERSION; $v++) {
             foreach (self::statements($v) as $item) {
