@@ -122,11 +122,21 @@ namespace {
     }
     class Project {
         public static $codes = '';
+        /** The form that is a survey shown one section per page, or null. */
+        public static $bySection = null;
         public $project;
         public $longitudinal = false;
         public $eventInfo = [351 => ['unique_event_name' => 'event_1_arm_1', 'arm_num' => 1]];
         public $eventsForms = [351 => ['enrol_form', 'visit_form']];
-        public function __construct($pid) { $this->project = ['missing_data_codes' => self::$codes]; }
+        public $forms = [];
+        public $surveys = [];
+        public function __construct($pid) {
+            $this->project = ['missing_data_codes' => self::$codes];
+            if (self::$bySection !== null) {
+                $this->forms = [self::$bySection => ['survey_id' => 7]];
+                $this->surveys = [7 => ['form_name' => self::$bySection, 'question_by_section' => 1]];
+            }
+        }
         public function getRepeatingFormsEvents() { return []; }
         public function getUniqueEventNames() { return [351 => 'event_1_arm_1']; }
     }
@@ -323,9 +333,62 @@ namespace {
             in_array('baseline_wt', lockedOn(page($ms, 'form', '2', 'enrol_form')), true) === $locks);
     }
 
+    // A survey shown one section per page (WON-10): a page locks its own fields, and the saved
+    // code of a dropdown on another page is not sent to it.
+    $PDICT = [
+        'record_id' => f('enrol_form'),
+        'p1_date'   => f('enrol_form', '@UVWRITEONCE', 'date_ymd'),
+        'p1_site'   => f('enrol_form', '@UVWRITEONCE', '', 'dropdown'),
+        'p2_site'   => ['section_header' => 'Page two'] + f('enrol_form', '@UVWRITEONCE', '', 'dropdown'),
+        'p2_open'   => f('enrol_form', '@UVWRITEONCE'),
+    ];
+    $PDATA = ['2' => [351 => ['record_id' => '2', 'p1_date' => '2026-03-01', 'p1_site' => 'S1', 'p2_site' => 'S2-SECRET', 'p2_open' => '']]];
+    $surveyPageOf = function ($page) use ($PDICT, $PDATA) {
+        \Project::$bySection = 'enrol_form';
+        if ($page === null) unset($_GET['__page__']); else $_GET['__page__'] = $page;
+        $p = page(mod($PDICT, $PDATA), 'survey', '2', 'enrol_form');
+        unset($_GET['__page__']);
+        \Project::$bySection = null;
+        return $p;
+    };
+    $p1 = $surveyPageOf('1');
+    check('survey pages: page 1 locks its own fields only (got ' . json_encode(lockedOn($p1)) . ')', lockedOn($p1) === ['p1_date', 'p1_site']);
+    check('survey pages: ... and holds no saved code of a dropdown on page 2', strpos($p1['html'], 'S2-SECRET') === false && strpos($p1['html'], '"p1_site":"S1"') !== false);
+    $p2 = $surveyPageOf('2');
+    check('survey pages: page 2 locks its own (got ' . json_encode(lockedOn($p2)) . ')', lockedOn($p2) === ['p2_site']
+        && strpos($p2['html'], 'S2-SECRET') !== false && strpos($p2['html'], '"p1_site"') === false);
+    $pall = $surveyPageOf(null);
+    check('survey pages: a page that cannot be told locks every field, as before', lockedOn($pall) === ['p1_date', 'p1_site', 'p2_site']);
+    \Project::$bySection = 'enrol_form';
+    $_GET['__page__'] = '2';
+    $pf = page(mod($PDICT, $PDATA), 'form', '2', 'enrol_form');
+    unset($_GET['__page__']);
+    \Project::$bySection = null;
+    check('survey pages: the data entry form is one page whatever __page__ says', lockedOn($pf) === ['p1_date', 'p1_site', 'p2_site']);
+
+    // A tag name inside another tag's value is text, and REDCap's language tags are refused (WON-11).
+    $TDICT = [
+        'record_id' => f('enrol_form'),
+        'q_set'     => f('enrol_form', '@UVWRITEONCE @PLACEHOLDER="see @SETVALUE note"'),
+        'q_calc'    => f('enrol_form', "@UVWRITEONCE @PLACEHOLDER='@CALCTEXT @CALCDATE @RICHTEXT @PREFILL @DOWNLOAD-COUNT @LANGUAGE-CURRENT-FORM'"),
+        'q_real'    => f('enrol_form', '@UVWRITEONCE @PLACEHOLDER="x" @SETVALUE="y"'),
+        'q_langf'   => f('enrol_form', '@UVWRITEONCE @LANGUAGE-CURRENT-FORM'),
+        'q_langs'   => f('enrol_form', '@language-current-survey @UVWRITEONCE'),
+        'q_lang'    => f('enrol_form', '@UVWRITEONCE @LANGUAGE-CURRENT-FORMAT'),
+    ];
+    $pt = page(mod($TDICT, ['2' => [351 => ['record_id' => '2', 'q_set' => 'a', 'q_calc' => 'a', 'q_real' => 'a', 'q_langf' => 'en', 'q_langs' => 'en', 'q_lang' => 'x']]]), 'form', '2', 'enrol_form');
+    check('refusals: a tag name inside another tag\'s quoted text refuses nothing (got ' . errOf($pt, 'q_set') . ' / ' . errOf($pt, 'q_calc') . ')',
+        errOf($pt, 'q_set') === '' && errOf($pt, 'q_calc') === '' && in_array('q_set', lockedOn($pt), true) && in_array('q_calc', lockedOn($pt), true));
+    check('refusals: ... while the tag itself, after such a value, still does', strpos(errOf($pt, 'q_real'), 'cannot lock a field with @SETVALUE') !== false);
+    check('refusals: @LANGUAGE-CURRENT-FORM and -SURVEY are refused, naming the tag (got ' . errOf($pt, 'q_langf') . ')',
+        strpos(errOf($pt, 'q_langf'), 'cannot lock a field with @LANGUAGE-CURRENT-FORM — REDCap writes the language of the page into it') !== false
+        && strpos(errOf($pt, 'q_langs'), 'cannot lock a field with @LANGUAGE-CURRENT-SURVEY') !== false);
+    check('refusals: a tag that only starts like one of them is not', errOf($pt, 'q_lang') === '');
+
     // ============================================================================
     // The audit
     // ============================================================================
+
     // consent_date: saved, then changed by nurse (no role)       -> changed
     // arm: saved 1, changed to 2 by dm (Data manager)            -> the lock moved, ok
     // site: UNK (a code, no lock), then 2                        -> locked at 2, ok
