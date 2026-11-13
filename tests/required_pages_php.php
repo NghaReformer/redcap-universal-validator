@@ -13,6 +13,13 @@
  * server from the saved response, as a field of another form is, instead of
  * going to the browser as a live reference to a field that is not there.
  *
+ * Review 2026-11-13. REQ-2: a field @HIDDEN, @HIDDEN-FORM or @HIDDEN-SURVEY
+ * hides is not required in the audit and the scan either. REQ-3: a page turn
+ * of an open survey response logs no required field of another form, and a
+ * standing blank is logged once while the module log can be read. REQ-4: branching
+ * logic REDCap may read differently from the dialect (a blank compared by
+ * order, text that differs by letter case) leaves the field unchecked.
+ *
  * The browser twins are tests/required_dom_js.cjs (hidden rows) and
  * tests/readonly_guard_dom_js.cjs (@READONLY options).
  *
@@ -342,6 +349,162 @@ namespace {
     $m->redcap_save_record(149, '1', 'visit', 351, null, null, null, 1);
     check('REQ-10 control: a save of the visit form still reports its empty required field',
         in_array('plain', fieldsOf(logged($m, 'invalid-id-saved')), true));
+
+    // ---- review 2026-11-13, REQ-2: a field an action tag hides is not required ------
+    // The page skips a field whose row is hidden. The audit and the scan read only the
+    // branching logic, so a blank @HIDDEN field was logged on every save. @HIDDEN-FORM
+    // and @HIDDEN-SURVEY hide on one kind of page: the page of the save decides, and
+    // the scan, which has no page, skips a field no page of its instrument shows.
+    // In the Project stub "enrol" is a survey and "visit" is not.
+    $KEEP = $DICT;
+    $DICT = [
+        'record_id' => f('enrol'),
+        'e_form'    => f('enrol', '@HIDDEN-FORM ' . $HARD),
+        'e_survey'  => f('enrol', '@HIDDEN-SURVEY ' . $HARD),
+        'e_both'    => f('enrol', '@HIDDEN-FORM @HIDDEN-SURVEY ' . $HARD),
+        'h_plain'   => f('visit', '@HIDDEN ' . $HARD),
+        'h_form'    => f('visit', $HARD . ' @hidden-form'),
+        'h_survey'  => f('visit', '@HIDDEN-SURVEY ' . $HARD),
+        'h_app'     => f('visit', '@HIDDEN-APP @HIDDEN-PDF ' . $HARD),
+        'h_text'    => f('visit', '@PLACEHOLDER="not @HIDDEN" ' . $HARD),
+        'shown'     => f('visit', $HARD),
+    ];
+    $blankVisit = ['1' => [351 => ['record_id' => '1', 'visit_complete' => '2', 'enrol_complete' => '2']]];
+    $m = mod($blankVisit);
+    $m->redcap_save_record(149, '1', 'visit', 351, null, null, null, 1);
+    $bad = fieldsOf(logged($m, 'invalid-id-saved'));
+    check('REQ-2 form save: @HIDDEN and @HIDDEN-FORM fields are not required, the rest are (got ' . json_encode($bad) . ')',
+        $bad === ['h_app', 'h_survey', 'h_text', 'shown']);
+    check('REQ-2 form save: and no rule problem is logged for them', logged($m, 'uvalidate-unconfigurable') === []);
+    $m = mod($blankVisit);
+    $m->redcap_save_record(149, '1', 'visit', 351, null, 'hash', '9', 1);
+    $bad = fieldsOf(logged($m, 'invalid-id-saved'));
+    check('REQ-2 survey save: @HIDDEN and @HIDDEN-SURVEY fields are not required, the rest are (got ' . json_encode($bad) . ')',
+        $bad === ['h_app', 'h_form', 'h_text', 'shown']);
+    $m = mod($blankVisit);
+    $m->redcap_save_record(149, '1', 'enrol', 351, null, null, null, 1);
+    $bad = fieldsOf(logged($m, 'invalid-id-saved'));
+    check('REQ-2 form save of a survey instrument: only the field its form shows (got ' . json_encode($bad) . ')', $bad === ['e_survey']);
+    $m = mod($blankVisit);
+    $res = $m->scanProject(149);
+    $hits = [];
+    foreach ($res['violations'] as $v) $hits[] = $v['field'];
+    sort($hits);
+    check('REQ-2 scan: a field no page of its instrument shows is skipped, one a page shows is reported (got ' . json_encode($hits) . ')',
+        $hits === ['e_form', 'e_survey', 'h_app', 'h_survey', 'h_text', 'shown']);
+
+    // ---- REQ-4: branching logic REDCap may read differently is not decided ----------
+    // REDCap compares text as typed and answers an ordered comparison with a blank
+    // side; the condition dialect folds case and has no answer there. Where the two
+    // readings differ the requirement is not checked, and says so.
+    $DICT = [
+        'record_id' => f('enrol'),
+        'age'       => f('visit'),
+        'code'      => f('visit'),
+        'minor_q'   => f('visit', $HARD, '[age] < 18'),
+        'not_adult' => f('visit', $HARD, 'not([age] >= 18)'),
+        'case_q'    => f('visit', $HARD, "[code] = 'a'"),
+        'has_age'   => f('visit', $HARD, "[age] <> ''"),
+    ];
+    $visit = function (array $v) { return ['1' => [351 => array_merge(['record_id' => '1', 'age' => '', 'code' => ''], $v)]]; };
+    $m = mod($visit(['age' => '', 'code' => 'A']));
+    $m->redcap_save_record(149, '1', 'visit', 351, null, null, null, 1);
+    $bad = fieldsOf(logged($m, 'invalid-id-saved'));
+    $unc = logged($m, 'uvalidate-unconfigurable');
+    check('REQ-4: "[age] < 18" with no age, and "[code] = \'a\'" with "A", are no finding (got ' . json_encode($bad) . ')', $bad === []);
+    foreach (['minor_q', 'not_adult', 'case_q'] as $q) {
+        $why = whyFor($unc, $q);
+        check('REQ-4: [' . $q . '] is reported as not checked (got ' . json_encode($why) . ')',
+            $why !== null && strpos($why, 'branching logic of [' . $q . ']') !== false && strpos($why, 'not checked') !== false);
+    }
+    check('REQ-4: "[age] <> \'\'" reads the same either way and is decided', whyFor($unc, 'has_age') === null);
+    $m = mod($visit(['age' => '12', 'code' => 'a']));
+    $m->redcap_save_record(149, '1', 'visit', 351, null, null, null, 1);
+    $bad = fieldsOf(logged($m, 'invalid-id-saved'));
+    check('REQ-4: with an age of 12 and the code as written, every shown field is a finding (got ' . json_encode($bad) . ')',
+        $bad === ['case_q', 'has_age', 'minor_q', 'not_adult'] && logged($m, 'uvalidate-unconfigurable') === []);
+    $m = mod($visit(['age' => '40', 'code' => 'b']));
+    $m->redcap_save_record(149, '1', 'visit', 351, null, null, null, 1);
+    $bad = fieldsOf(logged($m, 'invalid-id-saved'));
+    check('REQ-4: with an age of 40 and another code, the hidden fields are skipped without a word (got ' . json_encode($bad) . ')',
+        $bad === ['has_age'] && logged($m, 'uvalidate-unconfigurable') === []);
+    $m = mod($visit(['age' => '', 'code' => 'A']));
+    \REDCap::$data['1'][351]['visit_complete'] = '0';
+    $res = $m->scanProject(149);
+    check('REQ-4 scan: the same fields are no violation (got ' . json_encode(array_column($res['violations'], 'field')) . ')',
+        $res['violations'] === []);
+
+    // ---- REQ-3: a required rule whose "when" reads another form -------------------
+    // Saving the form a "when" reads judges the rule on its own form too, as the scan
+    // does (hosting_php.php, R3G-1): "an AE happened" is when the AE form is due. Two
+    // things keep that from filling the log. A page turn of an open survey response
+    // logs no required field, on this form or another (the fix). And a standing
+    // finding is logged once, not on every save (PRF-9), which needs the module log:
+    // the stub the review probed with had none, so every save wrote again.
+    $DICT = [
+        'record_id' => f('enrol'),
+        'had_ae'    => f('enrol', '', '', 'yesno'),
+        'max'       => f('enrol'),
+        'ae_term'   => f('visit', '@UVREQUIRED={"when":"[had_ae]=\'1\'","blockSave":"hard"}'),
+        'dose'      => f('visit', '@UVASSERT={"assert":"[dose]<=[max]","blockSave":"hard"}'),
+    ];
+    $rec = function (array $v) { return ['1' => [351 => array_merge(['record_id' => '1', 'had_ae' => '1', 'max' => '10', 'dose' => '50'], $v)]]; };
+    $depLogs = function ($m) {
+        $out = array_map(function ($e) { return $e['field'] . '@' . ($e['instrument'] ?? ''); }, logged($m, 'invalid-id-saved'));
+        sort($out);
+        return $out;
+    };
+    $m = mod($rec(['enrol_complete' => '0']));
+    $m->redcap_save_record(149, '1', 'enrol', 351, null, 'hash', '9', 1);
+    check('REQ-3: a survey page turn of an open response logs no required field of another form, a value check there still is (got ' . json_encode($depLogs($m)) . ')',
+        $depLogs($m) === ['dose@visit']);
+    $m = mod($rec(['enrol_complete' => '2']));
+    $m->redcap_save_record(149, '1', 'enrol', 351, null, 'hash', '9', 1);
+    check('REQ-3: the finished response logs it, on its own form (got ' . json_encode($depLogs($m)) . ')',
+        $depLogs($m) === ['ae_term@visit', 'dose@visit']);
+    $m = mod($rec(['enrol_complete' => '0']));
+    $m->redcap_save_record(149, '1', 'enrol', 351, null, null, null, 1);
+    check('REQ-3: a data entry save logs it whatever the form\'s status (got ' . json_encode($depLogs($m)) . ')',
+        $depLogs($m) === ['ae_term@visit', 'dose@visit']);
+    $m = mod($rec(['enrol_complete' => '2', 'had_ae' => '0']));
+    $m->redcap_save_record(149, '1', 'enrol', 351, null, null, null, 1);
+    check('REQ-3: a "when" that is false logs no required field', $depLogs($m) === ['dose@visit']);
+    // one request per save, the module log read back as the framework's table would be
+    $withLog = function (array $stored, array $data) {
+        $m = new class extends UniversalValidator {
+            public $stored = [];
+            public function queryLogs($sql, $params)
+            {
+                if (!preg_match('/ and (record|record_hmac|instrument) = \?$/', $sql, $mm)) throw new \Exception('unexpected log query: ' . $sql);
+                $rows = [];
+                foreach ($this->stored as $i => $c) {
+                    if ($c[0] === $params[0] && isset($c[1][$mm[1]]) && (string) $c[1][$mm[1]] === $params[1] && isset($c[1]['fingerprint'])) {
+                        $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null];
+                    }
+                }
+                return new class($rows) {
+                    private $r;
+                    public function __construct($r) { $this->r = $r; }
+                    public function fetch_assoc() { return array_shift($this->r); }
+                };
+            }
+        };
+        mod($data);
+        $m->stored = $stored;
+        $m->projectSettings = ['log-values' => 'raw'];
+        $m->projectIdReturn = 149;
+        $m->systemSettings['log-hmac-key'] = str_repeat('ab', 32);
+        $m->redcap_save_record(149, '1', 'enrol', 351, null, null, null, 1);
+        return $m;
+    };
+    $s1 = $withLog([], $rec(['enrol_complete' => '2']));
+    check('REQ-3: with the module log, the first save logs the blank (got ' . json_encode($depLogs($s1)) . ')',
+        in_array('ae_term@visit', $depLogs($s1), true));
+    $s2 = $withLog($s1->logCalls, $rec(['enrol_complete' => '2']));
+    check('REQ-3: a second save of the same record logs nothing more (got ' . json_encode($depLogs($s2)) . ')', $depLogs($s2) === []);
+    $s3 = $withLog(array_merge($s1->logCalls, $s2->logCalls), $rec(['enrol_complete' => '2', 'ae_term' => 'Rash']));
+    check('REQ-3: and nothing once the field is answered', !in_array('ae_term@visit', $depLogs($s3), true));
+    $DICT = $KEEP;
 
     echo "required_pages_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

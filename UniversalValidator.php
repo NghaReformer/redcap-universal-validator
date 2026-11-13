@@ -558,10 +558,13 @@ class UniversalValidator extends AbstractExternalModule
         // judged once the instrument's status is Complete (2), which REDCap
         // sets when the respondent finishes. A status it could not read
         // leaves them judged, as before; the scan still covers open responses.
+        // A dependant of such a mode waits the same way (REQ-3): a page turn
+        // of an open response saved the form its "when" reads, and the blank
+        // on the other form was logged before the respondent had finished.
         $statusField = null;
         if ($this->surveySave && is_string($instrument) && $instrument !== '') {
             foreach ($rules as $i => $r) {
-                if (empty($r['configError']) && !isset($dependents[$i]) && ModeRegistry::waitsForCompleteSurvey($r['type'] ?? '')) {
+                if (empty($r['configError']) && ModeRegistry::waitsForCompleteSurvey($r['type'] ?? '')) {
                     $statusField = $instrument . '_complete';
                     $readSet[$statusField] = true;
                     break;
@@ -613,7 +616,7 @@ class UniversalValidator extends AbstractExternalModule
         $this->beginUniqueAudit($rules, $project_id, $event_id);
         foreach ($rules as $ruleIndex => $rule) {
             if (!empty($rule['configError'])) continue; // logged above (VAL-15)
-            if ($surveyOpen && !isset($dependents[$ruleIndex]) && ModeRegistry::waitsForCompleteSurvey($rule['type'] ?? '')) continue;
+            if ($surveyOpen && ModeRegistry::waitsForCompleteSurvey($rule['type'] ?? '')) continue;
             // Each rule is isolated: one rule blowing up must not silently
             // abort the audit of every later rule (COR-002).
             try {
@@ -652,8 +655,11 @@ class UniversalValidator extends AbstractExternalModule
                     }
                     continue;
                 }
+                // 'page': where the saved values were entered, for the tags
+                // that hide a field on one kind of page only (hiddenByTag).
                 $this->auditRule($rule, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance,
-                    isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution, ['callerGroup' => $group_id]);
+                    isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution,
+                    ['callerGroup' => $group_id, 'page' => $this->surveySave ? 'survey' : 'form']);
             } catch (\Throwable $e) {
                 $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'rule ' . ($ruleIndex + 1));
             }
@@ -3496,6 +3502,10 @@ class UniversalValidator extends AbstractExternalModule
      * (requiredBranchingRefs). Logic the dialect cannot read, or that
      * references a value this context could not resolve, leaves the field
      * unchecked and says so as a rule problem, never as a finding.
+     *
+     * A field an action tag hides is not required either, as on the page
+     * (hiddenByTag, REQ-2). $meta['page'] is the page the save came from,
+     * 'form' or 'survey'; the scan and a save of another form pass none.
      */
     private function findingsRequired(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
@@ -3506,6 +3516,7 @@ class UniversalValidator extends AbstractExternalModule
             $value = isset($values[$field]) ? $values[$field] : null;
             if (is_array($value)) continue; // non-scalar (checkbox map) — not a required target
             if ($value !== null && !Logic::isBlank((string) $value)) continue;
+            if ($this->hiddenByTag($project_id, $field, isset($meta['page']) ? $meta['page'] : null)) continue;
             $shown = $this->branchingShows($project_id, $field, $values, $resolution);
             if ($shown === false) continue;
             if (is_string($shown)) {
@@ -3518,9 +3529,64 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Whether an action tag hides $field from the person who would fill it
+     * (REQ-2). The page skips a required field whose row is hidden; the audit
+     * and the scan reported its blank, on every save.
+     *
+     * @HIDDEN hides the field on every page. @HIDDEN-FORM hides it on a data
+     * entry form and @HIDDEN-SURVEY on a survey page, so for those the page
+     * the value came from decides: $page is 'form' or 'survey' for the save
+     * being audited. With no page (the scan, a save of another form) the
+     * field counts as hidden only when no page of its instrument shows it:
+     * both tags, or @HIDDEN-FORM on an instrument that is not a survey. A
+     * field one of the two pages still shows is reported, because somebody
+     * can fill it there. @HIDDEN-APP and @HIDDEN-PDF hide nothing on either
+     * page. A tag name inside another tag's value is text (maskValues).
+     */
+    private function hiddenByTag($pid, $field, $page = null)
+    {
+        $dd = $this->dataDictionary($pid);
+        $ann = ($dd && isset($dd[$field]['field_annotation'])) ? (string) $dd[$field]['field_annotation'] : '';
+        if (stripos($ann, '@HIDDEN') === false) return false;
+        if (!preg_match_all('/@HIDDEN(-FORM|-SURVEY)?(?![\w-])/i', AnnotationRules::maskValues($ann), $m)) return false;
+        $on = [];
+        foreach ($m[1] as $suffix) $on[strtoupper((string) $suffix)] = true;
+        if (isset($on[''])) return true;
+        $form = isset($on['-FORM']);
+        $survey = isset($on['-SURVEY']);
+        if ($page === 'form') return $form;
+        if ($page === 'survey') return $survey;
+        if ($form && $survey) return true;
+        if (!$form) return false;
+        $instrument = isset($dd[$field]['form_name']) ? (string) $dd[$field]['form_name'] : '';
+        return $this->instrumentIsSurvey($pid, $instrument) === false;
+    }
+
+    /**
+     * Whether $instrument is enabled as a survey: true, false, or null when
+     * the project's design could not be read.
+     */
+    private function instrumentIsSurvey($pid, $instrument)
+    {
+        $proj = $this->projectObject($pid);
+        if ($proj === null || !isset($proj->forms) || !is_array($proj->forms) || !isset($proj->forms[$instrument])) return null;
+        return !empty($proj->forms[$instrument]['survey_id']);
+    }
+
+    /**
      * Whether REDCap's branching logic shows $field in this context: true
      * (no logic, or the logic holds), false (the logic is false), or a
      * sentence saying why it cannot be told. See findingsRequired().
+     *
+     * REDCap evaluates branching logic itself, and its reading differs from
+     * the condition dialect in two places (REQ-4): it compares text with the
+     * letter case as typed, and it gives an ordered comparison an answer when
+     * one side is blank ("[age] < 18" with no age shows the field), where the
+     * dialect has none. So the logic is read each way the two can differ:
+     * case-sensitive and not, a blank ordered comparison counted true and
+     * counted false. When every reading agrees that is the answer. When they
+     * differ the module cannot tell what REDCap shows, and says so: the
+     * requirement is not checked here, never reported and never passed.
      */
     private function branchingShows($project_id, $field, array $values, array $resolution)
     {
@@ -3535,8 +3601,29 @@ class UniversalValidator extends AbstractExternalModule
             $state = isset($resolution[$ref[0]]) ? $resolution[$ref[0]] : 'ok';
             if ($state !== 'ok') return 'the branching logic of ' . $name . ' ' . self::resolutionProblem($state, $ref[0]);
         }
-        return Logic::evaluate($b['ast'], $values, Logic::BLANK_INERT, false, $this->conditionNumbers($project_id));
+        $numbers = $this->conditionNumbers($project_id);
+        $first = null;
+        foreach (self::BRANCHING_READINGS as $reading) {
+            $shown = Logic::evaluate($b['ast'], $values, $reading[0], $reading[1], $numbers);
+            if ($first === null) { $first = $shown; continue; }
+            if ($shown !== $first) {
+                return 'the branching logic of ' . $name . ' (' . $b['text'] . ') compares a blank value by order, or text that '
+                     . 'differs only by letter case, and REDCap may read that differently from the module. The module cannot '
+                     . 'tell whether REDCap shows the field, so the requirement is not checked here.';
+            }
+        }
+        return $first;
     }
+
+    /**
+     * The readings branchingShows() compares, as [blank mode, case-sensitive]:
+     * every way REDCap's own evaluation of branching logic can differ from
+     * the condition dialect.
+     */
+    const BRANCHING_READINGS = [
+        [Logic::BLANK_INERT, true], [Logic::BLANK_INERT, false],
+        [Logic::BLANK_PASSES, true], [Logic::BLANK_PASSES, false],
+    ];
 
     /**
      * The branching logic of $field parsed in the condition dialect, or null
