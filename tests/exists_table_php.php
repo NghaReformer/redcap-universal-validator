@@ -84,7 +84,14 @@ namespace ExternalModules {
                 return in_array(implode('|', $params), \REDCap::$locked, true) ? [[1]] : [];
             }
             if (strpos($sql, 'FROM redcap_locking_records') !== false) {
-                return in_array((string) $params[1], \REDCap::$lockedRecords, true) ? [[1]] : [];
+                // a whole-record lock is per arm (RNG-9): "9@2" is record 9 locked in arm 2
+                if (strpos($sql, 'redcap_events_metadata') !== false) {
+                    if (\REDCap::$noArmColumn) throw new \RuntimeException("Unknown column 'l.arm_id'");
+                    $arm = isset(\REDCap::$eventArms[(int) $params[2]]) ? \REDCap::$eventArms[(int) $params[2]] : 1;
+                    return in_array($params[1] . '@' . $arm, \REDCap::$lockedRecords, true) ? [[1]] : [];
+                }
+                foreach (\REDCap::$lockedRecords as $lr) if (explode('@', $lr)[0] === (string) $params[1]) return [[1]];
+                return [];
             }
             if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) return [[$this->lastInsertId]];
             if (strpos($sql, 'SELECT ROW_COUNT()') !== false) return [[1]];
@@ -129,6 +136,9 @@ namespace {
         public static $groupIds = ['north' => 7, 'south' => 8];
         public static $locked = [];          // "pid|record|event|form|instance" of locked forms
         public static $lockedRecords = [];
+        /** event id => arm id (arm 1 when not listed), and whether redcap_locking_records lacks arm_id */
+        public static $eventArms = [];
+        public static $noArmColumn = false;
         public static function reset() { self::$calls = []; self::$saves = []; self::$rowsOut = 0; $GLOBALS['__TABLE_READS'] = []; $GLOBALS['__AMONG_READS'] = []; }
         private static function dagOf(array $node) {
             foreach ($node as $k => $v) {
@@ -530,8 +540,18 @@ namespace {
     \REDCap::$locked = ['149|9|351|result|2'];
     check('EXS-2 another instance locked: this one is editable', !array_key_exists('formReadOnly', pageConfig($m, '9', 'result')));
     \REDCap::$locked = [];
-    \REDCap::$lockedRecords = ['9'];
+    \REDCap::$lockedRecords = ['9@1'];
     check('EXS-2 a locked record: formReadOnly', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    // RNG-9: REDCap locks a whole record per arm
+    \REDCap::$lockedRecords = ['9@2'];
+    check('RNG-9 the record locked in another arm: this form is editable', !array_key_exists('formReadOnly', pageConfig($m, '9', 'result')));
+    \REDCap::$eventArms = [351 => 2];
+    check('RNG-9 ... and read only when this event is in that arm', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    \REDCap::$eventArms = [];
+    \REDCap::$noArmColumn = true;
+    check('RNG-9 the arm cannot be asked: any lock of the record counts, as before', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    \REDCap::$noArmColumn = false;
+    \REDCap::$lockedRecords = ['9@1'];
     $m = mod('ro', $DB, $DATA_B, ['ro' => ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '2'], 'group_id' => null, 'expiration' => '']]);
     $DBX = $DB; unset($DBX['r_ret']);
     $m = mod('ro', $DBX, $DATA_B, ['ro' => ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '2'], 'group_id' => null, 'expiration' => '']]);

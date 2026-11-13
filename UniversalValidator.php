@@ -5694,6 +5694,12 @@ class UniversalValidator extends AbstractExternalModule
      * field, and a page that filled the returned fields would show values the
      * record does not hold. A lock that cannot be read counts as none: the
      * page fills as it did before.
+     *
+     * REDCap locks a whole record per arm (redcap_locking_records.arm_id), so
+     * the lock asked for is the one of this event's arm (RNG-9): a record
+     * locked in another arm left this form editable, and the page filled
+     * nothing on it. When the arm cannot be asked (no event, or a REDCap
+     * whose table has no arm), any lock of the record counts, as before.
      */
     private function formReadOnly($pid, $record, $instrument, $event_id, $instance)
     {
@@ -5708,6 +5714,17 @@ class UniversalValidator extends AbstractExternalModule
             if (is_array($r) && $r) return true;
         } catch (\Throwable $e) {
             Faults::swallow($e, 'UniversalValidator::formReadOnly');
+        }
+        if ((int) $event_id > 0) {
+            try {
+                $r = $db->select('SELECT 1 FROM redcap_locking_records l WHERE l.project_id = ? AND l.record = ?'
+                    . ' AND l.arm_id = (SELECT e.arm_id FROM redcap_events_metadata e WHERE e.event_id = ?) LIMIT 1',
+                    [(int) $pid, (string) $record, (int) $event_id]);
+                return is_array($r) && (bool) $r;
+            } catch (\Throwable $e) {
+                // asked without the arm below
+                Faults::swallow($e, 'UniversalValidator::formReadOnly');
+            }
         }
         try {
             $r = $db->select('SELECT 1 FROM redcap_locking_records WHERE project_id = ? AND record = ? LIMIT 1',
