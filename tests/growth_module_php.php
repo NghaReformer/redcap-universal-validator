@@ -971,6 +971,16 @@ namespace {
     $nodob['2'][351]['weight'] = '1.5';
     list($by) = audit($PL, $nodob);
     check('plausible: ... 1.5 kg below it', ($by['weight'] ?? null) === 'plausible-low');
+    // RNG-1: grams on the limit. 5600 * 0.001 as doubles is 5.6000000000000005,
+    // which was above a limit of 5.6 and held the save.
+    $ON = $PL;
+    $ON['wt_g'] = f('anthro_form', tag('who-wfa', $AGE, '"soft":[-2,2],"hard":[-5,5],"plausible":[0.7,5.6],"measureScale":0.001'), 'integer');
+    foreach (['5600' => null, '700' => null, '5601' => 'plausible-high', '699' => 'plausible-low'] as $grams => $wantReason) {
+        $on = $nodob; $on['2'][351]['weight'] = '9'; $on['2'][351]['wt_g'] = (string) $grams;
+        list($by, $un, $ne) = audit($ON, $on);
+        check('plausible with measureScale: ' . $grams . ' g against 0.7 to 5.6 kg (got ' . json_encode($by['wt_g'] ?? null) . ')',
+            ($by['wt_g'] ?? null) === $wantReason && isset($ne['wt_g']));
+    }
     $nodob['2'][351]['weight'] = '9';
     list($by, $un, $ne) = audit($PL, $nodob);
     check('plausible: ... 9 kg inside it: no finding, still not evaluated', !isset($by['weight']) && isset($ne['weight']));
@@ -1230,6 +1240,27 @@ namespace {
     // the sex is saved, so half tables: two fit, and wt_c reads the who-wfh already sent
     check('extra folder: "pageTables" sets the cap (1 table: two half tables, three rules kept, the others deferred)',
         count($p['cfg']['growth'] ?? []) === 2 && count($kept) === 3);
+    // RNG-7: "pageRows" caps the rows inside the page's JSON. The folder's own
+    // who-wfa always travels inline (1827 rows here: the sex is saved); the
+    // bundled tables travel as their own files and count no row.
+    $withRows = function ($rows) use ($index, $table) {
+        return json_encode(['pageRows' => $rows] + json_decode($index(hash('sha256', $table)), true));
+    };
+    file_put_contents($dir . '/index.json', $withRows(1826));
+    $p = page(mod($DICT, $DATA, $FULL, 'nurse', $SYS), 'form', '2', 'anthro_form');
+    $r = ruleFor($p, 'weight');
+    check('extra folder: "pageRows" one row short of its table: the rule is checked on save, the table stays off the page (got '
+        . json_encode($r['deferredWhy'] ?? null) . ')',
+        !empty($r['deferred']) && !empty($r['deferredOnSave']) && !isset($p['cfg']['growth']['who-wfa'])
+        && ($r['deferredWhy'] ?? null) === ['this form would carry 1827 rows of growth reference tables with this one, more than the most one page may carry (1826), '
+            . 'so this check runs when the record is saved.']);
+    list($by) = audit($DICT, $DATA, 'anthro_form', $SYS);
+    check('extra folder: ... and the save still judges with that table', ($by['wt_h'] ?? null) === 'soft-high' && !isset($by['weight']));
+    file_put_contents($dir . '/index.json', $withRows(1827));
+    $p = page(mod($DICT, $DATA, $FULL, 'nurse', $SYS), 'form', '2', 'anthro_form');
+    $r = ruleFor($p, 'weight');
+    check('extra folder: "pageRows" that fits its table: carried inline', empty($r['deferred'])
+        && count($p['cfg']['growth']['who-wfa']['male'] ?? []) + count($p['cfg']['growth']['who-wfa']['female'] ?? []) === 1827);
     rmtree($dir);
 
     fwrite(STDOUT, "growth_module_php: $n checks, $fail failure(s)\n");

@@ -2900,6 +2900,8 @@ What the correction changes:
 
 - `who-lhfa` corrects the measurement: 0.7 cm more for a child measured
   standing under 731 days, 0.7 cm less for one measured lying from 731 days.
+  The age is the day whose row the table reads: an age of 24 months is
+  730.5 days, which reads the row of day 731 and is corrected as day 731.
 - `who-wfl` and `who-wfh` correct the length or height in `by`:
   weight-for-length adds 0.7 cm for a child measured standing, and
   weight-for-height takes 0.7 cm off for one measured lying. The reference's
@@ -3787,8 +3789,9 @@ The whole `index.json` of this level, beside the three tables:
 - `pageTables`, at the top of the folder's `index.json`, sets how many tables
   one page carries (0 to 50, default 4), and `pageCharts` how many sets of
   chart curves and tables of reference values (Level 8, same range and
-  default). A value outside the range is reported to staff, and the default
-  applies; the folder's references stay in use.
+  default). `pageRows` (0 to 1000000, default 16000) caps the table rows that
+  travel inside one page. A value outside the range is reported to staff, and
+  the default applies; the folder's references stay in use.
 
 #### Tables of other shapes
 

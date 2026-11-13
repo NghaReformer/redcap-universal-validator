@@ -4336,7 +4336,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ($growth['state'] !== 'ok') {
                     // No z-score: the "plausible" range judges, if the rule has one.
                     $p = GrowthReference::plausible($m['y'], isset($rule['rangePlausibleLo']) ? $rule['rangePlausibleLo'] : null,
-                        isset($rule['rangePlausibleHi']) ? $rule['rangePlausibleHi'] : null);
+                        isset($rule['rangePlausibleHi']) ? $rule['rangePlausibleHi'] : null, $m['exact']);
                     if ($p !== null) {
                         $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'range', 'type' => 'range',
                                              'reason' => $p] + $extra;
@@ -5055,7 +5055,7 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             return ['problem' => 'the growth reference "' . $rule['rangeReference'] . '" cannot be used: ' . $e->getMessage()];
         }
-        $in = GrowthReference::inputsFor($rule, $read, $entry);
+        $in = GrowthReference::inputsFor($rule, $read, $entry, $table);
         if ($in['state'] !== 'ok') return $in;
         return ['state' => 'ok', 'entry' => $entry, 'table' => $table, 'sex' => $in['sex'], 'x' => $in['x'], 'yAdd' => $in['yAdd']];
     }
@@ -6222,6 +6222,12 @@ class UniversalValidator extends AbstractExternalModule
      * field, and a page that filled the returned fields would show values the
      * record does not hold. A lock that cannot be read counts as none: the
      * page fills as it did before.
+     *
+     * REDCap locks a whole record per arm (redcap_locking_records.arm_id), so
+     * the lock asked for is the one of this event's arm (RNG-9): a record
+     * locked in another arm left this form editable, and the page filled
+     * nothing on it. When the arm cannot be asked (no event, or a REDCap
+     * whose table has no arm), any lock of the record counts, as before.
      */
     private function formReadOnly($pid, $record, $instrument, $event_id, $instance)
     {
@@ -6237,16 +6243,31 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             Faults::swallow($e, 'UniversalValidator::formReadOnly');
         }
-        // A whole-record lock is kept per arm (EXI-11): a record of the same
-        // name locked in another arm leaves this one open, so the lock is
-        // read for the arm of the event shown.
-        try {
-            $r = $db->select('SELECT 1 FROM redcap_locking_records l JOIN redcap_events_metadata m ON m.arm_id = l.arm_id'
-                . ' WHERE l.project_id = ? AND l.record = ? AND m.event_id = ? LIMIT 1',
-                [(int) $pid, (string) $record, (int) $event_id]);
-            if (is_array($r) && $r) return true;
-        } catch (\Throwable $e) {
-            Faults::swallow($e, 'UniversalValidator::formReadOnly');
+        // A whole-record lock is kept per arm (EXI-11, RNG-9): a record of
+        // the same name locked in another arm leaves this one open, so the
+        // lock is read for the arm of the event shown. A REDCap whose
+        // redcap_locking_records has no arm_id is asked without the arm.
+        $byArm = false;
+        if ((int) $event_id > 0) {
+            try {
+                $r = $db->select('SELECT 1 FROM redcap_locking_records l WHERE l.project_id = ? AND l.record = ?'
+                    . ' AND l.arm_id = (SELECT e.arm_id FROM redcap_events_metadata e WHERE e.event_id = ?) LIMIT 1',
+                    [(int) $pid, (string) $record, (int) $event_id]);
+                if (is_array($r) && $r) return true;
+                $byArm = true;
+            } catch (\Throwable $e) {
+                // asked without the arm below
+                Faults::swallow($e, 'UniversalValidator::formReadOnly');
+            }
+        }
+        if (!$byArm) {
+            try {
+                $r = $db->select('SELECT 1 FROM redcap_locking_records WHERE project_id = ? AND record = ? LIMIT 1',
+                    [(int) $pid, (string) $record]);
+                if (is_array($r) && $r) return true;
+            } catch (\Throwable $e) {
+                Faults::swallow($e, 'UniversalValidator::formReadOnly');
+            }
         }
         // A completed survey response (EXI-11): REDCap shows it read only on
         // the data-entry form until a person with the "Edit survey
@@ -6335,7 +6356,10 @@ class UniversalValidator extends AbstractExternalModule
      * saved value, a few rows when the age or length is, none for a branch
      * whose condition is settled false. The catalog's "pageTables" caps them,
      * counted by GrowthReference::pageWeight (a whole table is tens of
-     * kilobytes). A rule, or a branch, that needs more, or whose reference can
+     * kilobytes), and its "pageRows" caps the rows that travel inside the
+     * page's own JSON (GrowthReference::pageRows), so a large table from the
+     * administrator's folder cannot put megabytes on every view (RNG-7).
+     * A rule, or a branch, that needs more, or whose reference can
      * no longer be read, is deferred with the reason (deferredOnSave): the
      * page still checks the measurement itself, and the post-save audit and
      * the scan check the rest.
@@ -6344,6 +6368,7 @@ class UniversalValidator extends AbstractExternalModule
     {
         $dir = null;
         $cap = null;
+        $capRows = null;
         $need = [];     // reference id => what the page reads of it
         $entries = [];  // reference id => [entry, table]
         foreach ($config['rules'] as $i => $r) {
@@ -6369,6 +6394,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ($cap === null) {
                     $dir = $this->referenceDir();
                     $cap = GrowthReference::catalog($dir)['pageTables'];
+                    $capRows = GrowthReference::catalog($dir)['pageRows'];
                 }
                 $id = $n['rangeReference'];
                 $why = null;
@@ -6401,7 +6427,18 @@ class UniversalValidator extends AbstractExternalModule
                             . $cap . '), so this check runs when the record is saved'
                             . (empty($n['rangeReturn']) ? '' : ', and the fields it returns are filled then') . '.';
                     } else {
-                        $need[$id] = $merged;
+                        // the rows inside the page's JSON, whatever the tables count
+                        $rows = 0;
+                        foreach ([$id => $merged] + $need as $nid => $nn) {
+                            $rows += GrowthReference::pageRows($nn, $entries[$nid][0], $entries[$nid][1]);
+                        }
+                        if ($rows > $capRows) {
+                            $why = 'this form would carry ' . $rows . ' rows of growth reference tables with this one, more than the most one page may carry ('
+                                . $capRows . '), so this check runs when the record is saved'
+                                . (empty($n['rangeReturn']) ? '' : ', and the fields it returns are filled then') . '.';
+                        } else {
+                            $need[$id] = $merged;
+                        }
                     }
                 }
                 if ($why !== null) {

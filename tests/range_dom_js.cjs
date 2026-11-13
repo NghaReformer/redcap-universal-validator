@@ -176,6 +176,13 @@ const HB = { type: 'range', fields: ['hb'], rangeSoftLo: '12', rangeSoftHi: '17.
   const env = boot([hb], { rules: [Object.assign({}, HB)] });
   env.win.confirmAnswer = true;
   check('above soft: "save anyway" lets it through', save(env) === 'asked-saved');
+  // the pass answers the question once: the programmatic submit that follows is not asked again
+  check('the pass: a second submit of the same value is not asked again', save(env) === 'saved');
+  // RNG-8: ... and it is no pass for a hard limit typed inside those two seconds
+  hb.value = '25.1'; hb.fire('change');
+  check('the pass: a value past the hard limit typed after "save anyway" is still held (RNG-8)', save(env) === 'held');
+  hb.value = '11'; hb.fire('change');
+  check('the pass: another soft value inside it still saves without a second question', save(env) === 'saved');
 }
 
 // ---- 2) softBlock / hardBlock --------------------------------------------------

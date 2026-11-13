@@ -90,15 +90,13 @@ namespace ExternalModules {
                 return in_array(implode('|', $params), \REDCap::$locked, true) ? [[1]] : [];
             }
             if (strpos($sql, 'FROM redcap_locking_records') !== false) {
-                // A lock is kept per arm (EXI-11): "record@event" is a record
-                // locked in the arm of that event only, which a statement
-                // that names no event would match for every arm.
-                $byArm = strpos($sql, 'm.event_id = ?') !== false;
-                foreach (\REDCap::$lockedRecords as $l) {
-                    $at = explode('@', (string) $l) + [1 => null];
-                    if ($at[0] !== (string) $params[1]) continue;
-                    if ($at[1] === null || !$byArm || (int) $at[1] === (int) $params[2]) return [[1]];
+                // a whole-record lock is per arm (RNG-9): "9@2" is record 9 locked in arm 2
+                if (strpos($sql, 'redcap_events_metadata') !== false) {
+                    if (\REDCap::$noArmColumn) throw new \RuntimeException("Unknown column 'l.arm_id'");
+                    $arm = isset(\REDCap::$eventArms[(int) $params[2]]) ? \REDCap::$eventArms[(int) $params[2]] : 1;
+                    return in_array($params[1] . '@' . $arm, \REDCap::$lockedRecords, true) ? [[1]] : [];
                 }
+                foreach (\REDCap::$lockedRecords as $lr) if (explode('@', $lr)[0] === (string) $params[1]) return [[1]];
                 return [];
             }
             // Completed survey responses: "pid|form|event|record|instance".
@@ -148,6 +146,9 @@ namespace {
         public static $groupIds = ['north' => 7, 'south' => 8];
         public static $locked = [];          // "pid|record|event|form|instance" of locked forms
         public static $lockedRecords = [];
+        /** event id => arm id (arm 1 when not listed), and whether redcap_locking_records lacks arm_id */
+        public static $eventArms = [];
+        public static $noArmColumn = false;
         public static $completed = [];       // completed survey responses
         public static function reset() { self::$calls = []; self::$saves = []; self::$rowsOut = 0; $GLOBALS['__TABLE_READS'] = []; $GLOBALS['__AMONG_READS'] = []; }
         private static function dagOf(array $node) {
@@ -559,13 +560,19 @@ namespace {
     \REDCap::$locked = ['149|9|351|result|2'];
     check('EXS-2 another instance locked: this one is editable', !array_key_exists('formReadOnly', pageConfig($m, '9', 'result')));
     \REDCap::$locked = [];
-    \REDCap::$lockedRecords = ['9'];
+    \REDCap::$lockedRecords = ['9@1'];
     check('EXS-2 a locked record: formReadOnly', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
-    // EXI-11: a whole-record lock is kept per arm, and a completed survey response is read only too.
-    \REDCap::$lockedRecords = ['9@999'];
-    check('EXI-11 a record of that name locked in another arm leaves this one open', !array_key_exists('formReadOnly', pageConfig($m, '9', 'result')));
-    \REDCap::$lockedRecords = ['9@351'];
-    check('EXI-11 ...and one locked in this arm is read only', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    // RNG-9: REDCap locks a whole record per arm
+    \REDCap::$lockedRecords = ['9@2'];
+    check('RNG-9 the record locked in another arm: this form is editable', !array_key_exists('formReadOnly', pageConfig($m, '9', 'result')));
+    \REDCap::$eventArms = [351 => 2];
+    check('RNG-9 ... and read only when this event is in that arm', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    \REDCap::$eventArms = [];
+    \REDCap::$noArmColumn = true;
+    check('RNG-9 the arm cannot be asked: any lock of the record counts, as before', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    \REDCap::$noArmColumn = false;
+    \REDCap::$lockedRecords = ['9@1'];
+    // EXI-11: a completed survey response is read only too.
     \REDCap::$lockedRecords = [];
     \REDCap::$completed = ['149|result|351|9|1'];
     check('EXI-11 a completed survey response opened in data entry: formReadOnly', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);

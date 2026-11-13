@@ -3053,8 +3053,9 @@ var QRID_GROWTH_OUTPUTS = {
    measurement (corrects "measurement") or to the length or height (corrects
    "axis"), as the reference's "position" says. 0 when it corrects the other
    one, has nothing for this position (or position is null), or a "from" or
-   "below" age excludes axis position x (null: not known). Server twin:
-   GrowthReference::positionAdd. */
+   "below" age excludes axis position x (null: not known). x is the position
+   the table reads (QRID_growthReadX), not the age as typed (RNG-2). Server
+   twin: GrowthReference::positionAdd. */
 function QRID_growthPositionAdd(ref, position, x, corrects){
   var p = ref && ref.position;
   if(!p || position === null || !Object.prototype.hasOwnProperty.call(p, position) || p.corrects !== corrects) return 0;
@@ -3150,21 +3151,35 @@ function QRID_growthZText(z){
   var frac = String(n % 100);
   return (z < 0 && n !== 0 ? "-" : "") + Math.floor(n / 100) + "." + (frac.length < 2 ? "0" + frac : frac);
 }
-/* A typed measurement: { state: "ok", y } | { state: "blank"|"not-a-number"|"not-positive" }. */
+/* A typed measurement: { state: "ok", y, exact } | { state: "blank"|"not-a-number"|"not-positive" }.
+   exact is the measurement in the reference's unit as decimal text and y the
+   double nearest to it. A rule's "measureScale" multiplies the typed text as
+   decimals (QRID_temporalMultiply): 5600 * 0.001 as doubles is
+   5.6000000000000005, beyond a limit of 5.6 (RNG-1). exact is null only when
+   the product has too many digits; the doubles then serve. Twin:
+   GrowthReference::measure. */
 function QRID_growthMeasure(text, decimalComma, scale){
   var n = QRID_rangeNumber(text, !!decimalComma);
   if(n === "") return { state: "blank" };
   if(n === null) return { state: "not-a-number" };
-  var y = parseFloat(n);
+  var y = parseFloat(n), exact = n;
   if(!(y > 0)) return { state: "not-positive" };
-  /* a rule's "measureScale": one double multiplication, as on the server */
-  if(scale != null) y = y * parseFloat(scale);
-  return { state: "ok", y: y };
+  if(scale != null){
+    exact = QRID_temporalMultiply(n, String(scale));
+    y = exact === null ? y * parseFloat(scale) : parseFloat(exact);
+  }
+  return { state: "ok", y: y, exact: exact };
 }
 /* "plausible-low" | "plausible-high" | null: y (in the reference's unit)
-   against a rule's "plausible" limits, texts or null. Twin:
-   GrowthReference::plausible. */
-function QRID_growthPlausible(y, lo, hi){
+   against a rule's "plausible" limits, texts or null. exact is the
+   measurement as decimal text (QRID_growthMeasure), compared digit for digit;
+   without it the doubles are compared. Twin: GrowthReference::plausible. */
+function QRID_growthPlausible(y, lo, hi, exact){
+  if(typeof exact === "string" && QRID_WHEN_NUM_RE.test(exact)){
+    if(lo != null && QRID_whenDecCmp(exact, String(lo)) < 0) return "plausible-low";
+    if(hi != null && QRID_whenDecCmp(exact, String(hi)) > 0) return "plausible-high";
+    return null;
+  }
   if(lo != null && y < parseFloat(lo)) return "plausible-low";
   if(hi != null && y > parseFloat(hi)) return "plausible-high";
   return null;
@@ -3339,6 +3354,8 @@ function QRID_growthPercentileText(cum, places){
    significant digits (a decimal tie such as a median of 9.165 stays a tie),
    then half away from zero to d decimals, both done here on the first 40
    digits of toExponential(39), which PHP's sprintf("%.39e") gives the same.
+   The same text for the same double: Math.pow, exp and log can differ from
+   PHP's by one unit in the last place (RNG-10, see the server twin).
    Twin of GrowthReference::roundedUnits. */
 function QRID_growthRoundedUnits(v, d){
   if(typeof v !== "number" || !isFinite(v) || v < 0) return null;
@@ -3368,7 +3385,9 @@ function QRID_growthValueAtText(ref, sex, x, z, places, scale){
   return QRID_growthUnitsText(n, places);
 }
 /* The standard normal distribution function, lower tail: Cody's algorithm 715
-   as R's pnorm() computes it, with the same constants and cut-offs; agrees
+   (Cody 1969, Mathematics of Computation 23, 631-637; ACM TOMS 19, 1993) as
+   R's pnorm() computes it, with the same constants and cut-offs (R is under
+   the GPL: data/NOTICE.md); agrees
    with R 4.6.1 to 1e-15 relative, and gives 0 below x = -37.5193. Twin of
    GrowthReference::normalCdf; tests/growth_normal_golden.json pins both. */
 var QRID_NORM_A = [2.2352520354606839287, 161.02823106855587881, 1067.6894854603709582, 18154.981253343561249,
@@ -3415,9 +3434,11 @@ function QRID_growthNormalCdf(x){
   }
   return x > 0 ? 1 : 0;
 }
-/* The quantile of the standard normal distribution: Wichura's AS241 as R's
-   qnorm() computes it, with the same constants and branches, agreeing with
-   R 4.6.1 to 1e-15 relative; -Infinity at 0, Infinity at 1, NaN outside.
+/* The quantile of the standard normal distribution: Wichura's AS241 (PPND16:
+   Wichura 1988, Applied Statistics 37, 477-484) as R's qnorm() computes it,
+   with the same constants and branches (R is under the GPL: data/NOTICE.md),
+   agreeing with R 4.6.1 to 1e-15 relative; -Infinity at 0, Infinity at 1,
+   NaN outside.
    Twin of GrowthReference::normalQuantile. */
 function QRID_growthNormalQuantile(p){
   if(p !== p || p < 0 || p > 1) return NaN;
@@ -4317,8 +4338,11 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
   function guard(e, by){
     var partial = QRID_partialSave(by);
     /* the click guard runs before the programmatic submit it triggers; a
-       user who already chose "Save anyway" must not be asked twice */
-    if(UV_guard.passUntil && new Date().getTime() < UV_guard.passUntil) return true;
+       user who already chose "Save anyway" must not be asked twice. The pass
+       answers the question only: a value that holds the save without asking
+       (a hard limit) still holds it, so one typed after "Save anyway" does
+       not ride through on the pass (RNG-8). */
+    var passing = !!(UV_guard.passUntil && new Date().getTime() < UV_guard.passUntil);
     /* Branch rules overwrite __qridBlockMode per check with the ACTIVE
        branch's mode, which may be "off" — such a field never holds the save.
        (Pre-0.9.0 configs never register "off" items, so this filter is a
@@ -4346,6 +4370,10 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
       if(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0) return false;
       return QRID_itemHolds(el) && !QRID_justified(el);
     });
+    if(passing){
+      bad = bad.filter(function(el){ return el.__qridBlockMode === "hard"; });
+      if(!bad.length) return true;
+    }
     /* A lookup still on its way makes the save wait, with no dialog: clicking
        Save blurs the field, and the blur is when a lookup asks, so letting
        the save through at once would decide it before the answer that may
@@ -4357,6 +4385,8 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
     var pend = live.filter(function(el){
       return el.__qridPending && bad.indexOf(el) < 0 && !(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0);
     });
+    /* inside the pass the save was already decided once: it does not wait again */
+    if(passing) pend = [];
     if(pend.length){
       if(!UV_guard.resuming && QRID_SAVE_HOLD_MS > 0){
         e.preventDefault();
@@ -6122,8 +6152,9 @@ function QRID_chartXUnit(ref, lo, hi){
 }
 /* The axis value the reference reads for x: the row at or nearest x for a
    "floor" or "round" lookup (where its curves are exact), x itself for
-   "linear". This visit's point is drawn there, on the step the check reads.
-   Twin of QRID_growthLms's choice of row. */
+   "linear". This visit's point is drawn there, on the step the check reads,
+   and a correction for how the child was measured is the one of that age.
+   Twin of QRID_growthLms's choice of row, and of GrowthReference::readAt. */
 function QRID_growthReadX(ref, x){
   var s = ref.scale, k = x * s, f = Math.floor(k);
   if(ref.lookup === "round") return (k - f >= 0.5 ? f + 1 : f) / s;
@@ -7040,7 +7071,10 @@ function QRIDRangeInit(QRID_CONFIG){
     }
     var a = QRID_growthAxis(g.ref, input);
     if(a.state !== "ok") return { state: "inert", why: a.why, sex: sex };
-    return { state: "ok", sex: sex, x: a.x, yAdd: QRID_growthPositionAdd(g.ref, position, a.x, "measurement") };
+    /* the correction of the age the table reads: at 730.5 days who-lhfa
+       reads the row of day 731 (RNG-2) */
+    return { state: "ok", sex: sex, x: a.x,
+             yAdd: QRID_growthPositionAdd(g.ref, position, QRID_growthReadX(g.ref, a.x), "measurement") };
   }
   /* The verdict of a growth rule: the measurement first (not a number, at or
      below 0), then the z-score's tier against the limits. { tier: "withheld" }
@@ -7053,7 +7087,7 @@ function QRIDRangeInit(QRID_CONFIG){
     var g = V.growth;
     var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
     var noZ = function(why){
-      var p = QRID_growthPlausible(m.y, V.plausibleLo, V.plausibleHi);
+      var p = QRID_growthPlausible(m.y, V.plausibleLo, V.plausibleHi, m.exact);
       return p ? { tier: "hard", reason: p, why: why } : { tier: "inert", why: why };
     };
     if(m.state === "blank") return { tier: "inert", why: null };
@@ -10686,7 +10720,7 @@ window.INSPIREUniversalValidator = {
     percentile: QRID_growthPercentile, percentileText: QRID_growthPercentileText, valueAtText: QRID_growthValueAtText,
     normalCdf: QRID_growthNormalCdf, normalQuantile: QRID_growthNormalQuantile,
     roundedUnits: QRID_growthRoundedUnits, computed: QRID_GROWTH_COMPUTED,
-    axisText: QRID_growthAxisText, lineZ: QRID_growthLineZ, positionAdd: QRID_growthPositionAdd
+    axisText: QRID_growthAxisText, lineZ: QRID_growthLineZ, positionAdd: QRID_growthPositionAdd, readX: QRID_growthReadX
   },
   chartLogic: {                              /* @UVRANGE "show", locked by tests/growth_chart_dom_js.cjs */
     geometry: QRID_CHART, step: QRID_chartStep, ticks: QRID_chartTicks, xUnit: QRID_chartXUnit, span: QRID_growthSpan,

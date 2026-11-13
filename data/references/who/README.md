@@ -12,9 +12,12 @@ Organization growth references, converted to the module's table format with
 Copyright of the tables: World Health Organization. Both packages are
 distributed under the GNU General Public License version 3 (anthroplus: version
 3 or later); `LICENSE` in this folder is that licence. The tables in this folder
-stay under it. The rest of the module is under the MIT licence in the
-repository root; it reads these files as data and does not include them in its
-own code.
+stay under it, and so do the copies of them that the module ships as scripts
+(`js/growth/*.js`, written from these files by `tools/build_growth_rows.php`
+so that a browser can cache the rows; each names its source and licence in its
+first lines). The rest of the module is under the MIT licence in the
+repository root. `data/NOTICE.md` lists every part of the module that is not
+under the MIT licence and what its owner still has to confirm.
 
 ## What was converted
 
@@ -49,12 +52,19 @@ distance between 2 and 3 SD at that point ("restricted application"). Length,
 height and head circumference use the plain formula. The z-score is rounded to
 two decimals.
 
-The module does not apply two adjustments WHO's software makes:
+Two adjustments WHO's software makes:
 
 - **Lying or standing.** WHO's software adds 0.7 cm to a height measured
   standing before age 2 and takes 0.7 cm off a length measured lying from age
-  2. Here the length or height is used as entered. Record it the way the table
-  expects: lying (length) for `who-wfl` and before 731 days, standing (height)
-  for `who-wfh` and from 731 days.
+  2. The module does the same when the rule names the field that says how the
+  child was measured (`"measured"`): `who-lhfa` corrects the measurement, and
+  `who-wfl` and `who-wfh` correct the length or height in `by` (the `position`
+  of each entry in `../index.json`). The age that decides is the day whose row
+  the table reads, so 730.5 days counts as day 731. Without `"measured"`, or
+  when its field is blank or holds another code, the length or height is used
+  as entered: record it the way the table expects, lying (length) for
+  `who-wfl` and before 731 days, standing (height) for `who-wfh` and from 731
+  days.
 - **Oedema.** WHO's software gives no weight-based z-score for a child with
-  oedema. Leave such records out with `when`, for example `"when":"[oedema]<>'1'"`.
+  oedema, and the module does not apply that. Leave such records out with
+  `when`, for example `"when":"[oedema]<>'1'"`.

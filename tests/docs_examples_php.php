@@ -208,9 +208,9 @@ $growth = function (array $frag, $value, array $inputs) use ($rangeSpec, $exampl
         $f = preg_match('/\[([a-z0-9_]+)\]$/', $frag[$k], $mm) ? $mm[1] : '';
         $read[$k] = isset($inputs[$f]) ? trim($inputs[$f], " \t\r\n") : '';
     }
-    $in = GrowthReference::inputsFor($frag, $read, $entry);
+    $in = GrowthReference::inputsFor($frag, $read, $entry, GrowthReference::table($entry));
     if ($in['state'] !== 'ok') {
-        $p = GrowthReference::plausible($m['y'], $case['plausibleLo'], $case['plausibleHi']);
+        $p = GrowthReference::plausible($m['y'], $case['plausibleLo'], $case['plausibleHi'], $m['exact']);
         return [$p !== null ? $p : 'not evaluated', $case];
     }
     // x as the shortest text that reads back as the same double, in both runtimes

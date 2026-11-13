@@ -12,6 +12,12 @@
  * GrowthReference::table() reads under the full SHA-256 in
  * window.INSPIRE_UV_GROWTH_ROWS, where js/engine.js looks for them.
  *
+ * Each script is a copy of its table, so it says in its first lines whose
+ * numbers they are and under which licence (RNG-4): the table's "source" in
+ * index.json ("title", "publisher", "license", "from", "commit",
+ * "licenseFile"). A bundled table without those, or whose licence file is not
+ * there, stops the build: a copy must not travel without its notice.
+ *
  * Run it after adding or changing a bundled table, and commit js/growth/.
  * CI runs it with --check, which writes nothing and fails when a script is
  * missing, differs from what this would write, or belongs to no table.
@@ -39,11 +45,44 @@ if ($catalog['problems']) {
     exit(1);
 }
 
+// The notice a copy of a table carries: where the numbers come from and the
+// licence they stay under, read from the table's source in index.json.
+$index = json_decode((string) file_get_contents(GrowthReference::bundledDir() . '/index.json'), true);
+$sources = (is_array($index) && isset($index['sources']) && is_array($index['sources'])) ? $index['sources'] : [];
+$notice = function ($id, array $entry) use ($sources) {
+    $key = isset($entry['source']) && is_string($entry['source']) ? $entry['source'] : '';
+    $s = isset($sources[$key]) && is_array($sources[$key]) ? $sources[$key] : [];
+    foreach (['title', 'publisher', 'license', 'from', 'licenseFile'] as $k) {
+        if (!isset($s[$k]) || !is_string($s[$k]) || trim($s[$k]) === '' || !GrowthReference::oneLine($s[$k]) || strpos($s[$k], '*/') !== false) {
+            fwrite(STDERR, 'the bundled reference "' . $id . '" has no usable "' . $k . '" in its source "' . $key
+                . "\" in index.json, so its rows script would carry no licence notice\n");
+            exit(1);
+        }
+    }
+    if (!is_file(GrowthReference::bundledDir() . '/' . $s['licenseFile'])) {
+        fwrite(STDERR, 'the licence file data/references/' . $s['licenseFile'] . ' of the bundled reference "' . $id . "\" is missing\n");
+        exit(1);
+    }
+    $commit = isset($s['commit']) && is_string($s['commit']) && preg_match('/^[0-9a-f]{7,64}$/D', $s['commit']) ? ' (commit ' . $s['commit'] . ')' : '';
+    return "   These numbers are not under the module's MIT licence. They are a table of\n"
+        . '   ' . $s['title'] . ', ' . $s['publisher'] . ",\n"
+        . '   taken from ' . $s['from'] . $commit . ",\n"
+        . '   and stay under its licence, ' . $s['license'] . ': data/references/' . $s['licenseFile'] . ".\n"
+        . "   data/NOTICE.md says more.";
+};
+
 $want = [];  // file name => script text
 foreach ($catalog['references'] as $id => $entry) {
     $path = GrowthReference::rowsPath($entry['sha256']);
     if (isset($want[basename($path)])) continue;  // two entries may share one file
-    $table = GrowthReference::table($entry);
+    // every row checked: GrowthReference::table() trusts a bundled table by
+    // its SHA-256 from here on (RNG-6)
+    try {
+        $table = GrowthReference::verified($entry);
+    } catch (\RuntimeException $e) {
+        fwrite(STDERR, 'the bundled reference "' . $id . '" cannot be used: ' . $e->getMessage() . "\n");
+        exit(1);
+    }
     $rows = ['scale' => $table['scale'], 'first' => $table['first'], 'male' => $table['male'], 'female' => $table['female']];
     $json = json_encode($rows);
     if ($json === false) {
@@ -52,7 +91,8 @@ foreach ($catalog['references'] as $id => $entry) {
     }
     $want[basename($path)] = "/* The rows of data/references/" . $entry['file'] . " for the growth checks on a page\n"
         . "   (PRF-7). js/engine.js reads them under the table's SHA-256. Written by\n"
-        . "   tools/build_growth_rows.php; do not edit. */\n"
+        . "   tools/build_growth_rows.php; do not edit.\n\n"
+        . $notice($id, $entry) . " */\n"
         . '(window.INSPIRE_UV_GROWTH_ROWS = window.INSPIRE_UV_GROWTH_ROWS || {})["' . $entry['sha256'] . '"] = ' . $json . ";\n";
 }
 ksort($want);

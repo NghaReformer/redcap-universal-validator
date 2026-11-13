@@ -783,6 +783,13 @@ const PL = { rangePlausibleLo: '2', rangePlausibleHi: '30', rangePlausibleText: 
   check('measureScale: 0 is still not a measurement', /must be above 0/.test(msg.innerHTML) && save(env) === 'held');
   const env2 = boot(inputs('', '95000'), { growth: GROWTH, rules: [rule(Object.assign({ rangeMeasureScale: '0.001' }, PL, LIVE))] });
   check('measureScale: "plausible" is in the reference\'s unit, after the scale', /above the plausible range \(allowed 2 to 30 kg/.test(nMsg(env2, 'weight').innerHTML));
+  // RNG-1: grams exactly on the limit are inside it (5600 * 0.001 as doubles is above 5.6)
+  const ON = { rangeMeasureScale: '0.001', rangePlausibleLo: '0.7', rangePlausibleHi: '5.6', rangePlausibleText: '0.7 to 5.6 kg' };
+  for (const [grams, want] of [['5600', 'saved'], ['700', 'saved'], ['5601', 'held'], ['699', 'held']]) {
+    const envOn = boot(inputs('', grams), { growth: GROWTH, rules: [rule(Object.assign({}, ON, LIVE))] });
+    check('plausible with measureScale: ' + grams + ' g against 0.7 to 5.6 kg is ' + want + ' (got ' + nMsg(envOn, 'weight').innerHTML + ')',
+      save(envOn) === want && /plausible range/.test(nMsg(envOn, 'weight').innerHTML) === (want === 'held'));
+  }
   const env3 = boot(inputs('1', '13'), { growth: GROWTH, rules: [rule(Object.assign({ rangeMeasureScale: 'grams' }, LIVE))] });
   check('measureScale that is not a number: a configuration error', !!cfgErr(env3, 'weight') && /rangeMeasureScale is not a number/.test(cfgErr(env3, 'weight').innerHTML));
   const env4 = boot(inputs('1', '13'), { growth: GROWTH, rules: [rule(Object.assign({ rangePlausibleLo: 'x' }, LIVE))] });
@@ -821,6 +828,15 @@ const MEASURED = { rangeMeasuredOp: ['ref', 'measured', null], rangeLying: '1', 
   how.value = 'S'; how.fire('change');
   check('measured standing from day 2: no correction, z 2.50', /z-score 2\.50/.test(msg.innerHTML));
   check('test() answers by the corrected z-score', env.NS.validators.len.test() === false);
+  // RNG-2: day 1.5 reads the row of day 2 (lookup "round"), so the correction is day 2's
+  age.value = '1.5'; age.fire('change');
+  check('measured standing at day 1.5, read as day 2: no correction, z 2.50 (got ' + msg.innerHTML + ')', /z-score 2\.50/.test(msg.innerHTML));
+  how.value = '1'; how.fire('change');
+  check('measured lying at day 1.5, read as day 2: 12.5 cm is scored as 11.8, usual (got ' + msg.innerHTML + ')', !shown(msg));
+  age.value = '1.4'; age.fire('change');
+  check('measured lying at day 1.4, read as day 1: no correction, z 2.50 (got ' + msg.innerHTML + ')', /z-score 2\.50/.test(msg.innerHTML));
+  how.value = 'S'; how.fire('change');
+  check('measured standing at day 1.4, read as day 1: 12.5 cm is scored as 13.2, z 3.20 (got ' + msg.innerHTML + ')', /z-score 3\.20/.test(msg.innerHTML));
 }
 {
   const w = el('len', '11.5');

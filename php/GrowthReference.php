@@ -1,6 +1,7 @@
 <?php
 namespace INSPIRE\UniversalValidator;
 require_once __DIR__ . '/Logic.php';
+require_once __DIR__ . '/ExactDecimal.php';
 require_once __DIR__ . '/TemporalValue.php';
 
 /**
@@ -33,6 +34,17 @@ final class GrowthReference
     const PAGE_TABLES = 4;
     /** Curve sets of growth charts (and curve tables) one page may carry, unless index.json says otherwise. */
     const PAGE_CHARTS = 4;
+    /**
+     * Table rows one page may carry inside its own JSON, both sexes counted,
+     * unless index.json says otherwise ("pageRows"): about four WHO tables by
+     * day to five years, some 400 KB. PAGE_TABLES counts tables whatever their
+     * size, so four tables of 4 MB from an administrator's folder, which
+     * always travel inline, put 16 MB on every view of a form (RNG-7).
+     */
+    const PAGE_ROWS = 16000;
+    /** The caps an index.json may set: name => [default, the most it may be]. */
+    const PAGE_CAPS = ['pageTables' => [self::PAGE_TABLES, 50], 'pageCharts' => [self::PAGE_CHARTS, 50],
+                       'pageRows' => [self::PAGE_ROWS, 1000000]];
     /** The largest z-score zText writes (see there). */
     const MAX_Z_TEXT = 999.99;
     /** The largest axis value a "valid" bound may name (days, months or cm). */
@@ -99,6 +111,8 @@ final class GrowthReference
     private static $catalogMemo = [];
     private static $tableMemo = [];
     private static $boundsMemo = [];
+    /** Stream schemes a test may name as a reference folder (streamForTests). */
+    private static $testStreams = [];
 
     /** The bundled reference folder. */
     public static function bundledDir()
@@ -126,7 +140,7 @@ final class GrowthReference
      * again.
      *
      * @return array ['references' => [id => entry + ['dir' => folder]],
-     *                'pageTables' => int, 'pageCharts' => int,
+     *                'pageTables' => int, 'pageCharts' => int, 'pageRows' => int,
      *                'problems' => [string, ...], 'refused' => [id => why],
      *                'broken' => why|null, 'unread' => why|null]
      */
@@ -134,12 +148,13 @@ final class GrowthReference
     {
         $extraDir = is_string($extraDir) ? trim($extraDir) : '';
         if (isset(self::$catalogMemo[$extraDir])) return self::$catalogMemo[$extraDir];
-        $out = ['references' => [], 'pageTables' => self::PAGE_TABLES, 'pageCharts' => self::PAGE_CHARTS,
-                'problems' => [], 'refused' => [], 'broken' => null, 'unread' => null];
+        $out = ['references' => [], 'problems' => [], 'refused' => [], 'broken' => null, 'unread' => null];
+        foreach (self::PAGE_CAPS as $cap => $spec) $out[$cap] = $spec[0];
         $dirs = [['dir' => self::bundledDir(), 'what' => 'the bundled references', 'extra' => false]];
         if ($extraDir !== '') $dirs[] = ['dir' => rtrim($extraDir, '/\\'), 'what' => 'the reference folder in the module settings', 'extra' => true];
         foreach ($dirs as $d) {
-            $index = self::readIndex($d['dir']);
+            $refused = $d['extra'] ? self::folderProblem($d['dir']) : null;
+            $index = $refused !== null ? ['error' => $refused] : self::readIndex($d['dir']);
             if (isset($index['error'])) {
                 $why = $d['what'] . ': ' . $index['error'];
                 $out['problems'][] = $why;
@@ -150,7 +165,7 @@ final class GrowthReference
                 if (!empty($index['unread']) && $out['unread'] === null) $out['unread'] = $why;
                 continue;
             }
-            foreach (['pageTables', 'pageCharts'] as $cap) {
+            foreach (self::PAGE_CAPS as $cap => $spec) {
                 if (isset($index[$cap])) $out[$cap] = $index[$cap];
             }
             // a cap out of range keeps the default: it limits what a page
@@ -196,6 +211,39 @@ final class GrowthReference
         return (is_string($id) && isset($c['refused'][$id])) ? $c['refused'][$id] : null;
     }
 
+    /**
+     * Why the folder an administrator named cannot be a reference folder, or
+     * null. The setting is passed to is_file() and file_get_contents(), which
+     * take PHP's stream wrappers: "ftp://host/refs" made every page that
+     * reads the catalog wait on a connection, and "phar://" opens an archive
+     * (and, on PHP 7.4, unserialises its metadata) (RNG-3). So a name PHP
+     * would open as a stream is refused before anything is opened: a scheme
+     * of two or more characters followed by "://", or "data:" (one letter is
+     * a Windows drive). So is a name that is not a folder on this server's
+     * disk. A folder that is not there keeps the words readIndex() has for it
+     * (review rvc2-3).
+     */
+    private static function folderProblem($dir)
+    {
+        if (preg_match('~^([a-z][a-z0-9+.-]+):(?://|(?<=^data:))~i', $dir, $m)) {
+            if (in_array(strtolower($m[1]), self::$testStreams, true)) return null;
+            return 'the setting must name a folder on this server, not a URL or a stream ("' . strtolower($m[1]) . ':").';
+        }
+        $real = @realpath($dir);
+        if ($real === false || !is_dir($real)) return 'the folder has no index.json.';
+        return null;
+    }
+
+    /**
+     * Tests only: let a stream wrapper registered under $scheme stand for a
+     * reference folder (a file that is there and will not open has no
+     * portable form on disk); null lets none.
+     */
+    public static function streamForTests($scheme)
+    {
+        self::$testStreams = $scheme === null ? [] : [strtolower((string) $scheme)];
+    }
+
     /** Forget what was read (tests). */
     public static function reset()
     {
@@ -238,10 +286,10 @@ final class GrowthReference
         if (!isset($j['references']) || !is_array($j['references'])) return ['error' => 'index.json has no "references".'];
         $out = ['references' => $j['references'], 'sources' => (isset($j['sources']) && is_array($j['sources'])) ? $j['sources'] : [],
                 'capProblems' => []];
-        foreach (['pageTables' => self::PAGE_TABLES, 'pageCharts' => self::PAGE_CHARTS] as $cap => $default) {
+        foreach (self::PAGE_CAPS as $cap => $spec) {
             if (!array_key_exists($cap, $j)) continue;
-            if (!is_int($j[$cap]) || $j[$cap] < 0 || $j[$cap] > 50) {
-                $out['capProblems'][] = '"' . $cap . '" must be a whole number from 0 to 50, so the default (' . $default . ') applies.';
+            if (!is_int($j[$cap]) || $j[$cap] < 0 || $j[$cap] > $spec[1]) {
+                $out['capProblems'][] = '"' . $cap . '" must be a whole number from 0 to ' . $spec[1] . ', so the default (' . $spec[0] . ') applies.';
                 continue;
             }
             $out[$cap] = $j[$cap];
@@ -311,9 +359,9 @@ final class GrowthReference
      * measurement (in the reference's unit) or to the axis value (cm, on a
      * reference by length or height). On a reference by age, a side may hold
      * at most one of "from" and "below", in the axis unit: the correction
-     * applies at or above that age, or below it. who-lhfa adds 0.7 cm to a
-     * length measured standing below 731 days, and takes 0.7 cm from one
-     * measured lying from 731 days.
+     * applies at or above that age, or below it, the age being the one the
+     * table reads (readAt). who-lhfa adds 0.7 cm to a length measured standing
+     * below 731 days, and takes 0.7 cm from one measured lying from 731 days.
      */
     private static function positionProblem(array $e)
     {
@@ -361,6 +409,13 @@ final class GrowthReference
      * two entries may share one file with different ranges or lookups.
      * Throws \RuntimeException with a sentence a designer can act on.
      *
+     * A bundled table that matches its SHA-256 is not checked row by row
+     * again (RNG-6): the release check did that (verified(), which
+     * tools/build_growth_rows.php and tests/growth_php.php call for every
+     * bundled table), the hash says it is that file, and the 11,000 numbers
+     * of a WHO table took more of each request than reading it. A table in
+     * the administrator's folder is checked in full on every read.
+     *
      * @return array ['scale' => int, 'first' => int, 'male' => [[L,M,S], ...], 'female' => [...]]
      */
     public static function table(array $entry)
@@ -373,13 +428,26 @@ final class GrowthReference
         return $out;
     }
 
+    /**
+     * The rows of a reference with every row checked, whichever folder it is
+     * in, and nothing remembered: what a release must pass for each bundled
+     * table before table() may trust its SHA-256.
+     */
+    public static function verified(array $entry)
+    {
+        $out = self::readTable($entry, true);
+        $gap = self::coverProblem($entry, $out);
+        if ($gap !== null) throw new \RuntimeException('the table ' . $entry['file'] . ' ' . $gap);
+        return $out;
+    }
+
     /** The memo key of an entry's table file: its path and pinned SHA-256. */
     private static function fileKey(array $entry)
     {
         return $entry['dir'] . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $entry['file']) . '|' . $entry['sha256'];
     }
 
-    private static function readTable(array $entry)
+    private static function readTable(array $entry, $everyRow = false)
     {
         $path = $entry['dir'] . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $entry['file']);
         // A table its index names that is not there is the folder as the
@@ -402,9 +470,16 @@ final class GrowthReference
         if (!isset($t['first']) || !is_int($t['first']) || abs($t['first']) > self::MAX_AXIS * 1000) {
             throw $bad('needs "first" as a whole number from -' . (self::MAX_AXIS * 1000) . ' to ' . (self::MAX_AXIS * 1000) . '.');
         }
+        // the hash above was the index's pin: a bundled file is the one the release checked
+        $trusted = !$everyRow && $entry['dir'] === self::bundledDir();
         foreach (['male', 'female'] as $sex) {
             if (!isset($t[$sex]) || !is_array($t[$sex]) || !$t[$sex] || array_keys($t[$sex]) !== range(0, count($t[$sex]) - 1)) {
                 throw $bad('needs a list of "' . $sex . '" rows.');
+            }
+            if ($trusted) {
+                // the same floats the full check leaves, without its tests
+                foreach ($t[$sex] as $i => $row) $t[$sex][$i] = [(float) $row[0], (float) $row[1], (float) $row[2]];
+                continue;
             }
             foreach ($t[$sex] as $i => $row) {
                 if (!is_array($row) || count($row) !== 3 || array_keys($row) !== [0, 1, 2]) throw $bad('row ' . $i . ' of "' . $sex . '" is not [L, M, S].');
@@ -470,11 +545,21 @@ final class GrowthReference
     private static function justBelow($f)
     {
         if ($f == 0) return -4.9406564584124654E-324;
-        // the bits of a double, as a signed 64-bit integer, count in the
-        // direction of its magnitude: one step down is -1 above 0, +1 below
-        $bits = unpack('q', pack('d', $f))[1];
-        $bits += $f > 0 ? -1 : 1;
-        return unpack('d', pack('q', $bits))[1];
+        // The eight bytes of a double, least significant first, read as one
+        // whole number count in the direction of its magnitude: one step down
+        // is one less above 0 and one more below. Stepped byte by byte: pack's
+        // 64-bit "q" does not exist on a 32-bit PHP (RNG-12).
+        $b = array_values(unpack('C8', pack('e', $f)));
+        $step = $f > 0 ? -1 : 1;
+        for ($i = 0; $i < 8; $i++) {
+            $v = $b[$i] + $step;
+            if ($v >= 0 && $v <= 255) {
+                $b[$i] = $v;
+                break;
+            }
+            $b[$i] = $v < 0 ? 255 : 0;   // borrow from, or carry into, the next byte
+        }
+        return unpack('e', call_user_func_array('pack', array_merge(['C8'], $b)))[1];
     }
 
     /**
@@ -496,6 +581,19 @@ final class GrowthReference
         // linear, as WHO's own code does it: low = trunc(x*scale)/scale and
         // the share of the way to the next row is (x - low) / (1/scale).
         return [$key, ($x - $key / $scale) / (1 / $scale)];
+    }
+
+    /**
+     * The axis value the table reads for $x: the row at or nearest $x for a
+     * "floor" or "round" lookup, $x itself for "linear". $scale is the
+     * table's. A correction that depends on the age (positionAdd) is keyed to
+     * this value, so it changes on the same day the rows do (RNG-2).
+     * Twin: QRID_growthReadX.
+     */
+    public static function readAt(array $entry, $scale, $x)
+    {
+        if ($entry['lookup'] === 'linear') return (float) $x;
+        return (float) (self::position($entry['lookup'], $scale, (float) $x)[0] / $scale);
     }
 
     /**
@@ -725,6 +823,24 @@ final class GrowthReference
     }
 
     /**
+     * How many table rows a page's copy of a reference carries inside the
+     * page's own JSON, both sexes counted, for the "pageRows" cap. None when
+     * the rows travel as their own file (rowsFile(), a bundled table the page
+     * may read whole: the browser keeps that script); else the rows
+     * pageCopy() sends for $need. Twin of the choice
+     * UniversalValidator::attachGrowthTables makes between pageIndex() and
+     * pageCopy().
+     */
+    public static function pageRows(array $need, array $entry, array $table)
+    {
+        $sexes = isset($need['sexes']) ? $need['sexes'] : ['male' => true, 'female' => true];
+        $every = !isset($need['xs']) || !is_array($need['xs']);
+        if ($every && (!empty($sexes['male']) || !empty($sexes['female'])) && self::rowsFile($entry) !== null) return 0;
+        $copy = self::pageCopy($entry, $table, $need);
+        return count($copy['male']) + count($copy['female']);
+    }
+
+    /**
      * Where on the reference's axis a measurement sits, from the rule's
      * inputs. $in holds what the rule supplied: 'days' or 'months' (a number
      * as text), 'dobDays' and 'atDays' (whole days since 1970-01-01, from the
@@ -845,10 +961,19 @@ final class GrowthReference
     }
 
     /**
-     * A measurement typed as text: ['state' => 'ok', 'y' => float], or
-     * ['state' => 'blank'|'not-a-number'|'not-positive']. Read before the
-     * inputs, so a value that is no measurement at all is reported whatever
-     * the sex and age say.
+     * A measurement typed as text: ['state' => 'ok', 'y' => float, 'exact' =>
+     * ?string], or ['state' => 'blank'|'not-a-number'|'not-positive']. Read
+     * before the inputs, so a value that is no measurement at all is reported
+     * whatever the sex and age say.
+     *
+     * 'exact' is the measurement in the reference's unit as a decimal text,
+     * which plausible() compares digit for digit, and 'y' is the double
+     * nearest to it. With a "measureScale" the typed text is multiplied by
+     * the scale as decimals (ExactDecimal), not as doubles: 5600 * 0.001 in
+     * binary floating point is 5.6000000000000005, which put a weight typed
+     * exactly on its limit beyond it (RNG-1). 'exact' is null only when the
+     * product has more digits than ExactDecimal multiplies; the doubles then
+     * serve, as before.
      */
     public static function measure($text, $decimalComma = false, $scale = null)
     {
@@ -858,9 +983,13 @@ final class GrowthReference
         $y = (float) $n;
         if (!($y > 0)) return ['state' => 'not-positive'];
         // A rule's "measureScale" (0.001 for grams typed into a reference in kg),
-        // one double multiplication in both runtimes. Twin: QRID_growthMeasure.
-        if ($scale !== null) $y *= (float) $scale;
-        return ['state' => 'ok', 'y' => $y];
+        // multiplied as decimal text in both runtimes. Twin: QRID_growthMeasure.
+        $exact = $n;
+        if ($scale !== null) {
+            $exact = ExactDecimal::multiply($n, (string) $scale);
+            $y = $exact === null ? $y * (float) $scale : (float) $exact;
+        }
+        return ['state' => 'ok', 'y' => $y, 'exact' => $exact];
     }
 
     /**
@@ -902,7 +1031,10 @@ final class GrowthReference
      * 'measurement', to the length or height (cm) when it is 'axis'. 0.0 when
      * the entry's "position" corrects the other one, has no correction for
      * $position (or $position is null), or a "from" or "below" age excludes
-     * the axis position $x (null: not known). Twin: QRID_growthPositionAdd.
+     * the axis position $x (null: not known). $x is the position the table
+     * reads (readAt), not the age as typed: at 730.5 days who-lhfa reads the
+     * row of day 731, and the correction must be the one of day 731 too.
+     * Twin: QRID_growthPositionAdd.
      */
     public static function positionAdd(array $entry, $position, $x, $corrects)
     {
@@ -923,12 +1055,14 @@ final class GrowthReference
      * one; dates are saved values, Y-M-D. 'yAdd' is what the measurement
      * gets added before it is scored, WHO's correction for how the child was
      * measured (0.0 without one); a correction of the length or height is in
-     * 'x' already. The reasons are the browser's (growthVerdict in
+     * 'x' already. $table is the entry's table: its "scale" says which row
+     * 'x' reads, and the correction of the measurement is the one of that
+     * row's age (RNG-2). The reasons are the browser's (growthVerdict in
      * js/engine.js). The one reading of the inputs:
      * UniversalValidator::growthInputs and tests/docs_examples_php.php both
      * call it.
      */
-    public static function inputsFor(array $rule, array $read, array $entry)
+    public static function inputsFor(array $rule, array $read, array $entry, array $table)
     {
         $sexCode = isset($read['rangeSex']) ? (string) $read['rangeSex'] : '';
         $sex = self::sexOf($sexCode, $rule);
@@ -958,17 +1092,25 @@ final class GrowthReference
         }
         $a = self::axisValue($entry, $in);
         if ($a['state'] !== 'ok') return ['state' => 'inert', 'why' => $a['why']];
-        return ['state' => 'ok', 'sex' => $sex, 'x' => $a['x'], 'yAdd' => self::positionAdd($entry, $position, $a['x'], 'measurement')];
+        return ['state' => 'ok', 'sex' => $sex, 'x' => $a['x'],
+                'yAdd' => self::positionAdd($entry, $position, self::readAt($entry, $table['scale'], $a['x']), 'measurement')];
     }
 
     /**
      * 'plausible-low', 'plausible-high' or null: measurement $y, in the
      * reference's unit, against a rule's "plausible" limits (texts, or null
-     * for no limit on that side). Doubles compared as doubles: "30" is the
-     * same double in both runtimes, and $y is too. Twin: QRID_growthPlausible.
+     * for no limit on that side). $exact is the measurement as decimal text
+     * (measure()'s 'exact'), compared with the limits digit for digit, so a
+     * value on a limit is inside it whatever its binary form (RNG-1). Without
+     * it (null) the doubles are compared. Twin: QRID_growthPlausible.
      */
-    public static function plausible($y, $lo, $hi)
+    public static function plausible($y, $lo, $hi, $exact = null)
     {
+        if (is_string($exact) && preg_match(Logic::NUM_RE, $exact)) {
+            if ($lo !== null && Logic::numCompare($exact, (string) $lo) < 0) return 'plausible-low';
+            if ($hi !== null && Logic::numCompare($exact, (string) $hi) > 0) return 'plausible-high';
+            return null;
+        }
         if ($lo !== null && $y < (float) $lo) return 'plausible-low';
         if ($hi !== null && $y > (float) $hi) return 'plausible-high';
         return null;
@@ -1255,7 +1397,19 @@ final class GrowthReference
      * (9.17). Both roundings are done here on the value's first 40 decimal
      * digits (sprintf("%.39e"); toExponential(39) gives the same digits), so
      * neither depends on how a library breaks a tie, and the two runtimes
-     * write the same text for the same double. Twin: QRID_growthRoundedUnits.
+     * write the same text for the same double.
+     *
+     * The same double is not promised (RNG-10). pow(), exp() and log() are
+     * not correctly rounded, and PHP's C library and a browser's differ by
+     * one unit in the last place for some arguments (the 2026-11-13 review
+     * counted 77 of 200,000 for pow, 18,591 for exp and 20,000 for log). A
+     * value that such a step moves across a rounding tie would be written one
+     * unit of the last decimal apart. The 15-digit rounding absorbs a
+     * difference in the sixteenth digit except at a tie, 30,000 fuzzed
+     * outputs agreed in that review, and tests/growth_php.php and
+     * tests/growth_js.cjs hold 5,000 z-scores and 3,000 outputs to one
+     * pinned hash each; agreement beyond those is expected, not proven.
+     * Twin: QRID_growthRoundedUnits.
      */
     public static function roundedUnits($v, $d)
     {
@@ -1303,8 +1457,11 @@ final class GrowthReference
 
     /**
      * The standard normal distribution function, lower tail. W. J. Cody's
-     * rational Chebyshev approximation (ACM TOMS Algorithm 715) as R computes
-     * pnorm(), step for step, with the same constants and cut-offs. Results
+     * rational Chebyshev approximation (Cody 1969, Mathematics of Computation
+     * 23, 631-637; the ANORM routine of ACM TOMS Algorithm 715, 1993) as R
+     * computes pnorm(), step for step, with the same constants and cut-offs.
+     * R is under the GPL; data/NOTICE.md says what that leaves the owner to
+     * settle for this function and normalQuantile() (RNG-4). Results
      * agree with R 4.6.1 to 1e-15 relative, a few units in the last place,
      * because exp() and the order of rounding differ between builds; below
      * x = -37.5193, where R 4.6 returns subnormal numbers, this returns 0.
@@ -1377,8 +1534,9 @@ final class GrowthReference
 
     /**
      * The quantile of the standard normal distribution: the z-score below
-     * which a share $p of children lie. Wichura's AS241 (PPND16) as R computes
-     * qnorm(), with the same constants and branches, agreeing with R 4.6.1 to
+     * which a share $p of children lie. Wichura's AS241 (PPND16: Wichura 1988,
+     * Applied Statistics 37, 477-484) as R computes qnorm(), with the same
+     * constants and branches (see data/NOTICE.md), agreeing with R 4.6.1 to
      * 1e-15 relative (R 4.3 and later add an asymptotic branch for tails far
      * beyond the 0.1 to 99.9 percentiles a rule names); -INF at 0, INF at 1,
      * NAN outside 0 to 1. Twin: QRID_growthNormalQuantile;

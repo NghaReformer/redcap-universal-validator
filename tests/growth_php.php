@@ -88,10 +88,117 @@ foreach ($fx['measure'] as $c) {
         . ') (got ' . json_encode($got) . ')', sameState($got, $c['want']));
 }
 foreach ($fx['plausible'] as $c) {
-    $got = G::plausible((float) $c['y'], $c['lo'], $c['hi']);
-    check('plausible(' . json_encode($c['y']) . ', ' . json_encode($c['lo']) . ', ' . json_encode($c['hi']) . ') (got ' . json_encode($got) . ')',
-        $got === $c['want']);
+    $got = G::plausible((float) $c['y'], $c['lo'], $c['hi'], isset($c['exact']) ? $c['exact'] : null);
+    check('plausible(' . json_encode($c['y']) . ', ' . json_encode($c['lo']) . ', ' . json_encode($c['hi']) . ', ' . json_encode($c['exact'] ?? null)
+        . ') (got ' . json_encode($got) . ')', $got === $c['want']);
 }
+// RNG-6: a bundled table is trusted by its SHA-256 at run time and checked row
+// by row here (and by tools/build_growth_rows.php --check): both readings must
+// give the same rows, as the same floats.
+$differs = [];
+G::reset();
+foreach (G::catalog(null)['references'] as $id => $e) {
+    try {
+        if (G::table($e) !== G::verified($e)) $differs[] = $id;
+    } catch (\RuntimeException $ex) {
+        $differs[] = $id . ': ' . $ex->getMessage();
+    }
+}
+check('bundled tables: every row passes the full check, and the trusted reading gives the same floats (differs: '
+    . json_encode($differs) . ')', $differs === [] && count(G::catalog(null)['references']) >= 12);
+// RNG-4: the WHO tables are not under the module's MIT licence, and every copy
+// says so. Each rows script (js/growth) names its table's source and licence in
+// its first lines, data/NOTICE.md lists each source, and the licence text is there.
+$bundledIndex = json_decode((string) file_get_contents(G::bundledDir() . '/index.json'), true);
+$noticeText = (string) @file_get_contents(dirname(G::bundledDir()) . '/NOTICE.md');
+$unmarked = [];
+foreach (G::catalog(null)['references'] as $id => $e) {
+    $src = isset($bundledIndex['sources'][$e['source'] ?? '']) ? $bundledIndex['sources'][$e['source']] : [];
+    $rel = G::rowsFile($e);
+    $head = $rel === null ? '' : (string) file_get_contents(dirname(__DIR__) . '/' . $rel, false, null, 0, 1200);
+    $head = (string) substr($head, 0, (int) strpos($head, '*/'));
+    $ok = isset($src['license'], $src['from'], $src['licenseFile'], $src['publisher'])
+        && is_file(G::bundledDir() . '/' . $src['licenseFile'])
+        && strpos($head, "not under the module's MIT licence") !== false
+        && strpos($head, $src['license'] . ': data/references/' . $src['licenseFile']) !== false
+        && strpos($head, $src['from']) !== false && strpos($head, $src['publisher']) !== false
+        && strpos($noticeText, $src['from']) !== false && strpos($noticeText, (string) ($src['commit'] ?? '')) !== false
+        && strpos($noticeText, '`' . $id . '`') !== false;
+    if (!$ok) $unmarked[] = $id;
+}
+check('licence: every bundled table\'s rows script and data/NOTICE.md name its source and licence (missing: ' . json_encode($unmarked) . ')',
+    $unmarked === [] && strpos($noticeText, 'data/references/who/LICENSE') !== false);
+$whoReadme = (string) file_get_contents(G::bundledDir() . '/who/README.md');
+// RNG-5: the WHO notes said the module does not correct for lying or standing, which "measured" does
+check('who/README.md: says the lying or standing correction is applied with "measured"',
+    strpos($whoReadme, 'The module does not apply two adjustments') === false && strpos($whoReadme, '`"measured"`') !== false
+    && isset(G::entry('who-lhfa')['position'], G::entry('who-wfl')['position'], G::entry('who-wfh')['position']));
+// RNG-12: the largest double below a "below" bound, found without pack's
+// 64-bit "q" (absent on a 32-bit PHP). Nothing lies between it and the bound.
+$jb = new \ReflectionMethod(G::class, 'justBelow');
+$jb->setAccessible(true);
+$wrong = [];
+foreach ([1.0, 2.0, 10.0, 0.1, 63.0, 256.0, 1826.25, 1000000.0, 4.0E-320, -1.0, -2.0, -0.1, -1826.25, -1000000.0] as $f) {
+    $got = $jb->invoke(null, $f);
+    $mid = $got + ($f - $got) / 2;
+    $ok = is_float($got) && $got < $f && ($mid === $got || $mid === $f);
+    if ($ok && PHP_INT_SIZE >= 8) {
+        $bits = unpack('q', pack('d', $f))[1] + ($f > 0 ? -1 : 1);
+        $ok = unpack('d', pack('q', $bits))[1] === $got;
+    }
+    if (!$ok) $wrong[] = $f;
+}
+check('justBelow: the next double down, byte by byte (wrong: ' . json_encode($wrong) . ')',
+    $wrong === [] && $jb->invoke(null, 0.0) === -4.9406564584124654E-324);
+// RNG-3: the folder an administrator names is a folder on this server. A name
+// PHP would open as a stream is refused before anything is opened: "ftp://"
+// made every catalog read wait on a connection, "phar://" opens an archive.
+$examples = G::bundledDir() . DIRECTORY_SEPARATOR . 'examples';
+foreach (['ftp://127.0.0.1:1/refs' => 'ftp', 'phar://' . str_replace('\\', '/', $examples) . '/x.phar/refs' => 'phar',
+          'file://' . str_replace('\\', '/', $examples) => 'file', 'glob://' . str_replace('\\', '/', $examples) => 'glob',
+          'HTTP://example.org/refs' => 'http', 'data:text/plain,x' => 'data', 'compress.zlib://refs' => 'compress.zlib',
+          'php://filter/resource=refs' => 'php'] as $named => $scheme) {
+    G::reset();
+    $t0 = microtime(true);
+    $cat = G::catalog($named);
+    $ms = (microtime(true) - $t0) * 1000;
+    check('reference folder: "' . $scheme . ':" is refused unopened (got ' . json_encode($cat['broken']) . ', ' . round($ms) . ' ms)',
+        $cat['references'] === [] && $cat['unread'] === null && $ms < 500
+        && $cat['broken'] === 'the reference folder in the module settings: the setting must name a folder on this server, not a URL or a stream ("'
+            . $scheme . ':").');
+}
+G::reset();
+$cat = G::catalog($examples);
+check('reference folder: a folder on disk is read as before (got ' . json_encode($cat['broken']) . ')',
+    $cat['broken'] === null && count($cat['references']) > count(G::catalog(null)['references']));
+G::reset();
+$cat = G::catalog(__FILE__);
+check('reference folder: a file is no folder (got ' . json_encode($cat['broken']) . ')',
+    $cat['broken'] === 'the reference folder in the module settings: the folder has no index.json.' && $cat['unread'] === null);
+G::reset();
+$cat = G::catalog($examples . DIRECTORY_SEPARATOR . 'not_there');
+check('reference folder: one that is not there has no index.json, as before',
+    $cat['broken'] === 'the reference folder in the module settings: the folder has no index.json.' && $cat['unread'] === null);
+G::reset();
+// RNG-1: a measurement typed in another unit ("measureScale") and lying exactly
+// on a "plausible" limit is inside it. As doubles, 111 of these 600 weights in
+// grams landed above their own value in kg (5600 * 0.001 > 5.6).
+$offLimit = [];
+for ($g = 100; $g <= 60000; $g += 100) {
+    $kg = rtrim(rtrim(sprintf('%d.%03d', intdiv($g, 1000), $g % 1000), '0'), '.');
+    $m = G::measure((string) $g, false, '0.001');
+    if ($m['state'] !== 'ok' || $m['exact'] !== $kg || $m['y'] !== (float) $kg
+        || G::plausible($m['y'], $kg, $kg, $m['exact']) !== null) $offLimit[] = $g;
+}
+check('measureScale: every whole hundred grams from 100 g to 60 kg is on its own limit in kg, not beyond it (off: '
+    . json_encode(array_slice($offLimit, 0, 5)) . ')', $offLimit === []);
+$m = G::measure('5601', false, '0.001');
+check('measureScale: one gram past the limit is beyond it', G::plausible($m['y'], '0.5', '5.6', $m['exact']) === 'plausible-high');
+$m = G::measure('499', false, '0.001');
+check('measureScale: one gram short of the low limit is below it', G::plausible($m['y'], '0.5', '5.6', $m['exact']) === 'plausible-low');
+$m = G::measure(str_repeat('9', 4090), false, '1.0000001');
+check('measureScale: a product past what the exact multiplication takes falls back to doubles',
+    $m['state'] === 'ok' && $m['exact'] === null && $m['y'] === INF && G::plausible($m['y'], null, '30', $m['exact']) === 'plausible-high');
 foreach ($fx['zScore'] as $c) {
     $got = G::zScore($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x'], $c['y']);
     check('zScore: ' . $c['name'] . ' (got ' . json_encode($got) . ')', sameState($got, $c['want']));
@@ -347,7 +454,7 @@ $lt = G::table($lhfa);
 $rule = ['rangeMale' => '1', 'rangeFemale' => '2', 'rangeMeasured' => '[measured]', 'rangeLying' => 'L', 'rangeStanding' => 's',
          'rangeSex' => '[sex]', 'rangeAgeDays' => '[age_days]'];
 $zOf = function ($read, $y) use ($lhfa, $lt, $rule) {
-    $in = G::inputsFor($rule, $read, $lhfa);
+    $in = G::inputsFor($rule, $read, $lhfa, $lt);
     return $in['state'] === 'ok' ? G::zScore($lhfa, $lt, $in['sex'], $in['x'], $y + $in['yAdd'])['z'] : $in['why'];
 };
 check('who-lhfa: a girl of 600 days measured standing scores 73.0 cm as 73.7 (z -2.91)',
@@ -361,12 +468,46 @@ check('who-lhfa: lying under 731 days and standing from 731 days are not correct
     $zOf(['rangeSex' => '1', 'rangeAgeDays' => '700', 'rangeMeasured' => 'L'], 75.4) === G::zScore($lhfa, $lt, 'male', 700.0, 75.4)['z']
     && $zOf(['rangeSex' => '1', 'rangeAgeDays' => '731', 'rangeMeasured' => 'S'], 84.0) === G::zScore($lhfa, $lt, 'male', 731.0, 84.0)['z']);
 check('who-lhfa: 730 days standing is still corrected, 731 lying already is',
-    G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '730', 'rangeMeasured' => 's'], $lhfa)['yAdd'] === 0.7
-    && G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '731', 'rangeMeasured' => 'l'], $lhfa)['yAdd'] === -0.7);
+    G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '730', 'rangeMeasured' => 's'], $lhfa, $lt)['yAdd'] === 0.7
+    && G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '731', 'rangeMeasured' => 'l'], $lhfa, $lt)['yAdd'] === -0.7);
 check('who-lhfa: a code that is neither corrects nothing, as WHO Anthro',
-    G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '600', 'rangeMeasured' => '9'], $lhfa)['yAdd'] === 0.0);
+    G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '600', 'rangeMeasured' => '9'], $lhfa, $lt)['yAdd'] === 0.0);
 check('who-lhfa: a rule without "measured" corrects nothing',
-    G::inputsFor(array_diff_key($rule, ['rangeMeasured' => 1]), ['rangeSex' => '1', 'rangeAgeDays' => '600', 'rangeMeasured' => 's'], $lhfa)['yAdd'] === 0.0);
+    G::inputsFor(array_diff_key($rule, ['rangeMeasured' => 1]), ['rangeSex' => '1', 'rangeAgeDays' => '600', 'rangeMeasured' => 's'], $lhfa, $lt)['yAdd'] === 0.0);
+// RNG-2: the correction changes on the day the rows do. 24 months is 730.5
+// days, which reads the row of day 731 (lookup "round"): the child is scored
+// as one of 731 days, so standing is not corrected and lying is. Keyed to the
+// unrounded age, standing got +0.7 cm against the row of day 731, a z-score
+// about 0.23 too high.
+$mrule = ['rangeMale' => '1', 'rangeFemale' => '2', 'rangeMeasured' => '[measured]', 'rangeLying' => 'L', 'rangeStanding' => 's',
+          'rangeSex' => '[sex]', 'rangeAgeMonths' => '[age_months]'];
+foreach ([
+    // age input, measured, the row read, the correction of that row's age
+    [['rangeAgeDays' => '730'],     's', 730.0, 0.7],
+    [['rangeAgeDays' => '730'],     'L', 730.0, 0.0],
+    [['rangeAgeDays' => '730.4'],   's', 730.0, 0.7],
+    [['rangeAgeDays' => '730.5'],   's', 731.0, 0.0],
+    [['rangeAgeDays' => '730.5'],   'L', 731.0, -0.7],
+    [['rangeAgeDays' => '730.6'],   'L', 731.0, -0.7],
+    [['rangeAgeDays' => '731'],     's', 731.0, 0.0],
+    [['rangeAgeDays' => '731'],     'L', 731.0, -0.7],
+    [['rangeAgeMonths' => '24'],    's', 731.0, 0.0],
+    [['rangeAgeMonths' => '24'],    'L', 731.0, -0.7],
+    [['rangeAgeMonths' => '23.98'], 's', 730.0, 0.7],
+    [['rangeAgeMonths' => '23.98'], 'L', 730.0, 0.0],
+] as $c) {
+    $r = isset($c[0]['rangeAgeMonths']) ? $mrule : $rule;
+    $in = G::inputsFor($r, ['rangeSex' => '1', 'rangeMeasured' => $c[1]] + $c[0], $lhfa, $lt);
+    $z = $in['state'] === 'ok' ? G::zScore($lhfa, $lt, 'male', $in['x'], 85.0 + $in['yAdd'])['z'] : null;
+    check('who-lhfa at the changeover: ' . json_encode($c[0]) . ' measured ' . $c[1] . ' reads day ' . $c[2] . ' and adds ' . $c[3]
+        . ' (got ' . json_encode([$in['yAdd'] ?? null, $z]) . ')',
+        $in['state'] === 'ok' && G::readAt($lhfa, $lt['scale'], $in['x']) === $c[2] && $in['yAdd'] === $c[3]
+        && $z === G::zScore($lhfa, $lt, 'male', $c[2], 85.0 + $c[3])['z']);
+}
+check('readAt: the row a lookup reads, the value itself between rows of a linear one',
+    G::readAt(['lookup' => 'round'], 1, 100.4) === 100.0 && G::readAt(['lookup' => 'round'], 1, 100.5) === 101.0
+    && G::readAt(['lookup' => 'floor'], 1, 100.9) === 100.0 && G::readAt(['lookup' => 'floor'], 2, 3.7) === 3.5
+    && G::readAt(['lookup' => 'linear'], 1, 100.9) === 100.9);
 check('positionOf: letter case ignored unless caseSensitive',
     G::positionOf('l', $rule) === 'lying' && G::positionOf('S', $rule) === 'standing'
     && G::positionOf('S', $rule + ['caseSensitive' => true]) === null && G::positionOf('s', $rule + ['caseSensitive' => true]) === 'standing');
@@ -378,7 +519,7 @@ $wrule = ['rangeMale' => '1', 'rangeFemale' => '2', 'rangeMeasured' => '[m]', 'r
 $wfl = G::entry('who-wfl');
 $wfh = G::entry('who-wfh');
 $xOf = function ($e, $how, $by) use ($wrule) {
-    $in = G::inputsFor($wrule, ['rangeSex' => '1', 'rangeBy' => $by, 'rangeMeasured' => $how], $e);
+    $in = G::inputsFor($wrule, ['rangeSex' => '1', 'rangeBy' => $by, 'rangeMeasured' => $how], $e, G::table($e));
     return $in['state'] === 'ok' ? [$in['x'], $in['yAdd']] : $in['why'];
 };
 check('who-wfl: standing adds 0.7 cm to the length, lying adds nothing',
@@ -603,14 +744,34 @@ $capCases = [
     'pageTables as text' => [['pageTables' => '4'], 'pageTables', 4],
     'pageCharts past 50' => [['pageCharts' => 51], 'pageCharts', 4],
     'pageCharts of null' => [['pageCharts' => null], 'pageCharts', 4],
+    'pageRows past a million' => [['pageRows' => 1000001], 'pageRows', 16000, 1000000],
+    'pageRows as a fraction' => [['pageRows' => 1.5], 'pageRows', 16000, 1000000],
 ];
 foreach ($capCases as $label => $case) {
     writeIndex($dir, ['mine' => $base], $case[0]);
     $c = G::catalog($dir);
     check('extra index: ' . $label . ' keeps the default and every reference (got ' . json_encode($c['problems']) . ')',
-        $c['problems'] === ['the reference folder in the module settings: "' . $case[1] . '" must be a whole number from 0 to 50, so the default ('
+        $c['problems'] === ['the reference folder in the module settings: "' . $case[1] . '" must be a whole number from 0 to '
+            . (isset($case[3]) ? $case[3] : 50) . ', so the default ('
             . $case[2] . ') applies.'] && $c[$case[1]] === $case[2] && $c['broken'] === null && count($c['references']) === 13);
 }
+// RNG-7: "pageRows" caps the rows inside a page's JSON, whatever the tables count
+writeIndex($dir, ['mine' => $base], ['pageRows' => 250]);
+check('extra index: pageRows is taken, and the bundled index leaves the default',
+    G::catalog($dir)['pageRows'] === 250 && G::catalog(null)['pageRows'] === G::PAGE_ROWS);
+$wfa = G::entry('who-wfa');
+$wfaT = G::table($wfa);
+$both = ['male' => true, 'female' => true];
+check('pageRows: a bundled table read whole travels as its own file and counts no row; a few ages count the rows sent (got '
+    . json_encode([G::pageRows(['sexes' => $both, 'xs' => null], $wfa, $wfaT), G::pageRows(['sexes' => $both, 'xs' => [365.0]], $wfa, $wfaT)]) . ')',
+    G::pageRows(['sexes' => $both, 'xs' => null], $wfa, $wfaT) === (G::rowsFile($wfa) === null ? 3654 : 0)
+    && G::pageRows(['sexes' => $both, 'xs' => [365.0]], $wfa, $wfaT) === 6
+    && G::pageRows(['sexes' => ['male' => true, 'female' => false], 'xs' => [365.0]], $wfa, $wfaT) === 3);
+$mineE = G::entry('mine', $dir);
+$mineT = G::table($mineE);
+check('pageRows: a table of the administrator\'s folder counts every row it sends inline',
+    G::pageRows(['sexes' => $both, 'xs' => null], $mineE, $mineT) === count($mineT['male']) + count($mineT['female'])
+    && G::pageRows(['sexes' => ['male' => true, 'female' => false], 'xs' => null], $mineE, $mineT) === count($mineT['male']));
 // "chartUnit": how a growth chart counts an age axis
 writeIndex($dir, ['mine' => $base + ['chartUnit' => 'weeks'], 'auto' => $base + ['chartUnit' => 'auto']]);
 $c = G::catalog($dir);
