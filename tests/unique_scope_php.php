@@ -19,6 +19,14 @@
  * PRF-1: the unique rules of one save share one read of the project per event
  * filter, and give the verdicts separate reads gave.
  *
+ * Review of 2026-11-13 (sections 6 to 8, and the large-field checks): a
+ * value another Data Access Group holds is a duplicate, with its record
+ * named to nobody (UNQ-2); no request reads a field of more than
+ * LIVE_WHOLE_READ_ROWS values whole, the save audit included (UNQ-3); a
+ * survey asks its read budget before any read (UNQ-5); a sessionless request
+ * is counted before any rule is read, one address cannot spend the
+ * project's budget, and a limit reached is logged (UNQ-4, UNQ-8).
+ *
  * The browser twin is tests/unique_dom_js.cjs (asks on change and blur, and
  * shows "could not check").
  *
@@ -58,6 +66,12 @@ namespace ExternalModules {
             // The data table (Scan\FieldValues), unless this run leaves it out.
             if (strpos($sql, 'SELECT data_table FROM redcap_projects') !== false) {
                 return empty($GLOBALS['__NO_TABLE']) ? [['redcap_data']] : [];
+            }
+            // The rows of records REDCap did not hand back (FieldValues::rowsOf).
+            if (strpos($sql, 'SELECT record, event_id, field_name, `value`, instance FROM redcap_data') !== false) {
+                if (!empty($GLOBALS['__NO_TABLE'])) return false;
+                $GLOBALS['__RAW_READS'][] = $sql;
+                return \REDCap::rawRows($sql, $params);
             }
             // The named records' rows (FieldValues::recordsAmong, after the
             // lookup index named them in the --index run).
@@ -145,6 +159,47 @@ namespace {
             }
             return $out;
         }
+        /** The unique group name a record node carries, or ''. */
+        public static function groupOf(array $node) {
+            foreach ($node as $ek => $row) {
+                if ($ek !== 'repeat_instances' && isset($row['redcap_data_access_group'])) return (string) $row['redcap_data_access_group'];
+            }
+            return '';
+        }
+        /**
+         * The data table's rows of the named records and fields, as
+         * FieldValues::rowsOf reads them: [record, event_id, field_name,
+         * value, instance]. A record's group is its "__GROUPID__" row.
+         */
+        public static function rawRows($sql, array $params) {
+            preg_match('/record IN \(([?, ]*)\) AND field_name IN \(([?, ]*)\)/', $sql, $m);
+            $nr = substr_count($m[1], '?');
+            $nf = substr_count($m[2], '?');
+            $want = array_flip(array_map('strval', array_slice($params, 1, $nr)));
+            $fields = array_flip(array_slice($params, 1 + $nr, $nf));
+            $event = strpos($sql, 'AND event_id = ?') !== false ? (int) $params[count($params) - 1] : null;
+            $out = [];
+            $put = function ($rec, $evt, $row, $inst) use (&$out, $fields, $event) {
+                if ($event !== null && (int) $evt !== $event) return;
+                foreach ((array) $row as $f => $v) {
+                    if (isset($fields[$f]) && !is_array($v) && (string) $v !== '') $out[] = [(string) $rec, (string) $evt, $f, (string) $v, $inst];
+                }
+            };
+            foreach (self::$data as $rec => $node) {
+                if (!isset($want[(string) $rec])) continue;
+                $gid = array_search(self::groupOf($node), self::$groups, true);
+                if ($gid !== false && isset($fields['__GROUPID__']) && $event === null) $out[] = [(string) $rec, '351', '__GROUPID__', (string) $gid, null];
+                foreach ($node as $ek => $row) {
+                    if ($ek !== 'repeat_instances') { $put($rec, $ek, $row, null); continue; }
+                    foreach ((array) $row as $evt => $byInstr) {
+                        foreach ((array) $byInstr as $byInst) {
+                            foreach ((array) $byInst as $inst => $irow) $put($rec, $evt, $irow, (int) $inst === 1 ? null : (int) $inst);
+                        }
+                    }
+                }
+            }
+            return $out;
+        }
         public static function getData($p) {
             $filtered = isset($p['filterLogic']) && $p['filterLogic'] !== '';
             if ($filtered) self::$calls['filtered']++;
@@ -189,12 +244,17 @@ namespace {
                     }
                     if (!$ok) continue;
                 }
+                // __CONFINE: REDCap hands a user in a Data Access Group that
+                // group's records only (UNQ-2 of 2026-11-13).
+                if (!empty($GLOBALS['__CONFINE']) && self::groupOf($node) !== $GLOBALS['__CONFINE']) continue;
                 $out[$rec] = $node;
             }
             return $out;
         }
+        public static $dictionaryReads = 0;
         public static function getDataDictionary($pid, $f = 'array') {
             if (!$pid) throw new \RuntimeException('needs pid');
+            self::$dictionaryReads++;
             return self::$dictionary;
         }
         public static function getEventNames($unique = false, $assoc = false, $id = null) {
@@ -320,12 +380,27 @@ namespace {
             $m = mk($DAG);
             $r = ask($m, 'spec', ['spec' => 'Y1'], '3', 'reg', 351, 'coord', null);
             check('a field at the limit is read as before', ($r['used'] ?? null) === true && count($GLOBALS['__TABLE_READS']) === 1);
-            // The save audit is not a person waiting: it reads in full.
+            // The save audit runs inside the save request: it does not read
+            // such a field either, and logs it as not checked (UNQ-3 of
+            // 2026-11-13: 33 to 39 s at 400,000 values, on every save).
             $GLOBALS['__FIELD_ROWS'] = UniversalValidator::LIVE_WHOLE_READ_ROWS + 1;
             $m = mk($DAG);
+            $GLOBALS['__COUNT_READS'] = [];
             $m->redcap_save_record(149, '3', 'reg', 351, null, null, null, 1);
-            check('large field: the save audit still reads the field and logs the duplicate',
-                $GLOBALS['__COUNT_READS'] === [] && count($GLOBALS['__TABLE_READS']) >= 1 && count(logged($m, 'invalid-id-saved')) === 1);
+            $unc = json_encode(logged($m, 'uvalidate-unconfigurable'));
+            check('large field: the save audit reads neither the field nor the project',
+                count($GLOBALS['__COUNT_READS']) === 1 && $GLOBALS['__TABLE_READS'] === [] && \REDCap::$calls['full'] === 0
+                && \REDCap::$calls['filtered'] === 0);
+            check('large field: ...and logs the field as not checked, never as passed or as a duplicate (got ' . $unc . ')',
+                logged($m, 'invalid-id-saved') === [] && strpos($unc, 'field not checked') !== false
+                && strpos($unc, 'its value index could not answer') !== false);
+            // With the index turned off there is no other way to answer: the
+            // bound holds all the same.
+            $m = mk($DAG);
+            $m->systemSettings['lookup-index-system-off'] = '1';
+            $r = ask($m, 'spec', ['spec' => 'Y1'], '3', 'reg', 351, 'coord', null);
+            check('large field, index turned off: "could not check", the field is not read (got ' . json_encode($r) . ')',
+                ($r['unknown'] ?? null) === true && !array_key_exists('used', $r) && $GLOBALS['__TABLE_READS'] === []);
         }
         unset($GLOBALS['__FIELD_ROWS']);
     }
@@ -626,6 +701,200 @@ namespace {
     check('table: the save audit finds the duplicate (got ' . json_encode($bad) . ')', in_array('u_plain@4', $bad, true));
     check('table: ...with no export of the project (got ' . json_encode(\REDCap::$calls) . ')', !$TABLE || \REDCap::$calls['full'] === 0);
     \REDCap::$events = [351 => 'enrolment_arm_1'];
+
+    // ---- 6) a value another Data Access Group holds (UNQ-2 of 2026-11-13) --------------
+    // REDCap hands a user in a group that group's records only (__CONFINE).
+    // Uniqueness is a fact of the project: the value is a duplicate, and the
+    // record that holds it is named to nobody.
+    \REDCap::$groups = [11 => 'site_a', 12 => 'site_b'];
+    \REDCap::$rights = ['coord' => ['forms' => ['reg' => '1', 'lab' => '1']],
+                        'alice' => ['forms' => ['reg' => '1', 'lab' => '1'], 'group_id' => 11]];
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'spec' => uvf('reg', '@UVUNIQUE={"blockSave":"hard"}')];
+    $X = [
+        '1' => [351 => ['record_id' => '1', 'spec' => 'A1', 'redcap_data_access_group' => 'site_a']],
+        '2' => [351 => ['record_id' => '2', 'spec' => 'B7', 'redcap_data_access_group' => 'site_b']],
+        '3' => [351 => ['record_id' => '3', 'spec' => 'C3', 'redcap_data_access_group' => 'site_a']],
+    ];
+    $GLOBALS['__CONFINE'] = 'site_a';
+    $GLOBALS['__RAW_READS'] = [];
+    $r = ask(mk($X, 'alice'), 'spec', ['spec' => 'B7'], '1', 'reg', 351, 'alice', 11);
+    if ($TABLE) {
+        check('other group: a value site_b holds is "already used" for a user of site_a (got ' . json_encode($r) . ')',
+            ($r['used'] ?? null) === true);
+        check('other group: ...and the record is not named', array_key_exists('record', $r) && $r['record'] === null && !isset($r['field']));
+        check('other group: ...read from the rows of that one record', count($GLOBALS['__RAW_READS']) === 2);
+    } else {
+        check('other group, no data table: a miss on a confined export is "could not check" (got ' . json_encode($r) . ')',
+            ($r['unknown'] ?? null) === true && !array_key_exists('used', $r));
+    }
+    $r = ask(mk($X, 'alice'), 'spec', ['spec' => 'c3'], '1', 'reg', 351, 'alice', 11);
+    check('other group: a value of the user\'s own group is used, and its record named',
+        ($r['used'] ?? null) === true && ($r['record'] ?? null) === '3');
+    $r = ask(mk($X, 'alice'), 'spec', ['spec' => 'Z9'], '1', 'reg', 351, 'alice', 11);
+    check('other group: a value nobody holds is free (got ' . json_encode($r) . ')',
+        $TABLE ? ($r['used'] ?? null) === false : ($r['unknown'] ?? null) === true);
+    $X2 = $X;
+    $X2['1'][351]['spec'] = 'B7';
+    $m = mk($X2, 'alice');
+    $m->redcap_save_record(149, '1', 'reg', 351, 11, null, null, 1);
+    if ($TABLE) {
+        $rows = logged($m, 'invalid-id-saved');
+        check('other group: the save audit logs the duplicate (got ' . count($rows) . ')', count($rows) === 1);
+        check('other group: ...about the saved record only', strpos(json_encode($m->logCalls), '"2"') === false);
+    } else {
+        check('other group, no data table: the audit says it could not compare, and logs no pass',
+            logged($m, 'invalid-id-saved') === [] && strpos(json_encode(logged($m, 'uvalidate-unconfigurable')), 'could not be read') !== false);
+    }
+    // A user in no group is handed every record, and told which one.
+    $GLOBALS['__CONFINE'] = null;
+    $r = ask(mk($X, 'coord'), 'spec', ['spec' => 'B7'], '1', 'reg', 351, 'coord', null);
+    check('no group: the record is named as before', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '2');
+    $GLOBALS['__CONFINE'] = 'site_a';
+
+    // "scope":"dag" looks in the record's own group only.
+    \REDCap::$dictionary['spec'] = uvf('reg', '@UVUNIQUE={"scope":"dag"}');
+    $r = ask(mk($X, 'alice'), 'spec', ['spec' => 'B7'], '1', 'reg', 351, 'alice', 11);
+    check('other group, "scope":"dag": the value of site_b is no duplicate in site_a (got ' . json_encode($r) . ')', ($r['used'] ?? null) === false);
+
+    // An "also" field of a record in another group: used, the field not named.
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'scan_id' => uvf('reg'), 'spec' => uvf('reg', '@UVUNIQUE={"also":["scan_id"]}')];
+    $XA = $X;
+    $XA['2'][351]['scan_id'] = 'K-5';
+    $r = ask(mk($XA, 'alice'), 'spec', ['spec' => 'k-5'], '1', 'reg', 351, 'alice', 11);
+    check('other group, "also": used, with neither record nor field (got ' . json_encode($r) . ')',
+        $TABLE ? (($r['used'] ?? null) === true && $r['record'] === null && !isset($r['field'])) : ($r['unknown'] ?? null) === true);
+
+    // A composite key: the other group's record is compared entry by entry.
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'site' => uvf('reg'), 'spec' => uvf('reg', '@UVUNIQUE={"with":["site"]}')];
+    \REDCap::$repeating = [];
+    $XW = [
+        '1' => [351 => ['record_id' => '1', 'spec' => 'A1', 'site' => '1', 'redcap_data_access_group' => 'site_a']],
+        '2' => [351 => ['record_id' => '2', 'spec' => 'B7', 'site' => '2', 'redcap_data_access_group' => 'site_b']],
+    ];
+    if ($TABLE) {
+        $r = ask(mk($XW, 'alice'), 'spec', ['spec' => 'B7', 'site' => '2'], '1', 'reg', 351, 'alice', 11);
+        check('other group, "with": the same value and site is used (got ' . json_encode($r) . ')', ($r['used'] ?? null) === true && $r['record'] === null);
+        $r = ask(mk($XW, 'alice'), 'spec', ['spec' => 'B7', 'site' => '1'], '1', 'reg', 351, 'alice', 11);
+        check('other group, "with": the same value at another site is free (got ' . json_encode($r) . ')', ($r['used'] ?? null) === false);
+        // the tagged field on a repeating instrument: each instance over the event's row
+        \REDCap::$dictionary = ['record_id' => uvf('reg'), 'site' => uvf('reg'), 'spec' => uvf('lab', '@UVUNIQUE={"with":["site"]}')];
+        \REDCap::$repeating = [351 => ['lab' => '']];
+        $XR = [
+            '1' => [351 => ['record_id' => '1', 'site' => '1', 'redcap_data_access_group' => 'site_a']],
+            '2' => [351 => ['record_id' => '2', 'site' => '2', 'redcap_data_access_group' => 'site_b'],
+                    'repeat_instances' => [351 => ['lab' => [1 => ['spec' => 'R1'], 2 => ['spec' => 'R2']]]]],
+        ];
+        $r = ask(mk($XR, 'alice'), 'spec', ['spec' => 'R2', 'site' => '2'], '1', 'lab', 351, 'alice', 11);
+        check('other group, "with", repeating instrument: instance 2 at the same site is used (got ' . json_encode($r) . ')', ($r['used'] ?? null) === true);
+        $r = ask(mk($XR, 'alice'), 'spec', ['spec' => 'R2', 'site' => '1'], '1', 'lab', 351, 'alice', 11);
+        check('other group, "with", repeating instrument: at another site it is free', ($r['used'] ?? null) === false);
+        // the layout cannot be read: not settled, never "free"
+        \REDCap::$repeating = null;
+        $r = ask(mk($XR, 'alice'), 'spec', ['spec' => 'R2', 'site' => '2'], '1', 'lab', 351, 'alice', 11);
+        check('other group, "with", layout unread: "could not check" (got ' . json_encode($r) . ')', ($r['unknown'] ?? null) === true);
+    }
+    \REDCap::$repeating = null;
+    $GLOBALS['__CONFINE'] = null;
+    \REDCap::$groups = [];
+
+    // ---- 7) a survey lookup asks its read budget before any read (UNQ-5 of 2026-11-13) -
+    // With the lookup index unable to answer, 600 requests a minute each made
+    // a filtered export before the budget of 60 was asked. Now the budget is
+    // asked first and the field is read from the data table.
+    \REDCap::$rights = [];
+    \REDCap::$dictionary = ['record_id' => uvf('reg'), 'tok' => uvf('reg', '@UVUNIQUE={"surveys":true,"blockSave":"hard"}')];
+    $SV = [];
+    for ($i = 1; $i <= 5; $i++) $SV[(string) $i] = [351 => ['record_id' => (string) $i, 'tok' => 'T' . $i]];
+    $sask = function ($m, $value) {
+        $GLOBALS['__TEST_USER'] = null;
+        return $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => $value]],
+            149, null, 'reg', 351, 1, 'HASH', null, null, '', '', null, null);
+    };
+    $readSlot = '149|' . (((int) floor(time() / 60)) * UniversalValidator::RATE_TIERS + 2);
+    $_SESSION = [];
+    if ($TABLE && !$INDEX) {
+        \ExternalModules\AbstractExternalModule::$rateBuckets = [];
+        $m = mk($SV, null);
+        $r = $sask($m, 't2');
+        check('survey: a saved value is "already used" (got ' . json_encode($r) . ')', $r === ['used' => true, 'record' => null]);
+        check('survey: ...from the data table, with no filtered export',
+            \REDCap::$calls['filtered'] === 0 && \REDCap::$calls['full'] === 0 && count($GLOBALS['__TABLE_READS']) === 1);
+        check('survey: ...and the read budget was asked for it',
+            (\ExternalModules\AbstractExternalModule::$rateBuckets[$readSlot] ?? 0) === 1);
+        \ExternalModules\AbstractExternalModule::$rateBuckets = [$readSlot => UniversalValidator::THROTTLE_SURVEY_FULL_READS];
+        foreach (['t2', 'NOPE'] as $v) {
+            $m = mk($SV, null);
+            $r = $sask($m, $v);
+            check('survey, budget spent: ' . $v . ' is "not known", and nothing is read (got ' . json_encode($r) . ')',
+                $r === ['unknown' => true, 'record' => null] && \REDCap::$calls === ['full' => 0, 'filtered' => 0, 'record' => 0]
+                && $GLOBALS['__TABLE_READS'] === []);
+        }
+        // a field too large to read whole: a survey does not read it either
+        \ExternalModules\AbstractExternalModule::$rateBuckets = [];
+        $GLOBALS['__FIELD_ROWS'] = UniversalValidator::LIVE_WHOLE_READ_ROWS + 1;
+        $m = mk($SV, null);
+        $r = $sask($m, 't2');
+        check('survey, large field: "not known", the field is not read and nothing is exported (got ' . json_encode($r) . ')',
+            $r === ['unknown' => true, 'record' => null] && $GLOBALS['__TABLE_READS'] === []
+            && \REDCap::$calls === ['full' => 0, 'filtered' => 0, 'record' => 0]);
+        unset($GLOBALS['__FIELD_ROWS']);
+
+        // ---- 8) the survey throttle (UNQ-4, UNQ-8 of 2026-11-13) ----------------------
+        $RB = '\ExternalModules\AbstractExternalModule';
+        $minute = (int) floor(time() / 60);
+        $anonSlot = '149|' . ($minute * UniversalValidator::RATE_TIERS);
+        $addrSlot = function ($ip) use ($minute) {
+            return '149|' . (UniversalValidator::ADDRESS_BUCKETS + (($minute % 1024) << 21) + (crc32($ip) & 0x1FFFFF));
+        };
+        $limitRows = function ($m) { return logged($m, 'uv-throttle-limit-reached'); };
+        // UNQ-8: a request that is refused is counted, and costs no rule work.
+        $RB::$rateBuckets = [];
+        $m = mk($SV, null);
+        $GLOBALS['__TEST_USER'] = null;
+        $r = $m->redcap_module_ajax('unique-check', ['field' => 'record_id', 'values' => ['record_id' => '1']],
+            149, null, 'reg', 351, 1, 'HASH', null, null, '', '', null, null);
+        check('throttle: a refused sessionless request is counted (got ' . json_encode($r) . ')',
+            ($r['error'] ?? null) === 'not enabled on surveys' && ($RB::$rateBuckets[$anonSlot] ?? 0) === 1);
+        $RB::$rateBuckets = [$anonSlot => UniversalValidator::THROTTLE_PROJECT_ANON];
+        \REDCap::$dictionaryReads = 0;
+        $m = mk($SV, null);
+        $r = $sask($m, 't2');
+        check('throttle: over the cap, the request is refused before the rules are read (got ' . json_encode($r) . ')',
+            strpos((string) ($r['error'] ?? ''), 'too many checks') === 0 && \REDCap::$dictionaryReads === 0);
+        // UNQ-4: the request that takes the counter past the cap logs it, once.
+        check('throttle: reaching the project cap is logged, with the tier and the limit (got ' . json_encode($limitRows($m)) . ')',
+            count($limitRows($m)) === 1 && $limitRows($m)[0]['tier'] === 'sessionless'
+            && $limitRows($m)[0]['limit'] === UniversalValidator::THROTTLE_PROJECT_ANON && (int) $limitRows($m)[0]['project_id'] === 149);
+        $sask($m, 't3');
+        check('throttle: ...by that one request, not by each one after it', count($limitRows($m)) === 1);
+        // UNQ-4: one address cannot spend the project's budget.
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        $RB::$rateBuckets = [$addrSlot('203.0.113.9') => UniversalValidator::THROTTLE_ADDRESS];
+        $m = mk($SV, null);
+        $r = $sask($m, 't2');
+        check('throttle: an address over its own cap is refused (got ' . json_encode($r) . ')',
+            strpos((string) ($r['error'] ?? ''), 'too many checks') === 0);
+        check('throttle: ...without spending the project\'s budget', !isset($RB::$rateBuckets[$anonSlot]));
+        check('throttle: ...and logged once, with no address in the row (got ' . json_encode($limitRows($m)) . ')',
+            count($limitRows($m)) === 1 && $limitRows($m)[0]['tier'] === 'address'
+            && strpos(json_encode($m->logCalls), '203.0.113') === false);
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.7';
+        $r = $sask($m, 't2');
+        check('throttle: another address is answered meanwhile (got ' . json_encode($r) . ')',
+            $r === ['used' => true, 'record' => null] && ($RB::$rateBuckets[$anonSlot] ?? 0) === 1
+            && ($RB::$rateBuckets[$addrSlot('198.51.100.7')] ?? 0) === 1);
+        check('throttle: the address cap is below the project cap', UniversalValidator::THROTTLE_ADDRESS < UniversalValidator::THROTTLE_PROJECT_ANON);
+        unset($_SERVER['REMOTE_ADDR']);
+    }
+    if ($INDEX) {
+        // The index answers outside the budget: it reads the records it names.
+        \ExternalModules\AbstractExternalModule::$rateBuckets = [$readSlot => UniversalValidator::THROTTLE_SURVEY_FULL_READS];
+        $r = $sask(mk($SV, null), 't2');
+        check('survey, index built: answered with the budget spent', $r === ['used' => true, 'record' => null]);
+        $r = $sask(mk($SV, null), 'NOPE');
+        check('survey, index built: a miss too', $r === ['used' => false, 'record' => null]);
+    }
+    \ExternalModules\AbstractExternalModule::$rateBuckets = [];
 
     echo "unique_scope_php: $n checks, $fail failure(s)" . ($TABLE ? ($INDEX ? ' through the lookup index' : '') : ' without the data table') . "\n";
     if ($TABLE && !$INDEX) {

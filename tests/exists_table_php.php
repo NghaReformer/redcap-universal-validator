@@ -393,16 +393,20 @@ namespace {
         $m->systemSettings = ['lookup-index-system-off' => '1'] + (isset($m->systemSettings) && is_array($m->systemSettings) ? $m->systemSettings : []);
         $GLOBALS['__COUNT_READS'] = [];
         $r = ask($m, 'r_plain', ['r_plain' => 'SP-77'], '1', 'result');
-        check('large field, index turned off: read whatever its size, nothing counted',
-            $r['state'] === 'found' && $GLOBALS['__COUNT_READS'] === [] && count($GLOBALS['__TABLE_READS']) === 1);
-        // The save audit is not a person waiting: it reads in full.
+        // No request reads a field this large whole (UNQ-3 of 2026-11-13),
+        // with the index turned off as well.
+        check('large field, index turned off: "could not check", the field is not read',
+            $r['state'] === 'unknown' && count($GLOBALS['__COUNT_READS']) === 1 && $GLOBALS['__TABLE_READS'] === []);
+        // The save audit runs inside the save request: it does not read the
+        // field either, and logs it as not checked.
         $m = mod('nurse', $DB, $DATA_B, $FULL);
         \REDCap::$data[149]['1'][351]['r_plain'] = 'SP-NONE';
         \REDCap::reset();
         $GLOBALS['__COUNT_READS'] = [];
         $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 1);
-        check('large field: the save audit still reads the field and logs the miss',
-            $GLOBALS['__COUNT_READS'] === [] && count($GLOBALS['__TABLE_READS']) >= 1 && count(logsOf($m, 'invalid-id-saved')) === 1);
+        check('large field: the save audit does not read the field, and logs it as not checked',
+            count($GLOBALS['__COUNT_READS']) === 1 && $GLOBALS['__TABLE_READS'] === [] && logsOf($m, 'invalid-id-saved') === []
+            && strpos(json_encode(logsOf($m, 'uvalidate-unconfigurable')), 'field not checked') !== false);
     }
     unset($GLOBALS['__FIELD_ROWS']);
     // ---- how long a save waits for a lookup: the system setting reaches the page --------

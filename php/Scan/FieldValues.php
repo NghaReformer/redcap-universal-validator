@@ -194,6 +194,69 @@ final class FieldValues
     }
 
     /**
+     * The rows of $fields in $records as the table holds them: a list of
+     * [record, event_id, field_name, value, instance], instance 1 where the
+     * table keeps NULL; or null when the table could not be read. Rows of
+     * event $eventId only, or of every event with null. The rows come
+     * through the (project_id, record, field_name) index, so the cost is
+     * that of the records named.
+     *
+     * REDCap::getData leaves out the records of other Data Access Groups
+     * for a user who is in one. @UVUNIQUE compares such a record from these
+     * rows instead (UniversalValidator::collisionBeyondReach), so a value
+     * another group holds is still a duplicate (UNQ-2).
+     *
+     * @param string[] $fields
+     * @param string[] $records
+     * @param int|null $eventId
+     * @return array[]|null
+     */
+    public function rowsOf($pid, array $fields, array $records, $eventId = null)
+    {
+        $fields = array_values(array_unique(array_map('strval', $fields)));
+        $records = array_values(array_unique(array_map('strval', $records)));
+        if (!$records || !$fields) return [];
+        if (!is_object($this->module) || !is_callable([$this->module, 'query'])) return null;
+        $table = $this->tableOf($pid);
+        if ($table === null) return null;
+        $byEvent = $eventId !== null && $eventId !== '';
+        $out = [];
+        $one = function ($row) use (&$out) {
+            if (!is_array($row) || count($row) < 5) return false;
+            $row = array_values($row);
+            if ($row[3] === null) return true;
+            $inst = ($row[4] === null || $row[4] === '') ? 1 : (int) $row[4];
+            $out[] = [(string) $row[0], (string) $row[1], (string) $row[2], (string) $row[3], $inst < 1 ? 1 : $inst];
+            return true;
+        };
+        try {
+            foreach (array_chunk($records, 500) as $chunk) {
+                $sql = 'SELECT record, event_id, field_name, `value`, instance FROM ' . $table . ' WHERE project_id = ? AND record IN ('
+                    . implode(', ', array_fill(0, count($chunk), '?')) . ') AND field_name IN ('
+                    . implode(', ', array_fill(0, count($fields), '?')) . ')';
+                $params = array_merge([(int) $pid], $chunk, $fields);
+                if ($byEvent) {
+                    $sql .= ' AND event_id = ?';
+                    $params[] = (int) $eventId;
+                }
+                $q = $this->module->query($sql, $params);
+                if (is_array($q)) {
+                    foreach ($q as $row) if (!$one($row)) return null;
+                } elseif (is_object($q) && is_callable([$q, 'fetch_row'])) {
+                    while ($row = $q->fetch_row()) if (!$one($row)) return null;
+                } elseif (is_object($q) && is_callable([$q, 'fetch_assoc'])) {
+                    while ($row = $q->fetch_assoc()) if (!$one($row)) return null;
+                } else {
+                    return null;
+                }
+            }
+        } catch (\Throwable $e) {
+            return null;
+        }
+        return $out;
+    }
+
+    /**
      * Every row of $field (of event $eventId, or of every event), handed to
      * $each(record, event_id, value) one at a time. True when the whole field
      * was read, false when the table could not be read or a row could not be

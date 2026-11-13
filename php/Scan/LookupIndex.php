@@ -36,9 +36,15 @@ use INSPIRE\UniversalValidator\Logic;
  * larger one it marks as wanted (uv_lookup_field.wanted_at) and the module's
  * cron builds it (maintain()), letting the project's lock go while it reads
  * the data table, so the project's other fields keep answering. Until then
- * the lookup reads the data table, as it did before the index. Where no cron
- * has run for CRON_GRACE seconds (the caller passes when the last one ran), a
- * lookup builds a field that has waited that long itself.
+ * the index does not answer for it. A lookup never builds a larger field,
+ * however long it has waited (UNQ-3): that read is the cron's, and a request
+ * that made it kept a person waiting for a minute at 400,000 values.
+ *
+ * A REQUEST READS A BOUNDED STRETCH OF THE LOG. A project no lookup asked
+ * about for days has days of the shared log table to read. Above MAX_SYNC_IDS
+ * log positions a lookup does not read them and gets no answer; the cron
+ * brings such a project up to date (maintain()), and keeps every project
+ * with indexed fields within that reach.
  * The cron also rebuilds each field REFRESH_BEFORE seconds before it reaches
  * REBUILD_AFTER, and drops the keys of a field no lookup asked for in
  * UNUSED_AFTER seconds.
@@ -70,16 +76,29 @@ use INSPIRE\UniversalValidator\Logic;
  * such a change, or a write that bypassed REDCap's log, can be missed.
  *
  * RESET, THEN REBUILT, when the index cannot be shown current: the project's
- * data or log table changed, the log was pruned past the window, the data
- * dictionary changed (a metadata row in the log), too many records changed
- * at once, or the field's number mark or this class's key version changed.
+ * data or log table changed, the log was pruned past the window, too many
+ * records changed at once, or the field's number mark or this class's key
+ * version changed.
+ *
+ * A CHANGE TO THE DATA DICTIONARY (a metadata row in the log) resets the
+ * fields it can have touched (metaFields()): the field the row names, and
+ * every indexed field the dictionary no longer holds. Every field is reset
+ * when the row names no field the dictionary holds now (a field deleted or
+ * renamed away, an instrument, an upload of the whole dictionary), or more
+ * than META_FIELDS fields were changed. Editing the label of one field no
+ * longer stops the lookups of all the others (UNQ-3).
+ *
+ * A RENAMED RECORD is logged under one of its two ids; the other is read
+ * from the row's values (renamedSince()), so both are indexed again (UNQ-6).
  *
  * NULL WHEN IT CANNOT ANSWER. The tables are missing, the log or data table
  * cannot be resolved, another request holds the project's lock for longer
  * than LOCK_WAIT, the field is not built yet and this request may not build
  * it (too large, being built elsewhere, or this request has used its build),
- * or any read fails. The caller then reads the data table as before, so the
- * index only ever saves work.
+ * the project's log is further ahead than a request reads, or any read
+ * fails. lastProblem() says which (UNQ-9). The caller then reads the data
+ * table when the field is small enough for that, so the index only ever
+ * saves work.
  *
  * PHP 7.4.
  */
@@ -103,8 +122,24 @@ final class LookupIndex
     const REFRESH_BEFORE = 86400;
     /** A lookup builds a field of up to this many data rows itself; the cron builds larger ones. */
     const LIVE_BUILD_ROWS = 20000;
-    /** A field wanted this long, with no cron run this long, is built by a lookup anyway. */
+    /** With no cron run for this long, a lookup that waits for the cron says the cron is not running. */
     const CRON_GRACE = 900;
+    /** Log positions a lookup reads to bring a project up to date; the cron reads further. */
+    const MAX_SYNC_IDS = 500000;
+    /** The cron brings up to date at most this many projects a run. */
+    const CRON_SYNC_PROJECTS = 200;
+    /** More fields than this named by data dictionary changes in one window reset every field. */
+    const META_FIELDS = 50;
+    /** Renamed records read from one stretch of the log; more reset the fields, as MAX_CHANGED does. */
+    const MAX_RENAMED = 2000;
+    /**
+     * Every read of a stretch of the log goes through the primary key
+     * (log_event_id), so its cost is that of the positions in the stretch,
+     * whatever the statistics say (UNQ-7). REDCap's log table has no index
+     * on (project_id, log_event_id); left to choose, a server may read every
+     * log row the project ever wrote through (project_id, user) instead.
+     */
+    const BY_POSITION = ' FORCE INDEX (PRIMARY)';
     /** A build that started this long ago and never ended is taken as dead. */
     const BUILD_STALE = 3600;
     /** The cron drops the keys of a field no lookup asked for in this long. */
@@ -144,6 +179,10 @@ final class LookupIndex
     private $sources = [];
     /** @var array log table => bool: an index leads with `ts` */
     private $tsIndexed = [];
+    /** @var string|null why the last candidates() gave no answer (lastProblem()) */
+    private $why = null;
+    /** @var array pid => the project's record ID field, or '' when it could not be read */
+    private $pkFields = [];
     /** @var string|null the secret the keys are hashed with, null when the caller has none */
     private $secret;
 
@@ -173,23 +212,60 @@ final class LookupIndex
     public function candidates($pid, array $fieldMarks, $value)
     {
         $pid = (int) $pid;
-        if ($pid <= 0 || !$fieldMarks || !is_object($this->module) || !is_callable([$this->module, 'query'])) return null;
+        $this->why = null;
+        if ($pid <= 0 || !$fieldMarks || !is_object($this->module) || !is_callable([$this->module, 'query'])) {
+            $this->why = 'error';
+            return null;
+        }
         // No secret to hash with: no key can be made or matched (FRM-7).
-        if ($this->secret === null) return null;
+        if ($this->secret === null) {
+            $this->why = 'error';
+            return null;
+        }
         try {
             $src = $this->sources($pid);
-            if ($src === null) return null;
-            if (!$this->lock($pid, self::LOCK_WAIT)) return null;
+            if ($src === null) {
+                $this->why = 'tables';
+                return null;
+            }
+            if (!$this->lock($pid, self::LOCK_WAIT)) {
+                $this->why = 'lock';
+                return null;
+            }
             try {
-                if (!$this->prepare($pid, $src, $fieldMarks, false)) return null;
+                if (!$this->prepare($pid, $src, $fieldMarks, false)) {
+                    if ($this->why === null) $this->why = 'building';
+                    return null;
+                }
                 return $this->keysFor($pid, $fieldMarks, $value);
             } finally {
                 $this->unlock($pid);
             }
         } catch (\Throwable $e) {
             Faults::swallow($e, 'LookupIndex::candidates');
+            $this->why = 'error';
             return null;
         }
+    }
+
+    /**
+     * Why the last candidates() gave no answer, or null when it answered:
+     * 'tables' (the project's data or log table could not be resolved),
+     * 'lock' (another request held the project, or the lock was refused),
+     * 'cron' (the field is the cron's to build and it has not yet),
+     * 'no-cron' (the same, and no cron has run for CRON_GRACE),
+     * 'cooldown' (many records changed at once; builds wait),
+     * 'building' (the field is being built, or this request has used its
+     * build), 'behind' (the log is further ahead than a request reads; the
+     * cron brings the project up to date; 'no-cron' when none has run for
+     * CRON_GRACE), 'error' (a read failed, the module's own tables
+     * included).
+     *
+     * @return string|null
+     */
+    public function lastProblem()
+    {
+        return $this->why;
     }
 
     /**
@@ -198,19 +274,31 @@ final class LookupIndex
      * REBUILD_AFTER, start again a build that died, and drop the keys of a
      * field no lookup asked for in UNUSED_AFTER (or whose project is gone).
      * One field at a time, each under its project's lock, which a build lets
-     * go while it reads the data table.
+     * go while it reads the data table. Then, with time left, the projects
+     * whose log is further ahead than a lookup reads are brought up to date
+     * (syncBehind()).
      *
-     * @return array ['built' => int, 'dropped' => int, 'waiting' => int, 'left' => int]
+     * 'why' counts the reasons work was left waiting, by lastProblem()'s
+     * words, so a run that can never do its work says so (UNQ-9): a lock
+     * the server refuses is counted even when no field is waiting.
+     *
+     * @return array ['built' => int, 'dropped' => int, 'waiting' => int, 'left' => int, 'synced' => int, 'why' => array]
      */
     public function maintain($until)
     {
-        $out = ['built' => 0, 'dropped' => 0, 'waiting' => 0, 'left' => 0];
+        $out = ['built' => 0, 'dropped' => 0, 'waiting' => 0, 'left' => 0, 'synced' => 0, 'why' => []];
         if (!is_object($this->module) || !is_callable([$this->module, 'query'])) return $out;
         // Without the secret nothing can be built, and nothing is dropped
         // either: a secret that cannot be read for one pass must not cost
         // every project its index.
         if ($this->secret === null) return $out;
         $now = time();
+        $note = function ($why) use (&$out) {
+            $out['why'][$why] = isset($out['why'][$why]) ? $out['why'][$why] + 1 : 1;
+        };
+        // A lock nobody holds: refused here, it is refused to every lookup.
+        if (!$this->lock(0, 0)) $note('lock');
+        else $this->unlock(0);
         // A field keyed another way (an older key version, the MD5 keys of
         // version 1 among them, or another secret) is listed too, and dropped
         // below with its keys ($mark === false), so no such key outlives the
@@ -234,6 +322,7 @@ final class LookupIndex
                 $mark = $this->markOf((string) $t[2]);
                 if (!$this->lock($pid, self::CRON_LOCK_WAIT)) {
                     $out['waiting']++;
+                    $note('lock');
                     continue;
                 }
                 try {
@@ -246,17 +335,77 @@ final class LookupIndex
                     unset($this->rows[$pid]);
                     $this->builds = 0;
                     $before = $this->built;
-                    if (!$this->prepare($pid, $src, [$field => $mark], true)) $out['waiting']++;
-                    elseif ($this->built > $before) $out['built']++;
+                    $this->why = null;
+                    if (!$this->prepare($pid, $src, [$field => $mark], true)) {
+                        $out['waiting']++;
+                        $note($this->why === null ? 'building' : $this->why);
+                    } elseif ($this->built > $before) {
+                        $out['built']++;
+                    }
                 } finally {
                     $this->unlock($pid);
                 }
             } catch (\Throwable $e) {
                 Faults::swallow($e, 'LookupIndex::maintain');
                 $out['waiting']++;
+                $note('error');
             }
         }
+        if (!$out['left']) $out['synced'] = $this->syncBehind($until);
         return $out;
+    }
+
+    /**
+     * Bring up to date, until $until, the projects with indexed fields whose
+     * log is more than half of MAX_SYNC_IDS ahead of what was read, the
+     * furthest behind first, so no lookup finds more than it may read. Each
+     * under its project's lock. Returns how many were synced.
+     */
+    private function syncBehind($until)
+    {
+        $done = 0;
+        $tops = [];
+        $rows = $this->db->select('SELECT s.project_id, s.synced_id FROM ' . Schema::table('lookup_sync') . ' s
+            WHERE EXISTS (SELECT 1 FROM ' . Schema::table('lookup_field') . ' f WHERE f.project_id = s.project_id)
+            ORDER BY s.synced_id LIMIT ' . self::CRON_SYNC_PROJECTS, []);
+        foreach ($rows as $r) {
+            if (time() >= $until) break;
+            $pid = (int) $r[0];
+            try {
+                $src = $this->sources($pid);
+                if ($src === null) continue;
+                if (!isset($tops[$src['log']])) $tops[$src['log']] = $this->logEnds($src['log'])[0];
+                if (!self::further($tops[$src['log']], (string) $r[1], self::MAX_SYNC_IDS / 2)) continue;
+                if (!$this->lock($pid, self::CRON_LOCK_WAIT)) continue;
+                try {
+                    unset($this->rows[$pid]);
+                    $this->prepare($pid, $src, [], true);
+                    $done++;
+                } finally {
+                    $this->unlock($pid);
+                }
+            } catch (\Throwable $e) {
+                Faults::swallow($e, 'LookupIndex::syncBehind');
+            }
+        }
+        return $done;
+    }
+
+    /** The log position a sync row was read up to: its own, or its newest sample's when that is higher. */
+    private static function readTo(array $row)
+    {
+        $at = (string) $row['synced'];
+        if ($row['samples']) {
+            $last = $row['samples'][count($row['samples']) - 1][1];
+            if (SourceFence::decCmp($last, $at) > 0) $at = (string) $last;
+        }
+        return $at;
+    }
+
+    /** Whether log position $top is more than $by positions above $from. */
+    private static function further($top, $from, $by)
+    {
+        return (float) $top - (float) $from > (float) $by;
     }
 
     /** The data and log tables of $pid, allowlisted, or null. */
@@ -287,6 +436,11 @@ final class LookupIndex
             list($top, $min) = $this->logEnds($src['log']);
             $row = $this->syncRow($pid);
             $fresh = $row === null || $row['log'] !== $src['log'] || $row['data'] !== $src['data'];
+            // More log than a request reads: the cron's (syncBehind()).
+            if (!$cron && !$fresh && self::further($top, self::readTo($row), self::MAX_SYNC_IDS)) {
+                $this->why = ($now - $this->cronAt >= self::CRON_GRACE) ? 'no-cron' : 'behind';
+                return false;
+            }
             if ($fresh) {
                 $this->resetProject($pid);
                 // A position from before the last OVERLAP seconds, read from the
@@ -305,7 +459,10 @@ final class LookupIndex
             $this->rows[$pid] = $row;
         }
         $row = $this->rows[$pid];
-        if ($now < $row['buildAfter']) return false;
+        if ($now < $row['buildAfter']) {
+            $this->why = 'cooldown';
+            return false;
+        }
         if ($states === null) $states = $this->fieldStates($pid);
         $age = $cron ? self::REBUILD_AFTER - self::REFRESH_BEFORE : self::REBUILD_AFTER;
         foreach ($fieldMarks as $f => $mark) {
@@ -319,25 +476,35 @@ final class LookupIndex
                 if (!$cron && $now - $st['asked'] >= self::ASKED_EVERY) $this->touch($pid, $f, $now);
                 continue;
             }
-            if ($building || $this->builds >= self::BUILDS_PER_REQUEST) return false;
-            if (!$cron && !$this->mayBuildNow($pid, $src, $f, $spec, $st, $now)) return false;
+            if ($building || $this->builds >= self::BUILDS_PER_REQUEST) {
+                $this->why = 'building';
+                return false;
+            }
+            if (!$cron && !$this->mayBuildNow($pid, $src, $f, $spec, $st, $now)) {
+                $this->why = ($now - $this->cronAt >= self::CRON_GRACE) ? 'no-cron' : 'cron';
+                return false;
+            }
             $this->builds++;
-            if (!$this->build($pid, $f, $spec, $mark, $st, $cron)) return false;
+            if (!$this->build($pid, $f, $spec, $mark, $st, $cron)) {
+                $this->why = 'building';
+                return false;
+            }
         }
         return true;
     }
 
     /**
      * Whether a lookup may build $field itself: the field has at most
-     * liveBuildRows rows in the data table, or it has waited CRON_GRACE and
-     * no cron has run for as long (a cron with a queue still builds it).
-     * Otherwise the field is marked as wanted for the cron, with its new
-     * spec; keys of another spec are cleared before the build.
+     * liveBuildRows rows in the data table. Otherwise the field is marked as
+     * wanted for the cron, with its new spec; keys of another spec are
+     * cleared before the build. A field already wanted stays the cron's
+     * however long it has waited: a lookup built it after CRON_GRACE with no
+     * cron, a read with no bound inside a request (UNQ-3).
      */
     private function mayBuildNow($pid, array $src, $field, $spec, $st, $now)
     {
         $wanted = $st !== null ? $st['wanted'] : 0;
-        if ($wanted > 0) return $now - $wanted >= self::CRON_GRACE && $now - $this->cronAt >= self::CRON_GRACE;
+        if ($wanted > 0) return false;
         // Counted only as far as the limit: a field of 400,000 rows costs 20,001 index entries.
         $r = $this->db->select('SELECT COUNT(*) FROM (SELECT 1 FROM ' . $src['data'] . ' WHERE project_id = ? AND field_name = ? LIMIT '
             . ($this->liveBuildRows + 1) . ') AS n', [$pid, $field]);
@@ -400,7 +567,19 @@ final class LookupIndex
         if (SourceFence::decCmp($top, $from) > 0) {
             if ($min !== null && SourceFence::decCmp($from, '0') > 0 && SourceFence::decCmp($min, $from) > 0) $reset = true;
             if ($win['meta'] !== null && SourceFence::decCmp($win['meta'], $row['meta']) > 0) {
-                $reset = true;
+                // The fields the change can have touched, or every field.
+                $some = $reset ? null : $this->metaFields($pid, $src['log'],
+                    SourceFence::decCmp($row['meta'], $from) > 0 ? $row['meta'] : $from, $end, array_keys($states));
+                if ($some === null) {
+                    $reset = true;
+                } elseif ($some) {
+                    $this->resetFields($pid, $some);
+                    foreach ($some as $f) {
+                        $states[$f]['ready'] = false;
+                        $states[$f]['building'] = 0;
+                        $states[$f]['gen']++;
+                    }
+                }
                 $row['meta'] = $win['meta'];
             }
         }
@@ -409,6 +588,14 @@ final class LookupIndex
         $read = function ($a, $b) use (&$overflow, $kept, $pid, $src) {
             if (!$kept || $overflow) return;
             $changed = $this->changedSince($src['log'], $pid, $a, $b, self::MAX_CHANGED + 1);
+            $renamed = count($changed) > self::MAX_CHANGED ? [] : $this->renamedSince($src['log'], $pid, $a, $b);
+            if ($renamed === null) {
+                $overflow = true;
+                return;
+            }
+            foreach ($renamed as $rec => $at) {
+                if (!isset($changed[$rec]) || SourceFence::decCmp($at, $changed[$rec]) > 0) $changed[$rec] = $at;
+            }
             $todo = count($changed) > self::MAX_CHANGED ? null : $this->staleOf($pid, $changed);
             if ($todo === null || count($todo) > self::MAX_REINDEX) {
                 $overflow = true;
@@ -475,7 +662,7 @@ final class LookupIndex
         $cols[] = "MAX(CASE WHEN object_type LIKE ? ESCAPE '!' THEN log_event_id END)";
         $params[] = 'redcap!_metadata%';
         array_push($params, (string) $from, (string) $to, $pid);
-        $r = $this->db->select('SELECT ' . implode(', ', $cols) . ' FROM ' . $log
+        $r = $this->db->select('SELECT ' . implode(', ', $cols) . ' FROM ' . $log . self::BY_POSITION
             . ' WHERE log_event_id > ? AND log_event_id <= ? AND project_id = ?', $params);
         $counts = [];
         for ($i = 0; $i < $n; $i++) $counts[] = isset($r[0][$i]) ? (int) $r[0][$i] : -1;
@@ -664,13 +851,126 @@ final class LookupIndex
     /** The records the log names in ($from, $to] for $pid, each with its newest position there. */
     private function changedSince($log, $pid, $from, $to, $limit)
     {
-        $rows = $this->db->select('SELECT CAST(pk AS BINARY) AS p, MAX(log_event_id) FROM ' . $log . '
+        $rows = $this->db->select('SELECT CAST(pk AS BINARY) AS p, MAX(log_event_id) FROM ' . $log . self::BY_POSITION . '
             WHERE log_event_id > ? AND log_event_id <= ? AND project_id = ?
               AND pk IS NOT NULL AND pk <> \'\' AND LENGTH(pk) <= 400
             GROUP BY p LIMIT ' . (int) $limit, [(string) $from, (string) $to, $pid]);
         $out = [];
         foreach ($rows as $r) $out[(string) $r[0]] = (string) $r[1];
         return $out;
+    }
+
+    /**
+     * The other id of each record renamed in ($from, $to] (UNQ-6), with the
+     * position of its row: record id => position. [] when there is none or
+     * the project's record ID field cannot be read; null when there are more
+     * than MAX_RENAMED, which resets the fields as too many changes do.
+     *
+     * REDCap logs a rename as one row whose values are the record ID field
+     * alone ("record_id = 'NEW'"), with one of the two ids in pk. Whichever
+     * it is, changedSince() names it and this names the one in the values,
+     * so the old id loses its keys and the new one gets them. A record
+     * created with nothing but its id has the same row; it is named twice
+     * and indexed once. The rows come through the same stretch of the
+     * primary key as changedSince() reads.
+     */
+    private function renamedSince($log, $pid, $from, $to)
+    {
+        $pk = $this->recordIdField($pid);
+        if ($pk === '') return [];
+        try {
+            $rows = $this->db->select('SELECT data_values, log_event_id FROM ' . $log . self::BY_POSITION . '
+                WHERE log_event_id > ? AND log_event_id <= ? AND project_id = ?
+                  AND data_values LIKE ? ESCAPE \'!\' AND data_values NOT LIKE ? AND LENGTH(data_values) <= 600
+                LIMIT ' . (self::MAX_RENAMED + 1),
+                // One value and no more: a save of several fields has a line for each.
+                [(string) $from, (string) $to, $pid, str_replace('_', '!_', $pk) . " = '%", "%\n%"]);
+        } catch (\Throwable $e) {
+            // A log table without the column: nothing more is known than before.
+            Faults::swallow($e, 'LookupIndex::renamedSince');
+            return [];
+        }
+        if (count($rows) > self::MAX_RENAMED) return null;
+        $out = [];
+        $lead = strlen($pk) + 4;
+        foreach ($rows as $r) {
+            $v = rtrim((string) $r[0]);
+            if (strpos($v, "\n") !== false || substr($v, -1) !== "'" || strlen($v) <= $lead) continue;
+            $rec = substr($v, $lead, -1);
+            if ($rec === '' || strlen($rec) > 400) continue;
+            $at = (string) $r[1];
+            if (!isset($out[$rec]) || SourceFence::decCmp($at, $out[$rec]) > 0) $out[$rec] = $at;
+        }
+        return $out;
+    }
+
+    /** The project's record ID field (the first of its dictionary), or '' when it cannot be read. */
+    private function recordIdField($pid)
+    {
+        if (!array_key_exists($pid, $this->pkFields)) {
+            $f = '';
+            try {
+                $r = $this->db->select('SELECT field_name FROM redcap_metadata WHERE project_id = ? ORDER BY field_order LIMIT 1', [$pid]);
+                if (isset($r[0][0]) && preg_match('/^[a-z][a-z0-9_]*\z/', (string) $r[0][0])) $f = (string) $r[0][0];
+            } catch (\Throwable $e) {
+                Faults::swallow($e, 'LookupIndex::recordIdField');
+            }
+            $this->pkFields[$pid] = $f;
+        }
+        return $this->pkFields[$pid];
+    }
+
+    /**
+     * The fields of $indexed that the data dictionary changes logged in
+     * ($from, $to] can have touched, or null for every field.
+     *
+     * What can leave a field's keys short is rows that arrive in it with no
+     * log row per record: a field renamed into its name. REDCap logs a
+     * dictionary change with the field in pk, and this does not rely on
+     * which of a rename's two names that is. A change that names a field
+     * the dictionary holds now touches that field. A name the dictionary
+     * does not hold now (a field deleted or renamed away, an instrument, the
+     * project id of a whole upload) may stand for any field: null. An
+     * indexed field the dictionary no longer holds is reset too, so its
+     * name starts from nothing if a field is renamed into it later. More
+     * than META_FIELDS names, or a dictionary that cannot be read: null.
+     *
+     * @param string[] $indexed
+     * @return string[]|null
+     */
+    private function metaFields($pid, $log, $from, $to, array $indexed)
+    {
+        try {
+            $rows = $this->db->select('SELECT DISTINCT CAST(pk AS BINARY) FROM ' . $log . self::BY_POSITION . "
+                WHERE log_event_id > ? AND log_event_id <= ? AND project_id = ? AND object_type LIKE ? ESCAPE '!'
+                LIMIT " . (self::META_FIELDS + 1), [(string) $from, (string) $to, $pid, 'redcap!_metadata%']);
+            if (count($rows) > self::META_FIELDS) return null;
+            $named = [];
+            foreach ($rows as $r) {
+                $n = isset($r[0]) ? (string) $r[0] : '';
+                if (!preg_match('/^[a-z][a-z0-9_]*\z/', $n)) return null;
+                $named[$n] = true;
+            }
+            $indexed = array_map('strval', $indexed);
+            $ask = array_values(array_unique(array_merge(array_keys($named), $indexed)));
+            if (!$ask) return [];
+            $have = [];
+            foreach ($this->db->select('SELECT field_name FROM redcap_metadata WHERE project_id = ? AND field_name IN ('
+                    . implode(', ', array_fill(0, count($ask), '?')) . ')', array_merge([$pid], $ask)) as $r) {
+                $have[(string) $r[0]] = true;
+            }
+            foreach ($named as $n => $_) {
+                if (!isset($have[$n])) return null;
+            }
+            $out = [];
+            foreach ($indexed as $f) {
+                if (isset($named[$f]) || !isset($have[$f])) $out[] = $f;
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'LookupIndex::metaFields');
+            return null;
+        }
     }
 
     /**
@@ -775,11 +1075,21 @@ final class LookupIndex
         return $out;
     }
 
-    /** Every field stops answering until built again, and a build running now will not count. */
-    private function resetFields($pid)
+    /**
+     * Every field of the project, or those of $fields, stops answering until
+     * built again, and a build running now will not count.
+     */
+    private function resetFields($pid, ?array $fields = null)
     {
-        $this->db->execNoCount('UPDATE ' . Schema::table('lookup_field') . ' SET ready = 0, building_at = 0, gen = gen + 1
-            WHERE project_id = ?', [$pid]);
+        $sql = 'UPDATE ' . Schema::table('lookup_field') . ' SET ready = 0, building_at = 0, gen = gen + 1
+            WHERE project_id = ?';
+        if ($fields === null) {
+            $this->db->execNoCount($sql, [$pid]);
+            return;
+        }
+        if (!$fields) return;
+        $this->db->execNoCount($sql . ' AND field_name IN (' . implode(', ', array_fill(0, count($fields), '?')) . ')',
+            array_merge([$pid], array_map('strval', $fields)));
     }
 
     /** Forget what the project's fields and records were indexed at; their keys are replaced at the next build. */

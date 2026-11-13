@@ -89,7 +89,7 @@ node tests/save_guard_enter_dom_js.cjs  # save guard in front of REDCap's dataEn
 node tests/value_parity_dom_js.cjs      # browser half of value_parity_fixture.json (trim, non-ASCII, regex dialect, length)
 php  tests/value_parity_php.php         # server half of the same rows, plus browserTrim / jsLength / dialectSplits
 php  tests/required_pages_php.php       # @UVREQUIRED: branching logic in the audit and scan, multi-page survey conditions
-php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope, "with" placement, throttle answer, new records, the data-table read; runs again without the table and through a fake value index
+php  tests/unique_scope_php.php         # @UVUNIQUE: "dag" scope, "with" placement, throttle answer, new records, the data-table read, a value another group holds, the bound on whole-field reads, the survey budget and throttle; runs again without the table and through a fake value index
 php  tests/survey_shape_php.php         # survey page config: no condition text, snapshot names or reasons; only this page's configuration errors
 php  tests/condition_kinds_php.php      # "assert" and "when": literals written as REDCap stores them, compared fields of one kind (AST-4)
 php  tests/rule_scope_php.php          # a live lookup builds only its field's rules, as the full build has them (PRF-3)

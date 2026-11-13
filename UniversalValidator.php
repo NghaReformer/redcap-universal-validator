@@ -1173,7 +1173,8 @@ class UniversalValidator extends AbstractExternalModule
             $col = $this->findCollision($project_id, $field, $with, $scope, $cand, $record, $event_id, null, false,
                                         empty($rule['caseSensitive']), null, $also);
             if ($col === false) {
-                $out['unconfigurable'][] = ['fields' => [$field], 'why' => 'the saved values could not be read to compare with'];
+                $out['unconfigurable'][] = ['fields' => [$field],
+                    'why' => $this->liveReadSkipped ? $this->auditReadSkippedWhy() : 'the saved values could not be read to compare with'];
             } elseif ($col !== null) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'unique', 'type' => 'unique', 'reason' => 'duplicate-value'];
             }
@@ -12308,10 +12309,11 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * Seconds into a run of the lookup index cron after which it starts no
      * further field. config.json gives a run 240 s of every 300; a field
-     * started at 60 s has 180 s left, and a field of 400,000 values took 61 s
-     * to build on the test server.
+     * started at 150 s has 90 s left, and a field of 400,000 values took 61 s
+     * to build on the test server. At 60 a run built one such field, and a
+     * project whose fields were all reset waited a run for each (UNQ-3).
      */
-    const LOOKUP_CRON_SECONDS = 60;
+    const LOOKUP_CRON_SECONDS = 150;
 
     /**
      * Build the value index of the live lookups (Scan\LookupIndex) for the
@@ -12322,6 +12324,12 @@ class UniversalValidator extends AbstractExternalModule
      * It runs whether or not the Validation scan is on, as the lookups do, and
      * does nothing when the system setting turns the index off. NEVER THROWS,
      * for the reason the scan crons give.
+     *
+     * A run that could not do its work says why in its summary and, once a
+     * day, in the module log (noteLookupIndexDown, UNQ-9): tables that
+     * cannot be read or a lock the server refuses leave every large field
+     * unchecked by the live lookups and the save audit, and "0 built" said
+     * nothing of it.
      *
      * @return string the one-line summary REDCap shows beside the cron
      */
@@ -12334,16 +12342,67 @@ class UniversalValidator extends AbstractExternalModule
             $idx = $this->lookupIndex();
             if ($idx === null) return 'the lookup index is turned off here; nothing to do';
             $r = $idx->maintain(time() + self::LOOKUP_CRON_SECONDS);
-            // The lookups build a large field themselves only while no cron runs.
-            // Written on every pass on purpose: it is the one sign a lookup has
-            // that a cron is alive (LookupIndex::CRON_GRACE), and it is one
+            // A lookup that waits for the cron says so when none has run
+            // (LookupIndex::CRON_GRACE). Written on every pass on purpose: it
+            // is the one sign a lookup has that a cron is alive, and it is one
             // settings row updated in place, so nothing grows.
             $this->setSystemSetting(self::LOOKUP_CRON_AT, (string) time());
-            return sprintf('lookup index: %d field(s) built, %d dropped, %d waiting, %d left for the next run',
-                $r['built'], $r['dropped'], $r['waiting'], $r['left']);
+            $why = (isset($r['why']) && is_array($r['why'])) ? $r['why'] : [];
+            // Fields in a cooldown or behind another build are waiting their turn, not stuck.
+            $stuck = array_intersect_key($why, ['lock' => 1, 'tables' => 1, 'error' => 1]);
+            if ($stuck) $this->noteLookupIndexDown($stuck);
+            $said = [];
+            foreach ($why as $k => $n) $said[] = (int) $n . ' x ' . self::lookupIndexProblem($k);
+            return sprintf('lookup index: %d field(s) built, %d dropped, %d waiting, %d left for the next run, %d project(s) brought up to date',
+                $r['built'], $r['dropped'], $r['waiting'], $r['left'], isset($r['synced']) ? $r['synced'] : 0)
+                . ($said ? '; not done: ' . implode(', ', $said) : '');
         } catch (\Throwable $e) {
             Faults::swallow($e, 'UniversalValidator::uvLookupIndexCron');
-            return 'lookup index: this run could not read its tables (' . get_class($e) . '); the lookups read the data table meanwhile';
+            $this->noteLookupIndexDown(['error' => 1], $e);
+            return 'lookup index: this run could not read its tables (' . get_class($e) . '); fields too large to read whole are not checked by the live lookups or the save audit meanwhile';
+        }
+    }
+
+    /** System setting, not in config.json: the day noteLookupIndexDown() last wrote. */
+    const LOOKUP_DOWN_SAID = 'lookup-index-down-said';
+
+    /**
+     * Record in the module log that the lookup index cron could not do its
+     * work, at most once a day: $why is LookupIndex::maintain()'s count of
+     * reasons. The exception's class and redacted detail only, never its
+     * message (Scan\DbError). Never throws.
+     */
+    private function noteLookupIndexDown(array $why, ?\Throwable $e = null)
+    {
+        try {
+            $day = date('Y-m-d');
+            if ((string) $this->getSystemSetting(self::LOOKUP_DOWN_SAID) === $day) return;
+            $this->setSystemSetting(self::LOOKUP_DOWN_SAID, $day);
+            $said = [];
+            foreach ($why as $k => $n) $said[] = (int) $n . ' x ' . self::lookupIndexProblem($k);
+            $this->log('uv-lookup-index-unavailable', [
+                'why'    => implode(', ', $said),
+                'class'  => $e === null ? '' : get_class($e),
+                'detail' => $e === null ? '' : Scan\DbError::safe($e),
+            ]);
+        } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::noteLookupIndexDown');
+        }
+    }
+
+    /** LookupIndex::lastProblem()'s word, in words for a log row or a summary. */
+    private static function lookupIndexProblem($why)
+    {
+        switch ((string) $why) {
+            case 'off':      return 'the index is turned off on this server';
+            case 'tables':   return 'the project\'s data or log table could not be found';
+            case 'lock':     return 'the index was held by another request, or the server refused its lock';
+            case 'cron':     return 'the module\'s cron has not built it yet';
+            case 'no-cron':  return 'the module\'s cron has not run in the last ' . (int) (Scan\LookupIndex::CRON_GRACE / 60) . ' minutes';
+            case 'cooldown': return 'many records changed at once and it is being rebuilt';
+            case 'building': return 'it is being built';
+            case 'behind':   return 'the module\'s cron is bringing it up to date';
+            default:         return 'its tables could not be read';
         }
     }
 
@@ -12427,7 +12486,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave', 'pageHookFailed',
         'returnBarred', 'valueHistoryOverride', 'roleBookOverride', 'auditPid', 'uniqueAuditPlan', 'uniqueAuditReads',
-        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveStaffLookup', 'liveReadSkipped',
+        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveReadSkipped',
         'parseCacheMinMs'];
 
     /** Every SCAN_MEMOS property back to its declared default. */
@@ -12731,6 +12790,18 @@ class UniversalValidator extends AbstractExternalModule
     const THROTTLE_PROJECT_ANON = 600;
     const THROTTLE_PROJECT_SESSIONED = 6000;
     /**
+     * Sessionless checks one address may make on a project per minute
+     * (LiveLookups::surveyAddressLimited, UNQ-4): half the project's
+     * sessionless cap, so no single address can spend it.
+     */
+    const THROTTLE_ADDRESS = 300;
+    /**
+     * Rate buckets from this number up count by address: (minute mod 1024)
+     * * 2^21 + 21 bits of a hash of the address. The tiers below count from
+     * minute * RATE_TIERS, which stays under it for some seven centuries.
+     */
+    const ADDRESS_BUCKETS = 2147483648;
+    /**
      * Seconds a session must have been checking before its checks count in the
      * sessioned bucket (UNQ-8). A fresh session costs nothing to make: a
      * caller who drops the cookie on every request got the 6,000 cap and
@@ -12842,12 +12913,20 @@ class UniversalValidator extends AbstractExternalModule
      * entry as the field the value was found in, and the record being checked
      * is still left out entirely: its own fields are compared by @UVASSERT.
      *
-     * $mayFullRead (a survey's read budget) is asked before every read of the
-     * whole field: one that confirms a narrowed miss, and one made because the
-     * value could not be narrowed at all. A narrowed miss is never final: the
-     * filter cannot see a saved value with spaces around it, which the
-     * comparison here trims. A saved Missing Data Code in the tagged field,
-     * or in an "also" field, is no duplicate (the scan skips them too).
+     * $mayFullRead (a survey's read budget) is asked once, before any read
+     * but that of the lookup index: the read of the field in the data table,
+     * and where that cannot be read the narrowed and the full export. A
+     * narrowed miss is never final: the filter cannot see a saved value with
+     * spaces around it, which the comparison here trims. A saved Missing
+     * Data Code in the tagged field, or in an "also" field, is no duplicate
+     * (the scan skips them too).
+     *
+     * NO READ OF A WHOLE FIELD ABOVE LIVE_WHOLE_READ_ROWS (UNQ-3). Every
+     * caller is inside somebody's request: a person at a form, a survey
+     * respondent, or the save that the audit follows. Where the lookup index
+     * cannot answer for a field that large, the answer is false with
+     * liveReadSkipped set: "could not check" live, "not checked" in the
+     * audit, and the cron builds the index.
      */
     private function findCollision($pid, $field, array $with, $scope, array $values, $excludeRecord, $event_id, $groupId = null, $narrow = false, $fold = true, ?callable $mayFullRead = null, array $also = [])
     {
@@ -12891,26 +12970,57 @@ class UniversalValidator extends AbstractExternalModule
         // table (UNQ-7, PRF-2): getData then builds those records only, and a
         // miss needs no export at all. [false] when neither can be read
         // ($via says which may be tried), and the export below answers.
-        $fromTable = function ($via) use ($pid, $field, $also, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $params, $scope, $event_id) {
+        //
+        // The table and the index are read by the module, so they name the
+        // records of every Data Access Group. getData may leave out the ones
+        // of other groups for a user who is in one (UNQ-2): a record it does
+        // not hand back is compared from its rows in the data table
+        // (collisionBeyondReach), so a value another site holds is a
+        // duplicate here too, and that record is named to nobody.
+        $fromTable = function ($via) use ($pid, $field, $need, $also, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $params, $scope, $event_id) {
+            $eventOnly = ($scope === 'event' && $event_id) ? $event_id : null;
             $cand = $this->collisionCandidates($pid, $target[$field], array_merge([$field], $also), $marks, $fold,
-                                               $excludeRecord, ($scope === 'event' && $event_id) ? $event_id : null, $via);
+                                               $excludeRecord, $eventOnly, $via, $codes);
             if ($cand === null) return [false];
             if (!$cand) return [true, null];
             $data = \REDCap::getData($params + ['records' => $cand]);
             if (!is_array($data)) return [true, false];
-            return [true, self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also)];
+            $hit = self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+            if ($hit !== null) return [true, $hit];
+            $seen = [];
+            foreach ($data as $rec => $node) {
+                if (is_array($node)) $seen[(string) $rec] = true;
+            }
+            $unseen = array_values(array_filter($cand, function ($r) use ($seen) { return !isset($seen[$r]); }));
+            if (!$unseen) return [true, null];
+            return [true, $this->collisionBeyondReach($pid, $unseen, $need, $also, $target, $keys, $marks, $fold, $currentDag, $codes, $eventOnly)];
+        };
+        // Where neither the table nor the index can be read, the exports
+        // below are all there is, and for a user in a group they may hold
+        // that group's records only. A miss is then not settled, except
+        // under "dag", which looks in that one group anyway.
+        $settle = function ($r) use ($pid, $scope, $groupId) {
+            return ($r === null && $scope !== 'dag' && $this->callerInGroup($pid, $groupId)) ? false : $r;
         };
         // Signed-in callers and the save audit start there. A survey asks the
         // lookup index first, outside the read budget: it reads the records
-        // it names, not the field. Without it a survey keeps its order: the
-        // narrowed read below settles a hit without spending the budget, and
-        // the budget pays for the table read of a miss.
+        // it names, not the field. Where the index cannot answer, the budget
+        // is asked before any other read is made for a survey (UNQ-5): the
+        // narrowed read below ran first, 600 filtered exports a minute for
+        // anyone with the link, and it now runs only where the data table
+        // cannot be read at all.
         $t = $fromTable($mayFullRead === null ? 'any' : 'index');
         if ($t[0]) return $t[1];
-        // A signed-in person's live lookup of a field too large to read whole
-        // (wholeFieldRecords): not settled, and the exports below, which cost
-        // more than the read left out, are not made either.
+        // A field too large to read whole inside a request (wholeFieldRecords):
+        // not settled, and the exports below, which cost more than the read
+        // left out, are not made either.
         if ($this->liveReadSkipped) return false;
+        if ($mayFullRead !== null) {
+            if (!call_user_func($mayFullRead)) return false;
+            $t = $fromTable('table');
+            if ($t[0]) return $t[1];
+            if ($this->liveReadSkipped) return false;
+        }
 
         // Live-endpoint amplification guard (F4): the no-auth path would otherwise
         // export the WHOLE project on every call. Narrow the read to candidate
@@ -12942,19 +13052,107 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         }
-        if ($mayFullRead !== null) {
-            if (!call_user_func($mayFullRead)) return false;
-            $t = $fromTable('table');
-            if ($t[0]) return $t[1];
-        }
         $shared = $this->sharedCollisionRead($params);
         if ($shared !== null) {
             if ($shared === false) return false;
-            return $this->collisionInShared($shared, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+            return $settle($this->collisionInShared($shared, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also));
         }
         $data = \REDCap::getData($params);
         if (!is_array($data)) return false;
-        return self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also);
+        return $settle(self::collisionIn($data, $target, $keys, $marks, $fold, $currentDag, $excludeRecord, $codes, $also));
+    }
+
+    /**
+     * Whether the person this request acts for is in a Data Access Group, so
+     * that REDCap::getData may hand back that group's records only. $groupId
+     * is the group the framework named for the caller, when it named one. A
+     * request with no user (a survey, a job) is in none; rights that cannot
+     * be read count as in one, so nothing is called unused on a read that
+     * may not have seen it.
+     */
+    private function callerInGroup($pid, $groupId = null)
+    {
+        if ($groupId !== null && $groupId !== '') return true;
+        if ($this->currentUsername() === null) return false;
+        $rights = $this->userRightsIn($pid);
+        return $rights === null || $rights['group'] !== null;
+    }
+
+    /**
+     * findCollision's answer over $records, which hold the value (the data
+     * table or the lookup index named them) and which REDCap::getData did
+     * not hand back: records of another Data Access Group than the user's,
+     * or deleted a moment ago (UNQ-2). The same comparison (collisionIn),
+     * over nodes built from their rows in the data table (FieldValues::
+     * rowsOf), each with its group from its "__GROUPID__" row. A hit carries
+     * 'beyond' => true: the record is one REDCap did not show this caller,
+     * and the live answer names neither it nor the field the value is in.
+     *
+     * A rule with no "with" tests one value, so every row is a context of
+     * its own. A composite key needs the entry each row belongs to: a row of
+     * an instrument that repeats in its event, or of an event that repeats,
+     * is an instance over the event's other rows, as getData arranges them.
+     * False (not settled) when the rows, a group's name under "dag", or for
+     * a composite key the repeating layout or the dictionary cannot be read.
+     */
+    private function collisionBeyondReach($pid, array $records, array $need, array $also, array $target, array $keys, array $marks, $fold, $currentDag, array $codes, $eventId)
+    {
+        $fv = $this->fieldValues();
+        $rows = $fv->rowsOf($pid, array_merge($need, $also), $records, $eventId);
+        $groups = $rows === null ? null : $fv->rowsOf($pid, ['__GROUPID__'], $records);
+        if ($rows === null || $groups === null) return false;
+        if (!$rows) return null;
+        // "record IN (...)" goes by the table's collation: only the records named count.
+        $want = array_flip(array_map('strval', $records));
+        $dagOf = [];
+        foreach ($groups as $g) {
+            if (!isset($want[$g[0]]) || $g[3] === '') continue;
+            $name = ScanPageView::dagNameOf($g[3]);
+            if ($name !== null) $dagOf[$g[0]] = $name;
+            elseif ($currentDag !== null) return false;
+        }
+        $composite = count($need) > 1;
+        $rep = $composite ? $this->repeatingMap($pid) : null;
+        $dd = $composite ? $this->dataDictionary($pid) : null;
+        if ($composite && (!is_array($rep) || !is_array($dd))) return false;
+        $nodes = [];
+        $n = 0;
+        foreach ($rows as $r) {
+            list($rec, $evt, $f, $v, $inst) = $r;
+            if (!isset($want[$rec])) continue;
+            $dag = isset($dagOf[$rec]) ? ['redcap_data_access_group' => $dagOf[$rec]] : [];
+            if (!$composite) {
+                $nodes[$rec]['repeat_instances'][$evt][''][++$n] = [$f => $v] + $dag;
+                continue;
+            }
+            $bucket = self::repeatBucketOf($rep, $evt, isset($dd[$f]['form_name']) ? (string) $dd[$f]['form_name'] : '');
+            if ($bucket === false) return false;
+            if (!isset($nodes[$rec][$evt])) $nodes[$rec][$evt] = $dag;
+            if ($bucket === null) $nodes[$rec][$evt][$f] = $v;
+            else $nodes[$rec]['repeat_instances'][$evt][$bucket][$inst][$f] = $v;
+        }
+        $hit = self::collisionIn($nodes, $target, $keys, $marks, $fold, $currentDag, null, $codes, $also);
+        return $hit === null ? null : $hit + ['beyond' => true];
+    }
+
+    /**
+     * Where getData puts a row of a field of $form in event $evt, by the
+     * project's repeating map $rep (repeatingMap): null for the event's own
+     * row, '' for an instance of an event that repeats as a whole, the form
+     * name for an instance of an instrument that repeats there. False when
+     * the field's form is not known and the event has repeating instruments.
+     */
+    private static function repeatBucketOf(array $rep, $evt, $form)
+    {
+        if (!isset($rep[$evt])) return null;
+        $node = $rep[$evt];
+        if (!is_array($node)) return '';
+        foreach ($node as $name => $_) {
+            if (!is_string($name) || $name === '') return '';
+        }
+        if (!$node) return null;
+        if ($form === '') return false;
+        return isset($node[$form]) ? $form : null;
     }
 
     /**
@@ -12967,19 +13165,23 @@ class UniversalValidator extends AbstractExternalModule
      * field in the data table (Scan\FieldValues); 'index' the index alone;
      * 'table' the data table alone. Both answer the same records.
      */
-    private function collisionCandidates($pid, $value, array $fields, array $marks, $fold, $excludeRecord, $eventId, $via = 'any')
+    private function collisionCandidates($pid, $value, array $fields, array $marks, $fold, $excludeRecord, $eventId, $via = 'any', array $codes = [])
     {
         $keyOf = [];
         foreach ($fields as $f) $keyOf[$f] = Logic::lookupKey($value, $fold, isset($marks[$f]) ? $marks[$f] : null);
-        $accept = function ($f, $v) use ($keyOf, $value, $fold, $marks) {
+        // A saved Missing Data Code is no duplicate (collisionIn), so a row
+        // that holds one names no candidate.
+        $accept = function ($f, $v) use ($keyOf, $value, $fold, $marks, $codes) {
             if (!isset($keyOf[$f])) return false;
-            if ($v === $value) return true;
+            if ($v === $value) return !($codes && self::isMissingCode($v, $codes));
             $k = $keyOf[$f];
             // A text key is the trimmed, folded value: a shorter stored
             // value cannot reach it.
             if ($k[0] === '=' && strlen($v) < strlen($k) - 1) return false;
-            return Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) === $k;
+            if (Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null) !== $k) return false;
+            return !($codes && self::isMissingCode(Logic::lookupTrim($v), $codes));
         };
+        $this->liveReadSkipped = false;
         $recs = $via === 'table' ? null : $this->indexedRecords($pid, $fields, $marks, $value, $eventId, $accept);
         if ($recs === null && $via !== 'index') $recs = $this->wholeFieldRecords($pid, $fields, $eventId, $accept);
         if ($recs === null || $excludeRecord === null || $excludeRecord === '') return $recs;
@@ -13008,6 +13210,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($codes && self::isMissingCode($t, $codes)) return false;
             return Logic::lookupKey($t, $fold, $mark) === $key;
         };
+        $this->liveReadSkipped = false;
         $recs = $via === 'table' ? null : $this->indexedRecords($pid, [$field], [$field => $mark], $value, $event, $accept);
         if ($recs === null && $via !== 'index') $recs = $this->wholeFieldRecords($pid, [$field], $event, $accept);
         if ($recs === null || $skip === null || $skip === '') return $recs;
@@ -13175,32 +13378,43 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * Rows of the searched fields above which a signed-in person's live
-     * lookup does not read the whole field when the value index cannot
-     * answer: the read takes seconds at this size and tens of seconds at
-     * 400,000 rows, and nobody at a form waits for it. The lookup answers
-     * "could not check" at once; the cron builds the index, and the save
-     * audit and the Validation scan read in full as before.
+     * Rows of the searched fields above which no lookup reads the whole
+     * field when the value index cannot answer (UNQ-3): the read takes
+     * seconds at this size and 33 to 39 s at 400,000 rows, inside the request
+     * of a person at a form, of a survey respondent, or of the save the audit
+     * follows. The live lookup answers "could not check" at once and the
+     * audit logs the field as not checked; the cron builds the index
+     * (uvLookupIndexCron), and the Validation scan reads in full as before.
+     * With the index turned off there is no other way to answer, so such a
+     * field is checked by the scan only.
      */
     const LIVE_WHOLE_READ_ROWS = 50000;
     /** What such a lookup tells the person. */
     const LIVE_READ_SKIPPED_WHY = 'the lookup for this field is still being prepared';
-    /** @var bool this request answers a signed-in person's live lookup (LiveLookups) */
-    private $liveStaffLookup = false;
-    /** @var bool that lookup left a whole-field read out (wholeFieldRecords) */
+    /** What the save audit logs for a field it left unchecked for that reason; why the index did not answer follows. */
+    const AUDIT_READ_SKIPPED_WHY = 'the field holds more saved values than a save may read, and its value index could not answer';
+    /** @var bool the last lookup left a whole-field read out (wholeFieldRecords) */
     private $liveReadSkipped = false;
+
+    /** AUDIT_READ_SKIPPED_WHY with the index's reason (LookupIndex::lastProblem). */
+    private function auditReadSkippedWhy()
+    {
+        $idx = $this->lookupIndex();
+        $why = $idx === null ? 'off' : (is_callable([$idx, 'lastProblem']) ? $idx->lastProblem() : null);
+        return self::AUDIT_READ_SKIPPED_WHY . ($why === null ? '' : ' (' . self::lookupIndexProblem($why) . ')')
+            . ' - field not checked';
+    }
 
     /**
      * FieldValues::recordsWhere(), which reads every row of $fields; null,
-     * with liveReadSkipped set, when a signed-in person's live lookup would
-     * read more than LIVE_WHOLE_READ_ROWS rows. With the index turned off the
-     * read is made whatever its size: the whole-field read is then the only
-     * way the lookup has.
+     * with liveReadSkipped set, when that is more than LIVE_WHOLE_READ_ROWS
+     * rows. One bounded count through the (project_id, field_name) index
+     * decides (FieldValues::moreRowsThan). A count that cannot be made is a
+     * table that cannot be read, which recordsWhere answers with null too.
      */
     private function wholeFieldRecords($pid, array $fields, $eventId, callable $accept)
     {
-        if ($this->liveStaffLookup && $this->lookupIndex() !== null
-                && $this->fieldValues()->moreRowsThan($pid, $fields, self::LIVE_WHOLE_READ_ROWS) === true) {
+        if ($this->fieldValues()->moreRowsThan($pid, $fields, self::LIVE_WHOLE_READ_ROWS) === true) {
             $this->liveReadSkipped = true;
             return null;
         }

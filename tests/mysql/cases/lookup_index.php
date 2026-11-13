@@ -39,9 +39,23 @@ $NEIGHBOUR = uv_neighbour($PID);
     // The two log columns the index reads besides pk: REDCap's ts (written
     // from PHP's clock as YYYYMMDDHHMMSS) and object_type, with ts indexed as
     // REDCap indexes it.
-    $A->query('ALTER TABLE redcap_log_event ADD COLUMN ts BIGINT NULL, ADD COLUMN object_type VARCHAR(128) NULL, ADD KEY ts (ts)');
+    // And data_values, which holds a renamed record's other id (UNQ-6).
+    $A->query('ALTER TABLE redcap_log_event ADD COLUMN ts BIGINT NULL, ADD COLUMN object_type VARCHAR(128) NULL,
+        ADD COLUMN data_values TEXT NULL, ADD KEY ts (ts)');
     uv_redcap_project($A, $PID);
     uv_redcap_project($A, $NEIGHBOUR);
+    // The data dictionary, as far as the index reads it: which fields a
+    // project holds, and which is first (the record ID field).
+    // Not one of the runner's tables: made and dropped here.
+    $A->query('DROP TABLE IF EXISTS redcap_metadata');
+    $A->query('DROP TABLE IF EXISTS redcap_log_event9');
+    $A->query('CREATE TABLE redcap_metadata (project_id INT NOT NULL, field_name VARCHAR(100) NOT NULL, field_order FLOAT NULL,
+        PRIMARY KEY (project_id, field_name), KEY project_id_fieldorder (project_id, field_order)) ENGINE=InnoDB');
+    foreach (array($PID, $NEIGHBOUR, 950) as $p) {
+        foreach (array('record_id', 'tok', 'scan', 'num', 'label_only', 'big', 'big2', 'big3', 'big4') as $o => $f) {
+            $A->query("INSERT INTO redcap_metadata (project_id, field_name, field_order) VALUES ($p, '$f', " . ($o + 1) . ')');
+        }
+    }
 
     $old = date('YmdHis', time() - 2 * 86400);
     $logId = 0;
@@ -228,15 +242,77 @@ $NEIGHBOUR = uv_neighbour($PID);
         $ask(array('tok' => null), 'LATE-8') === array('R8') && $ask(array('tok' => null), 'GHOST-9') === array('R9'));
 
     // ---- what makes the index rebuild ------------------------------------------------
+    // A change to one field of the dictionary resets that field, not the
+    // project (UNQ-3 of 2026-11-13: one edited label stopped every lookup).
+    $builtOf = function ($f) use ($field) { $st = $field($f); return $st === null ? null : $st['built']; };
+    $A->query('UPDATE ' . Schema::table('lookup_field') . " SET built_at = built_at - 50 WHERE project_id = $PID");
+    $before = array($builtOf('tok'), $builtOf('scan'), $builtOf('num'));
+    $log($PID, 'label_only', 'redcap_metadata');
+    $mod->log = array();
+    check('lookup index: a change to a field no lookup searches resets nothing',
+        $ask(array('tok' => null), 'DUP-1') === array('S1', 'S3')
+        && array($builtOf('tok'), $builtOf('scan'), $builtOf('num')) === $before
+        && $statements('INSERT INTO ' . Schema::table('lookup_key')) === array());
+    $named = $statements('SELECT DISTINCT CAST(pk AS BINARY)');
+    check('lookup index: ...after one read of the names the change logged, through the log\'s primary key (plan '
+        . json_encode($named ? uv_explain_rows($A, $named[0][0], $named[0][1]) : null) . ')',
+        count($named) === 1 && uv_explain_key($A, $named[0][0], $named[0][1]) === 'PRIMARY');
     $log($PID, 'tok', 'redcap_metadata');
-    check('lookup index: a change to the data dictionary rebuilds the field asked for',
-        $ask(array('tok' => null), 'DUP-1') === array('S1', 'S3') && $field('tok')['ready'] === 1);
-    check('lookup index: and leaves the others to their own next lookup', $field('scan')['ready'] === 0);
+    check('lookup index: a change to an indexed field rebuilds that field',
+        $ask(array('tok' => null), 'DUP-1') === array('S1', 'S3') && $field('tok')['ready'] === 1 && $builtOf('tok') > $before[0]);
+    check('lookup index: ...and the others go on answering from the keys they have',
+        $field('scan')['ready'] === 1 && $builtOf('scan') === $before[1] && $builtOf('num') === $before[2]);
     $mod->log = array();
     $ask(array('tok' => null), 'DUP-1');
     check('lookup index: the same dictionary change does not rebuild twice',
-        $statements('DELETE FROM ' . Schema::table('lookup_key')) === array());
-    check('lookup index: the field left for later answers once built', $ask(array('scan' => null), 'dup-1') === array('S2'));
+        $statements('DELETE FROM ' . Schema::table('lookup_key')) === array()
+        && $statements('SELECT DISTINCT CAST(pk AS BINARY)') === array());
+    // A name the dictionary does not hold now may stand for any field: a
+    // field deleted or renamed away, an instrument, a whole upload.
+    $log($PID, 'gone_field', 'redcap_metadata');
+    check('lookup index: a change that names no field the dictionary holds resets every field',
+        $ask(array('tok' => null), 'DUP-1') === array('S1', 'S3') && $field('scan')['ready'] === 0 && $field('num')['ready'] === 0);
+    check('lookup index: the fields left for later answer once built', $ask(array('scan' => null), 'dup-1') === array('S2')
+        && $ask(array('num' => 'point'), '7') === array('S4', 'S5', 'S6'));
+    $log($PID, (string) $PID, 'redcap_metadata');
+    $ask(array('tok' => null), 'DUP-1');
+    check('lookup index: an upload of the whole dictionary (the project id in pk) resets every field', $field('scan')['ready'] === 0);
+    $ask(array('scan' => null), 'x');
+    $ask(array('num' => 'point'), 'x');
+    // An indexed field the dictionary no longer holds: reset with the next
+    // change, so a field renamed into its name later starts from nothing.
+    $A->query("DELETE FROM redcap_metadata WHERE project_id = $PID AND field_name = 'num'");
+    $log($PID, 'label_only', 'redcap_metadata');
+    $ask(array('tok' => null), 'DUP-1');
+    check('lookup index: an indexed field that left the dictionary is reset, the others are not',
+        $field('num')['ready'] === 0 && $field('tok')['ready'] === 1 && $field('scan')['ready'] === 1);
+    $A->query("INSERT INTO redcap_metadata (project_id, field_name, field_order) VALUES ($PID, 'num', 4)");
+    $ask(array('num' => 'point'), 'x');
+
+    // ---- a renamed record (UNQ-6 of 2026-11-13) ----------------------------------------
+    // REDCap moves the rows to the new id and logs one row, with one of the
+    // two ids in pk and the other in its values. Either way round, the new
+    // id is found and the old one is gone.
+    $rename = function ($old, $new, $pkIsOld) use ($A, $PID, &$logId) {
+        $A->query("UPDATE redcap_data SET record = '$new' WHERE project_id = $PID AND record = '$old'");
+        $A->query("UPDATE redcap_data SET `value` = '$new' WHERE project_id = $PID AND record = '$new' AND field_name = 'record_id'");
+        $logId += 10;
+        $A->query(sprintf("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event, ts, object_type, data_values)
+            VALUES (%d, %d, '%s', 'UPDATE', %s, 'redcap_data', 'record_id = ''%s''')", $logId, $PID,
+            $pkIsOld ? $old : $new, date('YmdHis'), $pkIsOld ? $new : $old));
+    };
+    check('lookup index: before the rename, the value is found under the old id', $ask(array('tok' => null), 'T-20') === array('R20'));
+    $rename('R20', 'R20-NEW', true);
+    check('lookup index: a record renamed, logged under its old id, is found under its new one (got '
+        . json_encode($ask(array('tok' => null), 'T-20')) . ')', $ask(array('tok' => null), 'T-20') === array('R20-NEW'));
+    $ask(array('scan' => null), 'S-21');
+    $rename('R21', 'R21-NEW', false);
+    check('lookup index: ...and logged under its new id, the same', $ask(array('tok' => null), 'T-21') === array('R21-NEW')
+        && $ask(array('scan' => null), 'S-21') === array('R21-NEW'));
+    $mod->log = array();
+    $ask(array('tok' => null), 'T-21');
+    $rn = $statements('SELECT data_values, log_event_id');
+    check('lookup index: a lookup with nothing new in the log does not look for renames', $rn === array());
 
     $many = array();
     for ($i = 0; $i <= LookupIndex::MAX_CHANGED; $i++) $many[] = '(' . (100000 + $i) . ", $PID, 'X$i', 'UPDATE', " . date('YmdHis') . ", 'redcap_data')";
@@ -294,8 +370,89 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('lookup index: while another request holds the project, no answer after LOCK_WAIT (waited '
         . round($waited, 1) . ' s, got ' . json_encode($got) . ', lock held by the other: ' . json_encode($held) . ')',
         $got === null && $waited >= LookupIndex::LOCK_WAIT - 0.5);
+    // Why there was no answer (UNQ-9 of 2026-11-13).
+    $ix = new LookupIndex($mod);
+    $ix->candidates($PID, array('tok' => null), 'DUP-1');
+    check('lookup index: ...and the index says it was the lock (got ' . json_encode($ix->lastProblem()) . ')', $ix->lastProblem() === 'lock');
     $B->query("SELECT RELEASE_LOCK(CONCAT('uvlk', MD5(CONCAT(COALESCE(DATABASE(), ''), '/', '$PID'))))");
     check('lookup index: ...and an answer once it lets go', $ask(array('tok' => null), 'DUP-1') === array('S1', 'S3'));
+    $ix = new LookupIndex($mod);
+    $ix->candidates($PID, array('tok' => null), 'DUP-1');
+    check('lookup index: an answer leaves no problem to report', $ix->lastProblem() === null);
+
+    // ---- a project no lookup asked about for a long time (UNQ-3 of 2026-11-13) ---------
+    // The log has moved further than a request reads: no answer and no read
+    // of the stretch, until the cron has brought the project up to date.
+    $far = (int) $A->query('SELECT MAX(log_event_id) FROM redcap_log_event4')->fetch_row()[0] + LookupIndex::MAX_SYNC_IDS + 10;
+    $set($PID, 'R12', 'tok', 'FAR-12');
+    $A->query("INSERT INTO redcap_log_event4 (log_event_id, project_id, pk, event, ts, object_type)
+        VALUES ($far, $PID, 'R12', 'UPDATE', " . date('YmdHis') . ", 'redcap_data')");
+    $mod->log = array();
+    $ix = new LookupIndex($mod, array('cronAt' => time() - 60));
+    $got = $ix->candidates($PID, array('tok' => null), 'far-12');
+    check('lookup index: a log more than MAX_SYNC_IDS ahead gives a lookup no answer (got ' . json_encode(array($got, $ix->lastProblem())) . ')',
+        $got === null && $ix->lastProblem() === 'behind');
+    $ix = new LookupIndex($mod);
+    $ix->candidates($PID, array('tok' => null), 'far-12');
+    check('lookup index: ...and with no cron run lately, it says the cron is not running', $ix->lastProblem() === 'no-cron');
+    check('lookup index: ...and the lookup reads none of it', $statements('SUM(log_event_id > ?') === array()
+        && $statements('GROUP BY p') === array());
+    $r = (new LookupIndex($mod))->maintain(time() + 60);
+    check('lookup index: the cron brings the project up to date (got ' . json_encode($r) . ')', $r['synced'] === 1);
+    check('lookup index: ...and the next lookup answers, with the change it had missed',
+        $ask(array('tok' => null), 'far-12') === array('R12'));
+    check('lookup index: a cron run with every project in reach syncs none', (new LookupIndex($mod))->maintain(time() + 60)['synced'] === 0);
+
+    // ---- the plan on REDCap's own log table (UNQ-7 of 2026-11-13) ------------------------
+    // REDCap's log table has no index on (project_id, log_event_id). Its keys
+    // that lead with project_id reach every row the project ever logged, so
+    // each read of a stretch of the log names the primary key.
+    $A->query('CREATE TABLE redcap_log_event9 (
+        log_event_id BIGINT NOT NULL AUTO_INCREMENT, project_id INT NOT NULL DEFAULT 0, ts BIGINT NULL,
+        `user` VARCHAR(255) NULL, ip VARCHAR(100) NULL, page VARCHAR(255) NULL, event VARCHAR(32) NULL,
+        object_type VARCHAR(128) NULL, sql_log MEDIUMTEXT NULL, pk TEXT NULL, event_id INT NULL,
+        data_values TEXT NULL, description TEXT NULL, legacy INT NOT NULL DEFAULT 0, change_reason TEXT NULL,
+        PRIMARY KEY (log_event_id), KEY description_project (description(20), project_id),
+        KEY event_project (event, project_id), KEY object_type (object_type, legacy), KEY pk (pk(191)),
+        KEY ts (ts), KEY `user` (`user`(191)), KEY user_project (project_id, `user`(191))) ENGINE=InnoDB');
+    // 20,000 rows of this project (two users) among 1,000 of others: the
+    // shape in which a key led by project_id looks cheapest to the server.
+    $vals = array();
+    for ($i = 1; $i <= 21000; $i++) {
+        $own = $i % 21 !== 0;
+        $vals[] = '(' . ($own ? $PID : $NEIGHBOUR) . ', ' . date('YmdHis') . ", 'u" . ($i % 2) . "', 'UPDATE', 'redcap_data', 'R" . ($i % 300) . "')";
+        if (count($vals) === 3000) {
+            $A->query('INSERT INTO redcap_log_event9 (project_id, ts, `user`, event, object_type, pk) VALUES ' . implode(', ', $vals));
+            $vals = array();
+        }
+    }
+    $A->query('ANALYZE TABLE redcap_log_event9');
+    $mod->log = array();
+    $set($PID, 'R13', 'tok', 'PLAN-13');
+    $logId = $far + 10;
+    $A->query("INSERT INTO redcap_log_event4 (log_event_id, project_id, pk, event, ts, object_type, data_values)
+        VALUES ($logId, $PID, 'R13', 'UPDATE', " . date('YmdHis') . ", 'redcap_data', 'tok = ''PLAN-13''')");
+    $A->query("INSERT INTO redcap_log_event4 (log_event_id, project_id, pk, event, ts, object_type)
+        VALUES (" . ($logId + 1) . ", $PID, 'label_only', 'MANAGE', " . date('YmdHis') . ", 'redcap_metadata')");
+    $ask(array('tok' => null), 'plan-13');
+    foreach (array('the window count' => 'SUM(log_event_id > ?', 'the changed records' => 'GROUP BY p',
+                   'the renamed records' => 'SELECT data_values, log_event_id', 'the dictionary names' => 'SELECT DISTINCT CAST(pk AS BINARY)') as $what => $needle) {
+        $q = $statements($needle);
+        // The same statement over the last 50 positions of REDCap's table.
+        $sql = $q ? str_replace('redcap_log_event4', 'redcap_log_event9', $q[0][0]) : '';
+        $params = $q ? $q[0][1] : array();
+        // The stretch is the two parameters before the project id.
+        $at = array_search($PID, $params, true);
+        if ($at !== false && $at >= 2) {
+            $params[$at - 2] = '20950';
+            $params[$at - 1] = '21000';
+        }
+        $plan = $q ? $A->query('EXPLAIN ' . uv_inline_params($A, $sql, $params))->fetch_assoc() : null;
+        check('lookup index: ' . $what . ' read a stretch of REDCap\'s log table through its primary key (plan '
+            . json_encode($plan ? array($plan['key'], $plan['type'], $plan['rows']) : null) . ')',
+            $plan !== null && $plan['key'] === 'PRIMARY' && $plan['type'] === 'range' && (int) $plan['rows'] <= 200);
+    }
+    $A->query('DROP TABLE redcap_log_event9');
     $mod->inner->failOn = 'FROM redcap_log_event4';
     check('lookup index: a log that cannot be read is no answer', $ask(array('tok' => null), 'DUP-1') === null);
     $mod->inner->failOn = null;
@@ -303,6 +460,9 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('lookup index: ...and the lock is let go after a failure', (string) $free === '1');
     $A->query('DROP TABLE ' . Schema::table('lookup_key'));
     check('lookup index: a missing table is no answer', $ask(array('tok' => null), 'DUP-1') === null);
+    $ix = new LookupIndex($mod);
+    $ix->candidates($PID, array('tok' => null), 'DUP-1');
+    check('lookup index: ...and the index says a read failed', $ix->lastProblem() === 'error');
     check('lookup index: the tables come back with ensureLookupIndex()', Schema::ensureLookupIndex($mod) === true);
     $A->query("UPDATE redcap_projects SET log_event_table = 'redcap_log_event' WHERE project_id = $PID");
 
@@ -336,6 +496,9 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('lookup index: a field larger than a lookup may build gets no answer, and is marked for the cron (got '
         . json_encode(array($got, $fb)) . ')', $got === null && $fb !== null && $fb['ready'] === 0 && $fb['wanted'] > 0
         && $keysB('big') === 0 && $statements('INSERT INTO ' . Schema::table('lookup_key')) === array());
+    $ix = new LookupIndex($mod, array('liveBuildRows' => 50, 'cronAt' => time() - 60));
+    $ix->candidates($P3, array('big' => null), 'big-7');
+    check('lookup index: ...and says it waits for the cron (got ' . json_encode($ix->lastProblem()) . ')', $ix->lastProblem() === 'cron');
     $count = $statements('SELECT 1 FROM redcap_data');
     check('lookup index: ...after counting its rows only as far as the limit (got ' . json_encode($count) . ')',
         count($count) === 1 && strpos($count[0][0], 'LIMIT 51') !== false);
@@ -382,13 +545,12 @@ $NEIGHBOUR = uv_neighbour($PID);
     $r = $small()->maintain(time() + 60);
     $mod->after = null;
     $f3 = $fieldB('big3');
-    check('lookup index: a data dictionary change during a cron build: the build does not count (got '
+    check('lookup index: a change to the field\'s dictionary entry during its cron build: the build does not count (got '
         . json_encode(array($r, $f3)) . ')', $r['built'] === 0 && $f3['ready'] === 0 && $f3['building'] === 0);
-    check('lookup index: ...the project\'s other fields stop answering too', $askB('big', 'big-7') === null);
+    check('lookup index: ...the project\'s other fields go on answering', $askB('big', 'big-7') === array('B7'));
     $r = $small()->maintain(time() + 60);
-    check('lookup index: ...and the next cron runs build them again (got ' . json_encode($r) . ')',
-        $r['built'] >= 1 && $small()->maintain(time() + 60)['built'] >= 0
-        && $askB('big3', 'big3-4') === array('B4') && $askB('big', 'big-7') === array('B7'));
+    check('lookup index: ...and the next cron run builds the field again (got ' . json_encode($r) . ')',
+        $r['built'] === 1 && $askB('big3', 'big3-4') === array('B4') && $askB('big', 'big-7') === array('B7'));
 
     // A refresh ahead of REBUILD_AFTER: the field answers throughout, and a key
     // the log never told the index about is replaced.
@@ -419,7 +581,16 @@ $NEIGHBOUR = uv_neighbour($PID);
     $busy = new LookupIndex($mod, uv_lix_opts(array('liveBuildRows' => 50, 'cronAt' => time() - 60)));
     check('lookup index: wanted for CRON_GRACE while a cron runs, a lookup still leaves it to the cron',
         $busy->candidates($P3, array('big4' => null), 'x') === null && $fieldB('big4')['ready'] === 0);
-    check('lookup index: wanted for CRON_GRACE with no cron, a lookup builds it itself', $askB('big4', 'x') === array('B1')
+    // With no cron either, the build is still not a lookup's (UNQ-3 of
+    // 2026-11-13: it read the whole field inside a request). The lookup says
+    // the cron is not running, and the cron builds the field when it does.
+    $mod->log = array();
+    $idle = $small();
+    check('lookup index: wanted for CRON_GRACE with no cron, a lookup still does not build it (got ' . json_encode($idle->lastProblem()) . ')',
+        $idle->candidates($P3, array('big4' => null), 'x') === null && $idle->lastProblem() === 'no-cron'
+        && $fieldB('big4')['ready'] === 0 && $statements('INSERT INTO ' . Schema::table('lookup_key')) === array());
+    $r = $small()->maintain(time() + 60);
+    check('lookup index: ...the cron does (got ' . json_encode($r) . ')', $r['built'] === 1 && $askB('big4', 'x') === array('B1')
         && $fieldB('big4')['wanted'] === 0);
 
     // The cron's limits: a deadline already past does nothing, and a field no
@@ -476,4 +647,5 @@ $NEIGHBOUR = uv_neighbour($PID);
         (new LookupIndex($mod))->forgetProject($P3) === true && $count($P3) === 0);
     check('FRM-7: ...and leaves every other project as it was', $count($PID) === $beforeOther);
     check('FRM-7: forgetProject() of no project does nothing', (new LookupIndex($mod))->forgetProject(0) === false);
+    $A->query('DROP TABLE IF EXISTS redcap_metadata');
 }

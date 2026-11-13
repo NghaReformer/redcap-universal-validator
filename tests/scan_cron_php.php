@@ -426,6 +426,22 @@ $threw = false;
 try { $out = $m->uvLookupIndexCron(); } catch (\Throwable $e) { $threw = true; }
 check('lookup cron: a database failure does not escape, and comes back as a summary',
     !$threw && is_string($out) && stripos($out, 'could not read') !== false);
+// A run that cannot do its work says so (UNQ-9 of 2026-11-13): "0 field(s)
+// built" was all an index that could never answer ever said.
+$down = function ($m) {
+    return array_values(array_filter($m->logCalls, function ($L) { return $L[0] === 'uv-lookup-index-unavailable'; }));
+};
+check('lookup cron: tables that cannot be read are recorded in the module log, by class and never by message',
+    count($down($m)) === 1 && $down($m)[0][1]['class'] === 'RuntimeException' && strpos($out, 'not checked') !== false);
+$m->uvLookupIndexCron();
+check('lookup cron: ...once a day, not once a run', count($down($m)) === 1);
+// The stand-in database answers GET_LOCK with nothing: a lock the server refuses.
+$m = new UniversalValidator();
+$m->systemSettings = [];
+$out = $m->uvLookupIndexCron();
+check('lookup cron: a lock the server refuses is said in the summary (got ' . json_encode($out) . ')',
+    strpos($out, 'not done: 1 x the index was held by another request, or the server refused its lock') !== false);
+check('lookup cron: ...and in the module log', count($down($m)) === 1 && strpos($down($m)[0][1]['why'], 'refused its lock') !== false);
 
 // ---- 8a) FRM-11: an idle cron writes no log row, and old operational rows are removed ----
 // Both scan crons wrote a scan-cron row on every pass (120 a day with nothing

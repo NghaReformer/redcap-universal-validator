@@ -425,7 +425,7 @@ whether the scan is on or not.
 |---|---|---|---|
 | `uv_scan_reap_abandoned` | 15 minutes | 300 seconds | Ends as expired a run that made no progress for `scan-system-stale-run-hours` (24 by default), removes worker places above `scan-system-max-concurrent-projects`, and closes the previous findings of each project whose latest whole-project run finished complete. |
 | `uv_scan_expire_values` | hour | 900 seconds | Clears stored values that a tightened privacy setting revoked, deletes finished runs past their project's run retention, and clears stored values past their value retention. |
-| `uv_lookup_index` | 5 minutes | 240 seconds | Builds the value index of a field too large to build during a lookup, refreshes it weekly, and drops the index of a field no lookup has used in 30 days. |
+| `uv_lookup_index` | 5 minutes | 240 seconds | Builds the value index of a field too large to build during a lookup, refreshes it weekly, and drops the index of a field no lookup has used in 30 days. Brings a project's index up to date when no lookup has asked about the project for a long time. Its summary line says when the index cannot work. |
 
 A pass uses a quarter of its longest run, reads the projects with scan data
 500 to a statement, works in bounded slices, and saves where it stopped so the

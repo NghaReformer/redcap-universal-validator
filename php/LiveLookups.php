@@ -120,9 +120,8 @@ trait LiveLookups
             // this caller"; a survey hash is caller-supplied and proves nothing.
             $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
-            // A signed-in person at a form: a field too large to read whole
-            // answers "could not check" at once (wholeFieldRecords).
-            $this->liveStaffLookup = $isAuthenticated && !$isSurvey;
+            // A field too large to read whole answers "could not check" at
+            // once (wholeFieldRecords).
             $this->liveReadSkipped = false;
             // One wording for every refusal of a caller REDCap did not sign
             // in: "not a checkable field" for a field with no rule beside "not
@@ -143,6 +142,13 @@ trait LiveLookups
                 if (strlen($v) > 1024) return ['error' => 'value too long'];
                 $values[strtolower($k)] = $v;
             }
+
+            // A caller REDCap did not sign in meets the throttle before any
+            // work is done for it (UNQ-8): the rules were read and parsed,
+            // and the record read for its branch, for requests that were
+            // then refused, uncounted. Every such request is counted now,
+            // the refused ones included.
+            if (!$isAuthenticated && $this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
 
             $live = $this->liveCondValues($payload, $project_id, $instrument);
             if ($live === null) return ['error' => 'malformed request'];
@@ -193,8 +199,8 @@ trait LiveLookups
                 if (!self::onSurveyInstrument($this->dataDictionary($project_id), $field, $instrument)) {
                     return ['error' => 'not enabled on surveys'];
                 }
-                // ...and never faster than the throttle allows.
-                if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
+                // ...and never faster than the throttle allows (asked above,
+                // before the rules were read).
             } else {
                 // A signed-in caller is throttled too, and answered only about
                 // forms they may open: "already used" on a field of a form the
@@ -301,8 +307,10 @@ trait LiveLookups
             $recOut = null;
             $fieldOut = null;
             if ($isAuthenticated && !$isSurvey) {
-                $recOut = $col['record'];
-                if ($group_id !== null && $group_id !== '') {
+                // A record REDCap did not hand this caller (findCollision
+                // compared it from the data table, UNQ-2) is named to nobody.
+                $recOut = empty($col['beyond']) ? $col['record'] : null;
+                if ($recOut !== null && $group_id !== null && $group_id !== '') {
                     // A DAG-bound user may learn THAT the value is used, but a
                     // record id outside their DAG is not theirs to see.
                     $userDag = ScanPageView::dagNameOf($group_id);
@@ -317,8 +325,6 @@ trait LiveLookups
             return ['used' => true, 'record' => $recOut] + ($fieldOut !== null ? ['field' => $fieldOut] : []);
         } catch (\Throwable $e) {
             return ['error' => 'unique check failed']; // client fails open; no detail leaks
-        } finally {
-            $this->liveStaffLookup = false;
         }
     }
 
@@ -357,9 +363,8 @@ trait LiveLookups
         try {
             $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
-            // A signed-in person at a form: a field too large to read whole
-            // answers "could not check" at once (wholeFieldRecords).
-            $this->liveStaffLookup = $isAuthenticated && !$isSurvey;
+            // A field too large to read whole answers "could not check" at
+            // once (wholeFieldRecords).
             $this->liveReadSkipped = false;
             $refused = $isAuthenticated ? 'not a checkable field' : 'not enabled on surveys';   // one wording, as unique-check (UNQ-9)
             $field = (isset($payload['field']) && is_string($payload['field'])) ? strtolower(trim($payload['field'])) : '';
@@ -652,7 +657,8 @@ trait LiveLookups
             if (!$pid) return false;
             $db = new Scan\ModuleDb($this);
             $bucket = ((int) floor(time() / 60)) * self::RATE_TIERS + 2;
-            $db->exec('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
+            // execNoCount(): the answer is LAST_INSERT_ID(), as in surveyRateLimited.
+            $db->execNoCount('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
                 (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
                 ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
                 [(int) $pid, $bucket]);
@@ -818,6 +824,15 @@ trait LiveLookups
      *       array, appended one entry, and the last write won. See the tier's
      *       own comment for why the window is fixed rather than sliding.
      *
+     *   (1b) For a caller counted in the sessionless bucket: a window per
+     *       ADDRESS (surveyAddressLimited, UNQ-4), asked before the project's
+     *       counter and never charged to it once it refuses, so one machine
+     *       cannot spend the budget every respondent of the project shares.
+     *
+     * A LIMIT REACHED IS LOGGED, once per window (noteThrottleReached,
+     * UNQ-4): respondents were told "too many checks" for the rest of the
+     * minute and the module log said nothing.
+     *
      * Still defence in depth, not THE defence: a single TARGETED probe is
      * inherent to answering "is this value already used?" at all, which is why
      * the survey opt-in is refused on Identifier fields and off by default
@@ -876,6 +891,8 @@ trait LiveLookups
             // not depend on the caller keeping anything.
             $sessioned = false;
         }
+        // Tier (1b): one address, for callers the sessionless bucket counts.
+        if (!$sessioned && $this->surveyAddressLimited($pid, $now)) return true;
         // Tier (2): bound the flood per project, whether or not tier 1 ran.
         //
         // A COUNTER THE DATABASE OWNS, not a timestamp array this process reads,
@@ -948,6 +965,8 @@ trait LiveLookups
                 throw new \RuntimeException('the counter did not report a value');
             }
             $hits = (int) $r[0][0];
+            // The one request that takes the counter past the cap says so.
+            if ($hits === $pmax + 1) $this->noteThrottleReached($pid, $sessioned ? 'sessioned' : 'sessionless', $pmax);
             // Self-pruning, and only on the request that created the bucket, so
             // this is one DELETE per project per window rather than one per
             // check. Two windows of slack because a request can be in flight
@@ -972,6 +991,81 @@ trait LiveLookups
             // enough to see it and cheap enough to survive a flood.
             $this->noteThrottleUnavailable($pid, (int) floor($now / $window), $e);
             return true;
+        }
+    }
+
+    /**
+     * The per-address tier of surveyRateLimited() (UNQ-4): whether the
+     * address this request came from has made more than THROTTLE_ADDRESS
+     * sessionless checks on project $pid in this minute.
+     *
+     * The project's sessionless cap is one counter for everyone. Ten requests
+     * a second from one machine filled it, and every respondent was told
+     * "too many checks" for the rest of each minute. An address is refused
+     * here at half that cap, before the project's counter is touched, so it
+     * takes more than one address to do the same.
+     *
+     * The address is REMOTE_ADDR and nothing a caller can set: a forwarding
+     * header is free to forge, and counting by it would hand out a fresh
+     * budget per request. Behind a reverse proxy every caller has the
+     * proxy's address, and this tier is then a cap of THROTTLE_ADDRESS a
+     * minute on sessionless checks for the project (README). No address (a
+     * job, a test): no tier.
+     *
+     * KEPT IN THE RATE BUCKETS, IN NUMBERS NO OTHER TIER USES. A bucket at or
+     * above ADDRESS_BUCKETS is (minute mod 1024) * 2^21 + 21 bits of a hash
+     * of the address: no address is stored, and two addresses that share a
+     * slot share a count. The request that creates a slot deletes the
+     * project's slots of every minute but this one and the last. Fails open,
+     * as the whole throttle does.
+     */
+    private function surveyAddressLimited($pid, $now)
+    {
+        try {
+            $ip = (isset($_SERVER['REMOTE_ADDR']) && is_string($_SERVER['REMOTE_ADDR'])) ? trim($_SERVER['REMOTE_ADDR']) : '';
+            if ($ip === '' || !$pid) return false;
+            $minute = (int) floor($now / 60);
+            $base = function ($m) { return self::ADDRESS_BUCKETS + (($m % 1024) << 21); };
+            $slot = $base($minute) + (crc32($ip) & 0x1FFFFF);
+            $db = new Scan\ModuleDb($this);
+            $db->execNoCount('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
+                (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
+                ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
+                [(int) $pid, $slot]);
+            $r = $db->select('SELECT LAST_INSERT_ID()', []);
+            if (!isset($r[0][0]) || $r[0][0] === null) return false;
+            $hits = (int) $r[0][0];
+            if ($hits === 1) {
+                $prev = $base($minute + 1023);
+                $db->execNoCount('DELETE FROM ' . Scan\Schema::table('rate_bucket') . '
+                    WHERE project_id = ? AND bucket >= ? AND NOT (bucket BETWEEN ? AND ?) AND NOT (bucket BETWEEN ? AND ?)',
+                    [(int) $pid, self::ADDRESS_BUCKETS, $base($minute), $base($minute) + 0x1FFFFF, $prev, $prev + 0x1FFFFF]);
+            }
+            if ($hits === self::THROTTLE_ADDRESS + 1) $this->noteThrottleReached($pid, 'address', self::THROTTLE_ADDRESS);
+            return $hits > self::THROTTLE_ADDRESS;
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'LiveLookups::surveyAddressLimited');
+            return false;
+        }
+    }
+
+    /**
+     * Record in the module log that a survey throttle reached its limit
+     * (UNQ-4). Called by the one request that took a counter one past its
+     * cap, so there is one row per counter per window and nothing to
+     * remember. $tier: 'sessionless', 'sessioned' or 'address'. No address
+     * and no value is logged.
+     */
+    private function noteThrottleReached($pid, $tier, $limit)
+    {
+        try {
+            $this->log('uv-throttle-limit-reached', [
+                'project_id' => (int) $pid,
+                'tier'       => (string) $tier,
+                'limit'      => (int) $limit,
+            ]);
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'LiveLookups::noteThrottleReached');
         }
     }
 
