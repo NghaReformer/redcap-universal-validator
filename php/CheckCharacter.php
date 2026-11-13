@@ -1605,6 +1605,69 @@ class CheckCharacter
      * empty-class gate, so a "]" always closes a class here.
      * Twin of QRID_jsRefusedQuantifier (js).
      */
+    /**
+     * The lower-case text of $pattern that can never match, or null (review
+     * 2026-11-13, VAL-9). A value is upper-cased before its format is tested,
+     * in both runtimes, so fc[0-9]{4} matches nothing and [a-z0-9] matches
+     * digits only; both saved without a word. Reported: the first run of
+     * lower-case letters written as literals outside a class, or the first
+     * class that holds a lower-case letter and no upper-case one. A negated
+     * class is left alone ([^a-z] still matches what it says of an upper-cased
+     * value), and so is a class that also names the upper-case letters
+     * ([A-Za-z]). Escapes, a group's name and "(?" prefix are not text.
+     * Asked by AnnotationRules::checkFragment, the gate of every configuration
+     * channel; the browser never receives a rule it refused.
+     */
+    public static function lowercaseLiteral($pattern)
+    {
+        $p = (string) $pattern;
+        $n = strlen($p);
+        $run = '';
+        for ($i = 0; $i < $n; $i++) {
+            $c = $p[$i];
+            if ($c === '\\') {
+                if ($run !== '') return $run;
+                $e = $i + 1 < $n ? $p[$i + 1] : '';
+                $i++;
+                if ($e === 'x') $i += 2;                      // its hex digits
+                elseif ($e === 'u') $i += 4;
+                elseif ($e === 'c') $i += 1;                  // the letter it names
+                continue;
+            }
+            if ($c === '(' && preg_match('/\G\(\?(?:<[=!]|[:=!]|<[A-Za-z_][A-Za-z0-9_]*>)/', $p, $m, 0, $i)) {
+                if ($run !== '') return $run;
+                $i += strlen($m[0]) - 1;
+                continue;
+            }
+            if ($c === '[') {
+                if ($run !== '') return $run;
+                $j = $i + 1;
+                $negated = ($j < $n && $p[$j] === '^');
+                if ($negated) $j++;
+                $lower = false; $upper = false;
+                for (; $j < $n && $p[$j] !== ']'; $j++) {
+                    if ($p[$j] === '\\') {
+                        $e = $j + 1 < $n ? $p[$j + 1] : '';
+                        $j++;
+                        if ($e === 'x') $j += 2;
+                        elseif ($e === 'u') $j += 4;
+                        elseif ($e === 'c') $j += 1;
+                        elseif ($e === 'w' || $e === 'W' || $e === 'D' || $e === 'S') $upper = true;   // letters are in it
+                        continue;
+                    }
+                    if ($p[$j] >= 'a' && $p[$j] <= 'z') $lower = true;
+                    elseif ($p[$j] >= 'A' && $p[$j] <= 'Z') $upper = true;
+                }
+                if (!$negated && $lower && !$upper) return substr($p, $i, min($j, $n - 1) - $i + 1);
+                $i = $j;
+                continue;
+            }
+            if ($c >= 'a' && $c <= 'z') { $run .= $c; continue; }
+            if ($run !== '') return $run;
+        }
+        return $run !== '' ? $run : null;
+    }
+
     public static function usesJsRefusedQuantifier($pattern)
     {
         $p = (string) $pattern;

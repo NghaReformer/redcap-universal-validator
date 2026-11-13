@@ -4063,7 +4063,6 @@
                         ]
                     }
                 ],
-                "suggestFix": true,
                 "caseSensitive": true,
                 "strip": "-",
                 "keepChars": "#",
@@ -4113,7 +4112,6 @@
                         ]
                     }
                 ],
-                "suggestFix": true,
                 "caseSensitive": true,
                 "strip": "-",
                 "keepChars": "#",
@@ -4163,7 +4161,6 @@
                         ]
                     }
                 ],
-                "suggestFix": true,
                 "caseSensitive": true,
                 "strip": "-",
                 "keepChars": "#",

@@ -867,7 +867,7 @@ One rule using every rule-level key. The `Lab` entry has no `algorithm`, so it u
 the rule's Damm check over the digits only; `Legacy` overrides it with `none`:
 
 ```text
-@UVALIDATE={"type":"pooled","algorithm":"damm","source":"digits_only","strip":"-","keepChars":"#","expectedIds":2,"blockSave":"confirm","when":"[sample_type]='2'","suggestFix":true,"caseSensitive":true,"note":"Pooled sputum pair","alternates":[
+@UVALIDATE={"type":"pooled","algorithm":"damm","source":"digits_only","strip":"-","keepChars":"#","expectedIds":2,"blockSave":"confirm","when":"[sample_type]='2'","caseSensitive":true,"note":"Pooled sputum pair","alternates":[
   {"label":"Lab","pattern":"LB-[0-9]{7}","lengths":[10]},
   {"label":"Legacy","pattern":"OLD#[0-9]{4}","algorithm":"none","lengths":[8]}
 ]}
@@ -6322,7 +6322,7 @@ top to bottom. The right-hand column is the tag key that means the same thing.
 | Also check live on survey pages | Unique | `surveys` |
 | Check-character method | Single, Pooled | `algorithm` |
 | What the check runs over | Single, Pooled | `source` |
-| Suggest the correct final check character | Single, Pooled | `suggestFix` |
+| Suggest the correct final check character | Single | `suggestFix` |
 | Format pattern | Single, Pooled | `pattern` |
 | Several ID formats in one field (JSON list) | Single, Pooled | `alternates` |
 | Separators to ignore | Single, Pooled | `strip` |
@@ -6392,7 +6392,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `expectedIds`   | integer        | *(none)*           | pooled | Expected number of IDs in the field                   |
 | `blockSave`     | string         | `off`              | all    | `off`, `confirm`, `hard`                        |
 | `when`          | string         | *(none)*           | all    | Condition; the rule runs only while true              |
-| `suggestFix`    | boolean        | `false`            | all    | Opt in to the "should end in X" hint                  |
+| `suggestFix`    | boolean        | `false`            | single | Opt in to the "should end in X" hint                  |
 | `note`          | string         | *(none)*           | all    | Rule label                                            |
 | `caseSensitive` | boolean        | `false`            | all    | Exact-case text in`when`                            |
 

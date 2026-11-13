@@ -752,6 +752,11 @@ Depending on how the rule is set:
   if wrapped in `^(?:…)$`. You do not add `^` or `$` yourself.
 - The value is **upper-cased and dash-unified** before matching, so write
   patterns in uppercase: `FC[0-9]{4}`, not `fc[0-9]{4}`.
+  A pattern with lower-case text that can never match is a configuration error.
+- In an `@UVALIDATE` action tag the pattern sits inside JSON, and JSON needs
+  **every backslash doubled**: write `"pattern":"FC\\d{4}"` for the pattern
+  `FC\d{4}`. A single backslash gives "JSON does not parse". The Configure
+  dialog takes the pattern as it is, with single backslashes.
 - Patterns must be **printable ASCII**. Python-only constructs (`\A`, `\Z`,
   `(?P<name>…)`) are rejected with a specific message — use `^`/`$` and plain
   groups instead.

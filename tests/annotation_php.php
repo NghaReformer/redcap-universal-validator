@@ -92,9 +92,10 @@ $r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"\\\\
 check('F2-BYPASS-01: \\x{} code-point escape -> u-flag dialect error',
     isset($r['error']) && strpos($r['error'], 'flag') !== false);
 // F2-OVERREJECT-02: a LITERAL backslash pair before u{ is not a \u escape -> accepted.
-$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"\\\\\\\\u{2}"}');
+// Asked of the pattern gate: the rule itself is refused since VAL-9 (2026-11-13)
+// for its lower-case u, which an upper-cased value can never match.
 check('F2-OVERREJECT-02: literal-backslash \\\\u{ is not a u-flag escape -> accepted',
-    !isset($r['error']));
+    CheckCharacter::gatePattern('\\\\u{2}', $why) !== null);
 // F1/F2 control: a plain bounded pattern with disjoint classes is still accepted.
 $r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"[A-Z]{3}[0-9]{5}"}');
 check('F1/F2 control: disjoint bounded pattern still passes',
@@ -917,11 +918,11 @@ check('H-01 the driving case (disjoint shapes) still accepted, single',
     }, $ALT4)]) === []);
 check('H-01 the driving case still accepted, pooled',
     fragErrors(['type' => 'pooled', 'strip' => '-', 'alternates' => $ALT4]) === []);
-// no witness can be produced from an alternation, so no claim is made
+// no value fits both, so no claim is made (the alternation is read, not skipped)
 check('H-01 stays silent when no witness can be built',
     $altErr([
-        ['label' => 'wild', 'pattern' => '[A-Z0-9-]+',   'algorithm' => 'none'],
-        ['label' => 'grp',  'pattern' => '(a|b)[0-9]{3}', 'algorithm' => $MOD],
+        ['label' => 'wild', 'pattern' => '[C-Z][A-Z0-9-]*', 'algorithm' => 'none'],
+        ['label' => 'grp',  'pattern' => '(A|B)[0-9]{3}', 'algorithm' => $MOD],
     ], ['type' => 'single']) === '');
 
 // H-02: the KEEP map was keyed by display name, so two alternates sharing a
@@ -1415,6 +1416,67 @@ check('AST-11: an assert that compares a field with itself is refused',
     is_array($r) && strpos($r[0]['error'] ?? '', 'compares "[h]" with itself') !== false);
 $r = AnnotationRules::parseAllTags('@UVREQUIRED={"when":"[a]<>[a]"}');
 check('AST-11: so is a "when" that does', is_array($r) && strpos($r[0]['error'] ?? '', 'with itself') !== false);
+
+// ---- review 2026-11-13: VAL-6, VAL-7, VAL-9, VAL-10 ----
+$uvErr = function ($json) {
+    $r = AnnotationRules::parseField('@UVALIDATE=' . $json);
+    return isset($r['error']) ? $r['error'] : '';
+};
+// VAL-6: the cap both runtimes enforce is on (format, length) pairs. Eight
+// formats of five lengths each are five distinct lengths and forty pairs.
+$pairAlts = function ($formats) {
+    $alts = [];
+    foreach (array_slice(str_split('ABCDEFGH'), 0, $formats) as $letter) {
+        $alts[] = ['label' => 'F' . $letter, 'pattern' => $letter . '[0-9]{9,13}', 'algorithm' => 'none',
+                   'lengths' => [10, 11, 12, 13, 14]];
+    }
+    return $alts;
+};
+check('VAL-6: more format-and-length pairs than the parser tries are refused when the rule is saved',
+    strpos($altErr($pairAlts(8)), '40 format-and-length combinations') !== false);
+check('VAL-6: a rule under the pair cap gets no such error',
+    strpos($altErr($pairAlts(6)), 'format-and-length') === false);
+// VAL-7: an exact pooled length too short to hold a check character and one more
+check('VAL-7: idLengths below the check character plus one is refused',
+    strpos($uvErr('{"type":"pooled","idLengths":[1]}'), 'leaves no room for an ID') !== false);
+check('VAL-7: an alternate length below it is refused too',
+    strpos($altErr([['label' => 'tiny', 'pattern' => '[0-9A-Z]', 'lengths' => [1]]]), 'leaves no room for an ID') !== false);
+check('VAL-7: a format-only alternate of one character is still allowed',
+    strpos($altErr([['label' => 'flag', 'pattern' => '[XYZ]', 'algorithm' => 'none', 'lengths' => [1]]]),
+        'leaves no room') === false);
+check('VAL-7: a usual exact length is accepted', $uvErr('{"type":"pooled","idLengths":[9]}') === '');
+// VAL-9: options that no part of the rule reads
+check('VAL-9: lower-case text in a pattern is refused',
+    strpos($uvErr('{"algorithm":"none","pattern":"fc[0-9]{4}"}'), 'lower-case "fc"') !== false);
+check('VAL-9: so is a class of lower-case letters only',
+    strpos($uvErr('{"algorithm":"none","pattern":"[a-z0-9]{4}"}'), 'lower-case "[a-z0-9]"') !== false);
+check('VAL-9: a lower-case alternate pattern is refused under its name',
+    strpos($altErr([['label' => 'low', 'pattern' => 'ab[0-9]{4}', 'algorithm' => 'none', 'lengths' => [6]]]),
+        'low: the format pattern has the lower-case "ab"') !== false);
+check('VAL-9: a class with both cases, a negated class and an escape letter are not lower-case text',
+    $uvErr('{"algorithm":"none","pattern":"[A-Za-z0-9]{4}"}') === ''
+    && $uvErr('{"algorithm":"none","pattern":"[^a-z]{4}"}') === ''
+    && $uvErr('{"algorithm":"none","pattern":"FC\\\\d{4}"}') === '');
+check('VAL-9: a pooled-only key on a single-value rule is refused',
+    strpos($uvErr('{"idLengths":[9]}'), '"idLengths" applies to a pooled field only') !== false
+    && strpos($uvErr('{"type":"single","expectedIds":2,"keepChars":"#"}'), '"expectedIds", "keepChars" apply') !== false);
+check('VAL-9: suggestFix on a pooled rule is refused',
+    strpos($uvErr('{"type":"pooled","suggestFix":true}'), '"suggestFix" does nothing on a pooled field') !== false);
+check('VAL-9: suggestFix on a format-only rule is refused',
+    strpos($uvErr('{"algorithm":"none","pattern":"A[0-9]{4}","suggestFix":true}'), 'has nothing to suggest') !== false);
+check('VAL-9: suggestFix on a rule with a check character is accepted',
+    $uvErr('{"suggestFix":true}') === '' && $uvErr('{"suggestFix":false,"type":"pooled"}') === '');
+// VAL-10: a single backslash in the tag's JSON
+$e = $uvErr('{"algorithm":"none","pattern":"FC\d{4}"}');
+check('VAL-10: a single backslash in the tag JSON is named in the error',
+    strpos($e, 'JSON does not parse') !== false && strpos($e, 'must be doubled') !== false
+    && strpos($e, 'write "\\\\d" where the pattern needs \d') !== false);
+$e = $uvErr('{"algorithm":"none" "pattern":"FC[0-9]{4}"}');
+check('VAL-10: another JSON mistake gets no backslash advice',
+    strpos($e, 'JSON does not parse') !== false && strpos($e, 'doubled') === false);
+$e = $uvErr('{"algorithm":"none","pattern":"FC\\\\d{4}" "x"}');
+check('VAL-10: a doubled backslash is not blamed for another mistake',
+    strpos($e, 'JSON does not parse') !== false && strpos($e, 'doubled') === false);
 
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);
