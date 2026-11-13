@@ -1921,13 +1921,7 @@ class UniversalValidator extends AbstractExternalModule
         if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
         if ($beyond) return $beyondWhy;
         $unseen = array_values(array_filter($more, function ($r) use ($got) { return !array_key_exists($r, $got); }));
-        if ($unseen && $scope !== 'dag') {
-            if ($spec['where'] === null && !$spec['returns']) return ['state' => 'found', 'record' => $unseen[0], 'dag' => false];
-            return ['state' => 'unknown', 'record' => null, 'dag' => null,
-                    'why' => isset($opts['callerDag']) && $opts['callerDag'] !== null
-                        ? self::EXISTS_BEYOND_GROUP_WHY
-                        : 'the saved values could not be read just now'];
-        }
+        if ($unseen && $scope !== 'dag') return $this->existsUnseenAnswer($spec['where'] === null && !$spec['returns'], $opts);
         return self::existsFilteredMiss($notFound, $filtered);
     }
 
@@ -11890,36 +11884,77 @@ class UniversalValidator extends AbstractExternalModule
         if ($cands === null) return null;
         $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
         if (!$cands) return $notFound;
-        $data = \REDCap::getData($params + ['records' => $cands]);
-        if (!is_array($data)) return ['state' => 'unknown', 'record' => null, 'dag' => null];
+        // The candidates are read EXISTS_CANDIDATE_CHUNK records at a time,
+        // and no further than the answer needs (EXI-9): a site code 5,000
+        // records hold was 5,000 records exported for a rule the first one
+        // settles. A rule that copies values reads on until two entries
+        // disagree; a miss reads every candidate, a chunk in memory at a time.
         $filtered = false;
         $beyond = false;
-        if ($spec['returns']) {
-            $hits = self::existsHitsIn($data, $spec, $scope, $dag, $filtered, $beyond);
-            if ($hits) {
-                $best = self::bestExistsHit($hits, $prefer);
-                return ['state' => 'found', 'record' => $best['record'], 'dag' => $best['dag']]
-                    + self::existsReturnOutcome($hits, $spec['returns'], $prefer);
+        $unseen = false;
+        $hits = [];
+        $fallback = null;
+        $read = 0;
+        $plain = count($spec['target']) === 1 && $spec['where'] === null && !$spec['returns'];
+        foreach (array_chunk($cands, self::EXISTS_CANDIDATE_CHUNK) as $chunk) {
+            $data = \REDCap::getData($params + ['records' => $chunk]);
+            if (!is_array($data)) return ['state' => 'unknown', 'record' => null, 'dag' => null];
+            $read += count($chunk);
+            foreach ($chunk as $rec) {
+                if (!isset($data[$rec]) || !is_array($data[$rec])) { $unseen = true; break; }
             }
-        } else {
+            if ($spec['returns']) {
+                foreach (self::existsHitsIn($data, $spec, $scope, $dag, $filtered, $beyond) as $h) $hits[] = $h;
+                if ($hits && isset(self::existsReturnOutcome($hits, $spec['returns'], $prefer)['returnConflict'])) break;
+                continue;
+            }
             $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered, $beyond);
-            if ($hit !== null) return ['state' => 'found'] + $hit;
+            if ($hit !== null) {
+                // In the caller's group (or the caller is in none): the one to show.
+                if ($prefer === null || $hit['dag'] === $prefer) return ['state' => 'found'] + $hit;
+                if ($fallback === null) $fallback = $hit;
+            }
+            // Found, but only outside the caller's group so far: a few more
+            // records may hold one inside it that can be named, no more.
+            if (($fallback !== null || ($plain && $unseen)) && $read >= self::EXISTS_PREFER_READS) break;
         }
+        if ($hits) {
+            $best = self::bestExistsHit($hits, $prefer);
+            return ['state' => 'found', 'record' => $best['record'], 'dag' => $best['dag']]
+                + self::existsReturnOutcome($hits, $spec['returns'], $prefer);
+        }
+        if ($fallback !== null) return ['state' => 'found'] + $fallback;
         // Saved in another group, where "match" and "where" are not judged (EXI-3).
         if ($beyond) return ['state' => 'unknown', 'record' => null, 'dag' => null, 'why' => self::EXISTS_BEYOND_GROUP_WHY];
-        $seen = [];
-        foreach ($data as $rec => $node) if (is_array($node)) $seen[(string) $rec] = true;
-        $unseen = array_values(array_filter($cands, function ($r) use ($seen) { return !isset($seen[$r]); }));
-        if ($unseen && $scope !== 'dag') {
-            if (count($spec['target']) === 1 && $spec['where'] === null && !$spec['returns']) {
-                return ['state' => 'found', 'record' => $unseen[0], 'dag' => false];
-            }
-            return ['state' => 'unknown', 'record' => null, 'dag' => null,
-                    'why' => isset($opts['callerDag']) && $opts['callerDag'] !== null
-                        ? self::EXISTS_BEYOND_GROUP_WHY
-                        : 'the saved values could not be read just now'];
-        }
+        if ($unseen && $scope !== 'dag') return $this->existsUnseenAnswer($plain, $opts);
         return self::existsFilteredMiss($notFound, $filtered);
+    }
+
+    /** Records one getData call reads of the candidates the data table names (existsFromTable). */
+    const EXISTS_CANDIDATE_CHUNK = 200;
+    /** Candidates read looking for a holder in the caller's own group, once one outside it is known. */
+    const EXISTS_PREFER_READS = 1000;
+
+    /**
+     * The answer when the data table names a record that holds the value and
+     * getData does not hand it back (existsFromTable, existsRecordFromTable).
+     * For a caller in a Data Access Group that is a record of another group,
+     * which REDCap confined the read to: a rule that tests only the value
+     * ($plain) has its whole test in the table row, so the value is found,
+     * and the record is never named. Any other rule cannot be judged on a
+     * record it cannot read: unknown. For a caller in no group REDCap confines
+     * nothing, so the row belongs to no record that can be read (a row left
+     * behind, or a record deleted in between): unknown, never "found" in a
+     * record staff would then be shown by name (EXI-13). A lookup in another
+     * project keeps "found" for a plain rule: its read may be confined by
+     * this project's restrictions, and the row is saved there.
+     */
+    private function existsUnseenAnswer($plain, array $opts)
+    {
+        $inGroup = isset($opts['callerDag']) && $opts['callerDag'] !== null;
+        if ($plain && ($inGroup || !empty($opts['foreign']))) return ['state' => 'found', 'record' => null, 'dag' => false];
+        return ['state' => 'unknown', 'record' => null, 'dag' => null,
+                'why' => $inGroup ? self::EXISTS_BEYOND_GROUP_WHY : 'the saved values could not be read just now'];
     }
 
     /**

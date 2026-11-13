@@ -747,6 +747,51 @@ namespace {
     $r = core(ask(mod('nurse', $DG, $DATA_G, $FULL), 'g_where', ['g_where' => 'S-NEG'], '5', 'result'));
     check('EXI-3 staff in no group: judged on every entry', $r === ['state' => 'not-found', 'record' => null, 'filtered' => true]);
 
+    // ---- EXI-9: the candidates are read in chunks, and no further than the answer needs -------
+    $DK = ['record_id' => f('enrol'), 'site_code' => f('enrol'), 'site_kind' => f('enrol'), 'my_kind' => f('result'),
+           'k_plain' => f('result', '@UVEXISTS=[site_code]'),
+           'k_match' => f('result', '@UVEXISTS={"in":"[site_code]","match":{"site_kind":"[my_kind]"}}'),
+           'k_ret'   => f('result', '@UVEXISTS={"in":"[site_code]","return":{"site_kind":"[k_kind]"}}'),
+           'k_kind'  => f('result', '@READONLY')];
+    $big = [];
+    for ($i = 1; $i <= 1500; $i++) $big[(string) $i] = [351 => ['record_id' => (string) $i, 'site_code' => 'KLA', 'site_kind' => $i === 1400 ? 'B' : 'A']];
+    $m = mod('nurse', $DK, $big, $FULL);
+    $r = ask($m, 'k_plain', ['k_plain' => 'KLA'], '9999', 'result');
+    check('EXI-9 a value 1,500 records hold: found from the first chunk of records (exported ' . \REDCap::$rowsOut . ')',
+        $r['state'] === 'found' && \REDCap::$rowsOut <= 200);
+    $m = mod('nurse', $DK, $big, $FULL);
+    $r = ask($m, 'k_match', ['k_match' => 'KLA', 'my_kind' => 'B'], '9999', 'result');
+    check('EXI-9 a "match" only a late record meets is still found (got ' . json_encode(core($r)) . ')', $r['state'] === 'found' && $r['record'] === '1400');
+    $m = mod('nurse', $DK, $big, $FULL);
+    $r = ask($m, 'k_match', ['k_match' => 'KLA', 'my_kind' => 'Z'], '9999', 'result');
+    $most = 0;
+    foreach (\REDCap::$calls as $c) $most = max($most, count($c['records'] ?? []));
+    check('EXI-9 a miss reads every candidate, never more than a chunk in one read (largest read ' . $most . ' records)',
+        $r['state'] === 'not-found' && \REDCap::$rowsOut === 1500 && $most <= 200);
+    $m = mod('nurse', $DK, $big, $FULL);
+    $r = ask($m, 'k_ret', ['k_ret' => 'KLA'], '9999', 'result');
+    check('EXI-9 a rule that copies values reads on until two entries disagree, then stops (exported ' . \REDCap::$rowsOut . ')',
+        ($r['fill'] ?? null) === 'conflict' && \REDCap::$rowsOut === 1400);
+    $same = [];
+    for ($i = 1; $i <= 450; $i++) $same[(string) $i] = [351 => ['record_id' => (string) $i, 'site_code' => 'KLA', 'site_kind' => 'A']];
+    $m = mod('nurse', $DK, $same, $FULL);
+    $r = ask($m, 'k_ret', ['k_ret' => 'KLA'], '9999', 'result');
+    check('EXI-9 ...and copies them when every entry agrees', ($r['values'] ?? null) === ['k_kind' => 'A'] && \REDCap::$rowsOut === 450);
+
+    // ---- EXI-13: a table row whose record cannot be read is not "found" by name ---------------
+    // Staff in no group: REDCap confines nothing, so a record getData does not
+    // hand back is a row left behind, or a record deleted in between.
+    $m = mod('nurse', $DG, $DATA_G, $FULL);
+    \REDCap::$confineTo = 'north';
+    $r = core(ask($m, 'g_plain', ['g_plain' => 'S-NEG'], '5', 'result'));
+    check('EXI-13 staff in no group, a row whose record is not handed back: could not check, no record named (got ' . json_encode($r) . ')',
+        $r === ['state' => 'unknown', 'record' => null]);
+    $m = mod('north', $DG, $DATA_G, $GN);
+    \REDCap::$confineTo = 'north';
+    $r = core(ask($m, 'g_plain', ['g_plain' => 'S-NEG'], '5', 'result', 7));
+    check('EXI-13 a person in a group still learns the value is saved in another, unnamed', $r === ['state' => 'found', 'record' => null]);
+    \REDCap::$confineTo = null;
+
     fwrite(STDOUT, "exists_table_php: $n checks, $fail failure(s)" . ($INDEX ? ' through the lookup index' : '') . "\n");
     if (!$INDEX) {
         passthru(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__) . ' --index', $rc);
