@@ -843,7 +843,7 @@ MUTATIONS = [
      "            if (false) {", MODULE),
     ('the page not told the field is unvalidated', MODES,
      '"deltaGroup", "deltaComputed", "deltaUnvalidated", "decimalComma",',
-     '"deltaGroup", "deltaComputed", "decimalComma",', MODULE),
+     '"deltaGroup", "deltaComputed", "decimalComma",', REGISTRY),
     ('the engine ignores an unvalidated field', ENGINE,
      'strict: cfg.deltaUnvalidated === true },',
      'strict: false },', DOM),
