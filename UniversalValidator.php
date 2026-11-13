@@ -1085,7 +1085,7 @@ class UniversalValidator extends AbstractExternalModule
                                         empty($rule['caseSensitive']), null, $also);
             if ($col === false) {
                 $out['unconfigurable'][] = ['fields' => [$field],
-                    'why' => $this->liveReadSkipped ? self::AUDIT_READ_SKIPPED_WHY : 'the saved values could not be read to compare with'];
+                    'why' => $this->liveReadSkipped ? $this->auditReadSkippedWhy() : 'the saved values could not be read to compare with'];
             } elseif ($col !== null) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'unique', 'type' => 'unique', 'reason' => 'duplicate-value'];
             }
@@ -11112,10 +11112,11 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * Seconds into a run of the lookup index cron after which it starts no
      * further field. config.json gives a run 240 s of every 300; a field
-     * started at 60 s has 180 s left, and a field of 400,000 values took 61 s
-     * to build on the test server.
+     * started at 150 s has 90 s left, and a field of 400,000 values took 61 s
+     * to build on the test server. At 60 a run built one such field, and a
+     * project whose fields were all reset waited a run for each (UNQ-3).
      */
-    const LOOKUP_CRON_SECONDS = 60;
+    const LOOKUP_CRON_SECONDS = 150;
 
     /**
      * Build the value index of the live lookups (Scan\LookupIndex) for the
@@ -11127,6 +11128,12 @@ class UniversalValidator extends AbstractExternalModule
      * does nothing when the system setting turns the index off. NEVER THROWS,
      * for the reason the scan crons give.
      *
+     * A run that could not do its work says why in its summary and, once a
+     * day, in the module log (noteLookupIndexDown, UNQ-9): tables that
+     * cannot be read or a lock the server refuses leave every large field
+     * unchecked by the live lookups and the save audit, and "0 built" said
+     * nothing of it.
+     *
      * @return string the one-line summary REDCap shows beside the cron
      */
     public function uvLookupIndexCron($cronInfo = [])
@@ -11135,13 +11142,64 @@ class UniversalValidator extends AbstractExternalModule
             $idx = $this->lookupIndex();
             if ($idx === null) return 'the lookup index is turned off here; nothing to do';
             $r = $idx->maintain(time() + self::LOOKUP_CRON_SECONDS);
-            // The lookups build a large field themselves only while no cron runs.
+            // A lookup that waits for the cron says so when none has run (LookupIndex::CRON_GRACE).
             $this->setSystemSetting(self::LOOKUP_CRON_AT, (string) time());
-            return sprintf('lookup index: %d field(s) built, %d dropped, %d waiting, %d left for the next run',
-                $r['built'], $r['dropped'], $r['waiting'], $r['left']);
+            $why = (isset($r['why']) && is_array($r['why'])) ? $r['why'] : [];
+            // Fields in a cooldown or behind another build are waiting their turn, not stuck.
+            $stuck = array_intersect_key($why, ['lock' => 1, 'tables' => 1, 'error' => 1]);
+            if ($stuck) $this->noteLookupIndexDown($stuck);
+            $said = [];
+            foreach ($why as $k => $n) $said[] = (int) $n . ' x ' . self::lookupIndexProblem($k);
+            return sprintf('lookup index: %d field(s) built, %d dropped, %d waiting, %d left for the next run, %d project(s) brought up to date',
+                $r['built'], $r['dropped'], $r['waiting'], $r['left'], isset($r['synced']) ? $r['synced'] : 0)
+                . ($said ? '; not done: ' . implode(', ', $said) : '');
         } catch (\Throwable $e) {
             Faults::swallow($e, 'UniversalValidator::uvLookupIndexCron');
-            return 'lookup index: this run could not read its tables (' . get_class($e) . '); the lookups read the data table meanwhile';
+            $this->noteLookupIndexDown(['error' => 1], $e);
+            return 'lookup index: this run could not read its tables (' . get_class($e) . '); fields too large to read whole are not checked by the live lookups or the save audit meanwhile';
+        }
+    }
+
+    /** System setting, not in config.json: the day noteLookupIndexDown() last wrote. */
+    const LOOKUP_DOWN_SAID = 'lookup-index-down-said';
+
+    /**
+     * Record in the module log that the lookup index cron could not do its
+     * work, at most once a day: $why is LookupIndex::maintain()'s count of
+     * reasons. The exception's class and redacted detail only, never its
+     * message (Scan\DbError). Never throws.
+     */
+    private function noteLookupIndexDown(array $why, ?\Throwable $e = null)
+    {
+        try {
+            $day = date('Y-m-d');
+            if ((string) $this->getSystemSetting(self::LOOKUP_DOWN_SAID) === $day) return;
+            $this->setSystemSetting(self::LOOKUP_DOWN_SAID, $day);
+            $said = [];
+            foreach ($why as $k => $n) $said[] = (int) $n . ' x ' . self::lookupIndexProblem($k);
+            $this->log('uv-lookup-index-unavailable', [
+                'why'    => implode(', ', $said),
+                'class'  => $e === null ? '' : get_class($e),
+                'detail' => $e === null ? '' : Scan\DbError::safe($e),
+            ]);
+        } catch (\Throwable $ignored) {
+            Faults::swallow($ignored, 'UniversalValidator::noteLookupIndexDown');
+        }
+    }
+
+    /** LookupIndex::lastProblem()'s word, in words for a log row or a summary. */
+    private static function lookupIndexProblem($why)
+    {
+        switch ((string) $why) {
+            case 'off':      return 'the index is turned off on this server';
+            case 'tables':   return 'the project\'s data or log table could not be found';
+            case 'lock':     return 'the index was held by another request, or the server refused its lock';
+            case 'cron':     return 'the module\'s cron has not built it yet';
+            case 'no-cron':  return 'the module\'s cron has not run in the last ' . (int) (Scan\LookupIndex::CRON_GRACE / 60) . ' minutes';
+            case 'cooldown': return 'many records changed at once and it is being rebuilt';
+            case 'building': return 'it is being built';
+            case 'behind':   return 'the module\'s cron is bringing it up to date';
+            default:         return 'its tables could not be read';
         }
     }
 
@@ -11965,10 +12023,19 @@ class UniversalValidator extends AbstractExternalModule
     const LIVE_WHOLE_READ_ROWS = 50000;
     /** What such a lookup tells the person. */
     const LIVE_READ_SKIPPED_WHY = 'the lookup for this field is still being prepared';
-    /** What the save audit logs for a field it left unchecked for that reason. */
-    const AUDIT_READ_SKIPPED_WHY = 'the field holds more saved values than a save may read, and its value index is not built yet (the module\'s cron builds it) - field not checked';
+    /** What the save audit logs for a field it left unchecked for that reason; why the index did not answer follows. */
+    const AUDIT_READ_SKIPPED_WHY = 'the field holds more saved values than a save may read, and its value index could not answer';
     /** @var bool the last lookup left a whole-field read out (wholeFieldRecords) */
     private $liveReadSkipped = false;
+
+    /** AUDIT_READ_SKIPPED_WHY with the index's reason (LookupIndex::lastProblem). */
+    private function auditReadSkippedWhy()
+    {
+        $idx = $this->lookupIndex();
+        $why = $idx === null ? 'off' : (is_callable([$idx, 'lastProblem']) ? $idx->lastProblem() : null);
+        return self::AUDIT_READ_SKIPPED_WHY . ($why === null ? '' : ' (' . self::lookupIndexProblem($why) . ')')
+            . ' - field not checked';
+    }
 
     /**
      * FieldValues::recordsWhere(), which reads every row of $fields; null,

@@ -19,6 +19,14 @@
  * PRF-1: the unique rules of one save share one read of the project per event
  * filter, and give the verdicts separate reads gave.
  *
+ * Review of 2026-11-13 (sections 6 to 8, and the large-field checks): a
+ * value another Data Access Group holds is a duplicate, with its record
+ * named to nobody (UNQ-2); no request reads a field of more than
+ * LIVE_WHOLE_READ_ROWS values whole, the save audit included (UNQ-3); a
+ * survey asks its read budget before any read (UNQ-5); a sessionless request
+ * is counted before any rule is read, one address cannot spend the
+ * project's budget, and a limit reached is logged (UNQ-4, UNQ-8).
+ *
  * The browser twin is tests/unique_dom_js.cjs (asks on change and blur, and
  * shows "could not check").
  *
