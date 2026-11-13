@@ -34,12 +34,17 @@ $PID = 720;
 uv_redcap_schema($A);
 uv_redcap_project($A, $PID, 'redcap_log_event4');
 uv_redcap_project($A, uv_neighbour($PID), 'redcap_log_event4');
-// The columns ValueStamps reads, with REDCap's types and a case-insensitive
-// collation, as a real installation has them.
-$A->query('CREATE TABLE redcap_log_event4 (log_event_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    project_id INT NOT NULL DEFAULT 0, ts BIGINT NULL, event VARCHAR(32) NULL, object_type VARCHAR(128) NULL,
-    pk TEXT NULL, event_id INT NULL, data_values TEXT NULL,
-    KEY (project_id), KEY (pk(191))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+// The columns ValueStamps reads, with REDCap's types, a case-insensitive
+// collation and the indexes REDCap's install.sql gives the log table (WIN-3):
+// none leads with (project_id, pk); "pk" holds the first 191 characters of
+// the record ID. The plan below is asserted against these, not against a
+// set of keys made for the test.
+$A->query("CREATE TABLE redcap_log_event4 (log_event_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    project_id INT NOT NULL DEFAULT 0, ts BIGINT NULL, `user` VARCHAR(255) NULL,
+    event ENUM('UPDATE','INSERT','DELETE','SELECT','ERROR','LOGIN','LOGOUT','OTHER','DATA_EXPORT','DOC_UPLOAD','DOC_DELETE','MANAGE','LOCK_RECORD','ESIGNATURE') NULL,
+    object_type VARCHAR(128) NULL, pk TEXT NULL, event_id INT NULL, data_values TEXT NULL,
+    KEY user_project (project_id, `user`(191)), KEY event_project (event, project_id), KEY object_type (object_type),
+    KEY ts (ts), KEY pk (pk(191))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
 $log = function ($id, $pid, $ts, $pk, $dv, $event = 'UPDATE', $type = 'redcap_data', $eventId = 41) use ($ca) {
     $ca->query('INSERT INTO redcap_log_event4 (log_event_id, project_id, ts, event, object_type, pk, event_id, data_values)
@@ -66,6 +71,13 @@ check('stamps: a record ID that differs only in case is its own record', $r === 
 check('stamps: a field the log never shows', $vs->savedAt('XE-1', 41, 1, 'w_never', 'x')['state'] === 'unlogged');
 check('stamps: a record with no rows', $vs->savedAt('NONE-1', 41, 1, 'w_past', 'x')['state'] === 'none');
 
+// A save made in a data access group logs the group on a line of its own (WIN-1).
+$log(110, $PID, 20261007080000, 'DAG-1', "record_id = 'DAG-1',\nw_past = '2026-10-07',\n__GROUPID__ = '12'");
+$vs = ValueStamps::forProject($dbA, $PID, $utc, $utc);
+$r = $vs->savedAt('DAG-1', 41, 1, 'w_past', '2026-10-07');
+check('stamps: a save logged with its data access group is a stamp (got ' . json_encode($r) . ')',
+    $r === ['state' => 'logged', 'at' => '2026-10-07 08:00:00']);
+
 // Over a page boundary: the save of w_past sits under 520 newer rows.
 $log(200, $PID, 20260901080000, 'P-1', "w_past = '2026-09-01'");
 for ($i = 1; $i <= 520; $i++) $log(200 + $i, $PID, 20260902080000 + $i, 'P-1', "wt = '" . $i . "'");
@@ -73,6 +85,45 @@ $vs = ValueStamps::forProject($dbA, $PID, $utc, $utc);
 $r = $vs->savedAt('P-1', 41, 1, 'w_past', '2026-09-01');
 check('stamps: found on the second page, by the log_event_id cursor (got ' . json_encode($r) . ')',
     $r === ['state' => 'logged', 'at' => '2026-09-01 08:00:00']);
+
+// THE PLAN (WIN-3), of the statements the reader sent, on a log where this
+// project's records are a small part: 3,000 rows of the neighbour, newer than
+// every row read here. Without the hint a server may walk the primary key
+// backwards for the ORDER BY ... LIMIT, through all of them.
+$filler = [];
+for ($i = 1; $i <= 3000; $i++) {
+    $filler[] = '(' . (1000 + $i) . ', ' . uv_neighbour($PID) . ", 20261101080000, 'UPDATE', 'redcap_data', 'N-" . ($i % 300) . "', 41, 'wt')";
+}
+$A->query('INSERT INTO redcap_log_event4 (log_event_id, project_id, ts, event, object_type, pk, event_id, data_values) VALUES ' . implode(', ', $filler));
+$A->query('ANALYZE TABLE redcap_log_event4');
+$rec = new UvRecordingDb($dbA);
+$vs = ValueStamps::forProject($rec, $PID, $utc, $utc);
+$r = $vs->savedAt('P-1', 41, 1, 'w_past', '2026-09-01');
+$sent = $rec->matching('select', ['FROM redcap_log_event4']);
+check('stamps: the reads name the pk index read from the server (got ' . json_encode(array_column($sent, 1)) . ')',
+    $r['state'] === 'logged' && count($sent) === 2 && strpos($sent[0][1], 'FROM redcap_log_event4 FORCE INDEX (`pk`) WHERE project_id = ? AND pk = ?') !== false);
+foreach ($sent as $i => $q) {
+    $ex = $A->query('EXPLAIN ' . uv_inline_params($A, $q[1], $q[2]))->fetch_assoc();
+    check('stamps: page ' . ($i + 1) . ' of one record is read through the pk index, not the whole log (got '
+        . json_encode([$ex['key'], $ex['rows'], $ex['Extra']]) . ')', $ex['key'] === 'pk' && (int) $ex['rows'] < 1500);
+}
+// A scan names its records, and they are read in one statement.
+$rec = new UvRecordingDb($dbA);
+$vs = ValueStamps::forProject($rec, $PID, $utc, $utc);
+$vs->expect(['XE-1', 'xe-1', 'DAG-1', 'NONE-1']);
+$got = [$vs->savedAt('XE-1', 41, 1, 'w_past', '2026-10-01'), $vs->savedAt('xe-1', 41, 1, 'w_past', '2026-10-05'),
+        $vs->savedAt('DAG-1', 41, 1, 'w_past', '2026-10-07'), $vs->savedAt('NONE-1', 41, 1, 'w_past', 'x')];
+$sent = $rec->matching('select', ['FROM redcap_log_event4']);
+check('stamps: four records a scan named are read in one statement, each its own (got ' . json_encode($got) . ')',
+    count($sent) === 1 && strpos($sent[0][1], 'pk IN (?, ?, ?, ?)') !== false
+    && $got === [['state' => 'logged', 'at' => '2026-10-01 08:00:00'], ['state' => 'logged', 'at' => '2026-10-02 08:00:00'],
+                 ['state' => 'logged', 'at' => '2026-10-07 08:00:00'], ['state' => 'none', 'at' => null]]);
+$ex = $A->query('EXPLAIN ' . uv_inline_params($A, $sent[0][1], $sent[0][2]))->fetch_assoc();
+check('stamps: ... through the pk index (got ' . json_encode([$ex['key'], $ex['rows'], $ex['Extra']]) . ')',
+    $ex['key'] === 'pk' && (int) $ex['rows'] < 1500);
+// What the server does with the same read and no hint is not asserted: it is
+// the server's choice, and the reason the hint is there.
+$A->query('DELETE FROM redcap_log_event4 WHERE log_event_id > 1000');
 
 // An installation at version 2 (no as_of, no row for any later version, and
 // none of the later versions' columns) gains the column on the way up.

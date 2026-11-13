@@ -1,0 +1,416 @@
+{
+    "_comment": [
+        "The hour a zone shows twice when its clocks go back (WIN-4). base is",
+        "UniversalValidator::clockStamp for the moment \"at\" (UTC) in \"zone\". Each step is the clock",
+        "elapsedMs later: tests/window_module_php.php stamps that moment afresh, and",
+        "tests/window_js.cjs advances base with QRID_clockAt; both must give now, foldFuture and",
+        "foldPast (0 when the clock carries none), and futureNow and pastNow with the plain 120 s",
+        "margin (TemporalLogic::clockSlack, QRID_clockLenient with no computer clock error)."
+    ],
+    "cases": [
+        {
+            "name": "New York, daylight saving ends: opened before the hour shown twice",
+            "zone": "America/New_York",
+            "at": "2026-11-01 04:30:00",
+            "base": {
+                "today": "2026-11-01",
+                "now": "2026-11-01 00:30:00",
+                "utc": 1793507400000,
+                "offset": -14400,
+                "next": 1793512800000,
+                "offsetAfter": -18000
+            },
+            "steps": [
+                {
+                    "elapsedMs": 0,
+                    "now": "2026-11-01 00:30:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 00:32:00",
+                    "pastNow": "2026-11-01 00:28:00"
+                },
+                {
+                    "elapsedMs": 1799000,
+                    "now": "2026-11-01 00:59:59",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 01:01:59",
+                    "pastNow": "2026-11-01 00:57:59"
+                },
+                {
+                    "elapsedMs": 1800000,
+                    "now": "2026-11-01 01:00:00",
+                    "foldFuture": 0,
+                    "foldPast": 3600,
+                    "futureNow": "2026-11-01 01:02:00",
+                    "pastNow": "2026-10-31 23:58:00"
+                },
+                {
+                    "elapsedMs": 5340000,
+                    "now": "2026-11-01 01:59:00",
+                    "foldFuture": 0,
+                    "foldPast": 3600,
+                    "futureNow": "2026-11-01 02:01:00",
+                    "pastNow": "2026-11-01 00:57:00"
+                },
+                {
+                    "elapsedMs": 5399000,
+                    "now": "2026-11-01 01:59:59",
+                    "foldFuture": 0,
+                    "foldPast": 3600,
+                    "futureNow": "2026-11-01 02:01:59",
+                    "pastNow": "2026-11-01 00:57:59"
+                },
+                {
+                    "elapsedMs": 5400000,
+                    "now": "2026-11-01 01:00:00",
+                    "foldFuture": 3600,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 02:02:00",
+                    "pastNow": "2026-11-01 00:58:00"
+                },
+                {
+                    "elapsedMs": 8940000,
+                    "now": "2026-11-01 01:59:00",
+                    "foldFuture": 3600,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 03:01:00",
+                    "pastNow": "2026-11-01 01:57:00"
+                },
+                {
+                    "elapsedMs": 8999000,
+                    "now": "2026-11-01 01:59:59",
+                    "foldFuture": 3600,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 03:01:59",
+                    "pastNow": "2026-11-01 01:57:59"
+                },
+                {
+                    "elapsedMs": 9000000,
+                    "now": "2026-11-01 02:00:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 02:02:00",
+                    "pastNow": "2026-11-01 01:58:00"
+                },
+                {
+                    "elapsedMs": 12000000,
+                    "now": "2026-11-01 02:50:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 02:52:00",
+                    "pastNow": "2026-11-01 02:48:00"
+                }
+            ]
+        },
+        {
+            "name": "New York: opened in the first showing of the hour",
+            "zone": "America/New_York",
+            "at": "2026-11-01 05:30:00",
+            "base": {
+                "today": "2026-11-01",
+                "now": "2026-11-01 01:30:00",
+                "utc": 1793511000000,
+                "offset": -14400,
+                "next": 1793512800000,
+                "offsetAfter": -18000,
+                "foldPast": 3600
+            },
+            "steps": [
+                {
+                    "elapsedMs": 0,
+                    "now": "2026-11-01 01:30:00",
+                    "foldFuture": 0,
+                    "foldPast": 3600,
+                    "futureNow": "2026-11-01 01:32:00",
+                    "pastNow": "2026-11-01 00:28:00"
+                },
+                {
+                    "elapsedMs": 1740000,
+                    "now": "2026-11-01 01:59:00",
+                    "foldFuture": 0,
+                    "foldPast": 3600,
+                    "futureNow": "2026-11-01 02:01:00",
+                    "pastNow": "2026-11-01 00:57:00"
+                },
+                {
+                    "elapsedMs": 1800000,
+                    "now": "2026-11-01 01:00:00",
+                    "foldFuture": 3600,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 02:02:00",
+                    "pastNow": "2026-11-01 00:58:00"
+                },
+                {
+                    "elapsedMs": 5340000,
+                    "now": "2026-11-01 01:59:00",
+                    "foldFuture": 3600,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 03:01:00",
+                    "pastNow": "2026-11-01 01:57:00"
+                },
+                {
+                    "elapsedMs": 5400000,
+                    "now": "2026-11-01 02:00:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 02:02:00",
+                    "pastNow": "2026-11-01 01:58:00"
+                }
+            ]
+        },
+        {
+            "name": "New York: opened in the second showing of the hour",
+            "zone": "America/New_York",
+            "at": "2026-11-01 06:10:00",
+            "base": {
+                "today": "2026-11-01",
+                "now": "2026-11-01 01:10:00",
+                "utc": 1793513400000,
+                "offset": -18000,
+                "next": 1805007600000,
+                "offsetAfter": -14400,
+                "foldFuture": 3600,
+                "foldUntil": 1793516400000
+            },
+            "steps": [
+                {
+                    "elapsedMs": 0,
+                    "now": "2026-11-01 01:10:00",
+                    "foldFuture": 3600,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 02:12:00",
+                    "pastNow": "2026-11-01 01:08:00"
+                },
+                {
+                    "elapsedMs": 2940000,
+                    "now": "2026-11-01 01:59:00",
+                    "foldFuture": 3600,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 03:01:00",
+                    "pastNow": "2026-11-01 01:57:00"
+                },
+                {
+                    "elapsedMs": 2999000,
+                    "now": "2026-11-01 01:59:59",
+                    "foldFuture": 3600,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 03:01:59",
+                    "pastNow": "2026-11-01 01:57:59"
+                },
+                {
+                    "elapsedMs": 3000000,
+                    "now": "2026-11-01 02:00:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 02:02:00",
+                    "pastNow": "2026-11-01 01:58:00"
+                },
+                {
+                    "elapsedMs": 7200000,
+                    "now": "2026-11-01 03:10:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 03:12:00",
+                    "pastNow": "2026-11-01 03:08:00"
+                }
+            ]
+        },
+        {
+            "name": "London, daylight saving begins: no hour is shown twice",
+            "zone": "Europe/London",
+            "at": "2027-03-28 00:30:00",
+            "base": {
+                "today": "2027-03-28",
+                "now": "2027-03-28 00:30:00",
+                "utc": 1806193800000,
+                "offset": 0,
+                "next": 1806195600000,
+                "offsetAfter": 3600
+            },
+            "steps": [
+                {
+                    "elapsedMs": 0,
+                    "now": "2027-03-28 00:30:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2027-03-28 00:32:00",
+                    "pastNow": "2027-03-28 00:28:00"
+                },
+                {
+                    "elapsedMs": 1740000,
+                    "now": "2027-03-28 00:59:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2027-03-28 01:01:00",
+                    "pastNow": "2027-03-28 00:57:00"
+                },
+                {
+                    "elapsedMs": 1800000,
+                    "now": "2027-03-28 02:00:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2027-03-28 02:02:00",
+                    "pastNow": "2027-03-28 01:58:00"
+                },
+                {
+                    "elapsedMs": 1860000,
+                    "now": "2027-03-28 02:01:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2027-03-28 02:03:00",
+                    "pastNow": "2027-03-28 01:59:00"
+                },
+                {
+                    "elapsedMs": 7200000,
+                    "now": "2027-03-28 03:30:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2027-03-28 03:32:00",
+                    "pastNow": "2027-03-28 03:28:00"
+                }
+            ]
+        },
+        {
+            "name": "Lord Howe: half an hour shown twice",
+            "zone": "Australia/Lord_Howe",
+            "at": "2027-04-03 14:20:00",
+            "base": {
+                "today": "2027-04-04",
+                "now": "2027-04-04 01:20:00",
+                "utc": 1806762000000,
+                "offset": 39600,
+                "next": 1806764400000,
+                "offsetAfter": 37800
+            },
+            "steps": [
+                {
+                    "elapsedMs": 0,
+                    "now": "2027-04-04 01:20:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2027-04-04 01:22:00",
+                    "pastNow": "2027-04-04 01:18:00"
+                },
+                {
+                    "elapsedMs": 600000,
+                    "now": "2027-04-04 01:30:00",
+                    "foldFuture": 0,
+                    "foldPast": 1800,
+                    "futureNow": "2027-04-04 01:32:00",
+                    "pastNow": "2027-04-04 00:58:00"
+                },
+                {
+                    "elapsedMs": 2340000,
+                    "now": "2027-04-04 01:59:00",
+                    "foldFuture": 0,
+                    "foldPast": 1800,
+                    "futureNow": "2027-04-04 02:01:00",
+                    "pastNow": "2027-04-04 01:27:00"
+                },
+                {
+                    "elapsedMs": 2400000,
+                    "now": "2027-04-04 01:30:00",
+                    "foldFuture": 1800,
+                    "foldPast": 0,
+                    "futureNow": "2027-04-04 02:02:00",
+                    "pastNow": "2027-04-04 01:28:00"
+                },
+                {
+                    "elapsedMs": 4140000,
+                    "now": "2027-04-04 01:59:00",
+                    "foldFuture": 1800,
+                    "foldPast": 0,
+                    "futureNow": "2027-04-04 02:31:00",
+                    "pastNow": "2027-04-04 01:57:00"
+                },
+                {
+                    "elapsedMs": 4200000,
+                    "now": "2027-04-04 02:00:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2027-04-04 02:02:00",
+                    "pastNow": "2027-04-04 01:58:00"
+                }
+            ]
+        },
+        {
+            "name": "Beirut: the hour before midnight shown twice",
+            "zone": "Asia/Beirut",
+            "at": "2026-10-24 19:30:00",
+            "base": {
+                "today": "2026-10-24",
+                "now": "2026-10-24 22:30:00",
+                "utc": 1792870200000,
+                "offset": 10800,
+                "next": 1792875600000,
+                "offsetAfter": 7200
+            },
+            "steps": [
+                {
+                    "elapsedMs": 0,
+                    "now": "2026-10-24 22:30:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-10-24 22:32:00",
+                    "pastNow": "2026-10-24 22:28:00"
+                },
+                {
+                    "elapsedMs": 1800000,
+                    "now": "2026-10-24 23:00:00",
+                    "foldFuture": 0,
+                    "foldPast": 3600,
+                    "futureNow": "2026-10-24 23:02:00",
+                    "pastNow": "2026-10-24 21:58:00"
+                },
+                {
+                    "elapsedMs": 5400000,
+                    "now": "2026-10-24 23:00:00",
+                    "foldFuture": 3600,
+                    "foldPast": 0,
+                    "futureNow": "2026-10-25 00:02:00",
+                    "pastNow": "2026-10-24 22:58:00"
+                },
+                {
+                    "elapsedMs": 9000000,
+                    "now": "2026-10-25 00:00:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-10-25 00:02:00",
+                    "pastNow": "2026-10-24 23:58:00"
+                }
+            ]
+        },
+        {
+            "name": "Douala: a zone with no change",
+            "zone": "Africa/Douala",
+            "at": "2026-11-01 05:30:00",
+            "base": {
+                "today": "2026-11-01",
+                "now": "2026-11-01 06:30:00",
+                "utc": 1793511000000,
+                "offset": 3600,
+                "next": null,
+                "offsetAfter": null
+            },
+            "steps": [
+                {
+                    "elapsedMs": 0,
+                    "now": "2026-11-01 06:30:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 06:32:00",
+                    "pastNow": "2026-11-01 06:28:00"
+                },
+                {
+                    "elapsedMs": 3600000,
+                    "now": "2026-11-01 07:30:00",
+                    "foldFuture": 0,
+                    "foldPast": 0,
+                    "futureNow": "2026-11-01 07:32:00",
+                    "pastNow": "2026-11-01 07:28:00"
+                }
+            ]
+        }
+    ]
+}

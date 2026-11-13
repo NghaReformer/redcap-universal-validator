@@ -4,6 +4,8 @@ namespace INSPIRE\UniversalValidator;
 use INSPIRE\UniversalValidator\Scan\ScanDb;
 use INSPIRE\UniversalValidator\Scan\SourceFence;
 
+require_once __DIR__ . '/ClockZones.php';
+
 /**
  * When a saved value was saved, read from REDCap's own log, for the
  * @UVWINDOW rules judged against "today" (a "from" of today or now,
@@ -26,8 +28,8 @@ use INSPIRE\UniversalValidator\Scan\SourceFence;
  * checked, after a save and in a scan alike: REDCap writes a save's log row
  * before it calls redcap_save_record, so a value the log does not show has a
  * gap in its history. A line that appears twice in one row, a value that
- * spans lines, and every field of a row with a line of no known shape are
- * ambiguous and never a stamp (parseDataValues).
+ * spans lines, and the fields of a row from the one read last before a line
+ * of no known shape are ambiguous and never a stamp (parseDataValues).
  *
  * PHP 7.4.
  */
@@ -43,6 +45,13 @@ final class ValueStamps
      * project holds a few records' log at a time, not the whole log.
      */
     const RECORDS_KEPT = 16;
+    /**
+     * A data_values line REDCap writes about the record, not about a field:
+     * a name in capitals between double underscores, which no field can have
+     * (a field name is lower case and starts with a letter). "__GROUPID__"
+     * is the record's data access group, logged with a save made in one.
+     */
+    const SYSTEM_LINE = "/^__[A-Z][A-Z0-9_]*__ = '.*',?$/D";
 
     /** @var ScanDb */
     private $db;
@@ -67,6 +76,10 @@ final class ValueStamps
     private $capped = [];
     /** record => true, in the order the records were first read */
     private $kept = [];
+    /** record => true: the records a scan asks about next (expect()), not read yet */
+    private $expected = [];
+    /** @var ?string the log table's index that leads with pk, '' for none; null until asked (indexHint) */
+    private $pkIndex = null;
 
     private function __construct(ScanDb $db, $pid, $table, \DateTimeZone $logZone, \DateTimeZone $clockZone)
     {
@@ -97,7 +110,8 @@ final class ValueStamps
      * When $field's value $value was saved on this record, event and instance.
      *
      * @return array{state:string, at:?string} at is 'Y-m-d H:i:s' in the clock
-     *   zone when state is "logged". The other states:
+     *   zone when state is "logged"; a save in an hour a clock showed twice
+     *   also carries foldFuture or foldPast (toClock). The other states:
      *   changed   the newest row for the field logged another value (or an
      *             ambiguous one)
      *   unlogged  the log holds rows for the record, none for this field
@@ -118,7 +132,7 @@ final class ValueStamps
                 list($ts, $logged) = $this->seen[$record][$eventId][$instance][$field];
                 if ($logged === null || trim($logged, " \t\r\n") !== $value) return ['state' => 'changed', 'at' => null];
                 $at = $this->toClock($ts);
-                return $at === null ? ['state' => 'unknown', 'at' => null] : ['state' => 'logged', 'at' => $at];
+                return $at === null ? ['state' => 'unknown', 'at' => null] : ['state' => 'logged'] + $at;
             }
             if (!empty($this->done[$record])) {
                 $state = empty($this->any[$record]) ? 'none' : (empty($this->capped[$record]) ? 'unlogged' : 'capped');
@@ -141,14 +155,98 @@ final class ValueStamps
     }
 
     /**
-     * One page of the record's log, newest first, into $seen. false when the
-     * log could not be read.
+     * The records a scan will ask about next, in its order. The first one
+     * asked about is then read together with the ones after it, up to
+     * RECORDS_KEPT in one query (WIN-3): a scan asked the log once per
+     * record, 400,000 queries for 400,000 records. A record not named here
+     * is read on its own, as a save's audit reads its one record.
+     */
+    public function expect(array $records)
+    {
+        $this->expected = [];
+        foreach ($records as $r) {
+            $r = (string) $r;
+            if ($r !== '' && !isset($this->kept[$r])) $this->expected[$r] = true;
+        }
+    }
+
+    /**
+     * The records to read with $record in one query: itself, and on its first
+     * read the records expect() named that are still unread, RECORDS_KEPT at
+     * most, so none of them is dropped before it is asked about.
+     */
+    private function batchFor($record)
+    {
+        $batch = [$record];
+        if (isset($this->cursor[$record]) || !isset($this->expected[$record])) return $batch;
+        unset($this->expected[$record]);
+        foreach (array_keys($this->expected) as $r) {
+            if (count($batch) >= self::RECORDS_KEPT) break;
+            $r = (string) $r;
+            unset($this->expected[$r]);
+            if (!isset($this->kept[$r])) $batch[] = $r;
+        }
+        // $record goes in last, so keeping the others never drops it
+        unset($this->kept[$record]);
+        foreach ($batch as $i => $r) if ($i > 0) $this->keep($r);
+        $this->keep($record);
+        return $batch;
+    }
+
+    /**
+     * " FORCE INDEX (name)" for the log table's index that leads with pk, or
+     * '' when it has none. THE PLAN (WIN-3): the read is "this record's
+     * rows, newest first, 500 at most", and a server may answer an ORDER BY
+     * log_event_id ... LIMIT by walking the primary key backwards until it
+     * has 500 rows of the record, which for a record with fewer is the whole
+     * log table. Read through the pk index it touches the record's rows only.
+     * The name is read from the server once per reader and never assumed:
+     * REDCap's index names are not part of any contract (the index has been
+     * "pk", on the first 191 characters of the column). An index that also
+     * holds project_id is preferred. With no such index, a name that is not a
+     * plain identifier, or a catalogue that cannot be read, the query carries
+     * no hint, as before.
+     */
+    private function indexHint()
+    {
+        if ($this->pkIndex === null) {
+            $this->pkIndex = '';
+            try {
+                $rows = $this->db->select('SELECT index_name, seq_in_index, column_name FROM information_schema.statistics'
+                    . ' WHERE table_schema = DATABASE() AND table_name = ? ORDER BY index_name, seq_in_index', [$this->table]);
+            } catch (\Throwable $e) {
+                $rows = [];
+            }
+            $cols = [];
+            foreach ((array) $rows as $r) {
+                if (!is_array($r) || !isset($r[0], $r[1], $r[2])) continue;
+                $cols[(string) $r[0]][(int) $r[1]] = strtolower((string) $r[2]);
+            }
+            foreach ($cols as $name => $c) {
+                $name = (string) $name;
+                if (!preg_match('/^[A-Za-z0-9_]+\z/', $name) || !isset($c[1]) || $c[1] !== 'pk') continue;
+                if (in_array('project_id', $c, true)) { $this->pkIndex = $name; break; }
+                if ($this->pkIndex === '') $this->pkIndex = $name;
+            }
+        }
+        return $this->pkIndex === '' ? '' : ' FORCE INDEX (`' . $this->pkIndex . '`)';
+    }
+
+    /**
+     * One page of the record's log, newest first, into $seen: of $record
+     * alone, or on its first read of $record and the records expect() named
+     * after it (batchFor). The rows of a batch come newest first across all
+     * its records, so every record of it has been read down to the oldest
+     * row returned, and each goes on from there on its own when the page was
+     * full. false when the log could not be read.
      */
     private function readPage($record)
     {
-        $sql = 'SELECT log_event_id, ts, event_id, data_values, CAST(pk AS BINARY) AS p FROM ' . $this->table
-             . ' WHERE project_id = ? AND pk = ? AND object_type = \'redcap_data\' AND event IN (\'INSERT\', \'UPDATE\')';
-        $params = [$this->pid, $record];
+        $batch = $this->batchFor($record);
+        $sql = 'SELECT log_event_id, ts, event_id, data_values, CAST(pk AS BINARY) AS p FROM ' . $this->table . $this->indexHint()
+             . ' WHERE project_id = ? AND pk ' . (count($batch) === 1 ? '= ?' : 'IN (' . implode(', ', array_fill(0, count($batch), '?')) . ')')
+             . ' AND object_type = \'redcap_data\' AND event IN (\'INSERT\', \'UPDATE\')';
+        $params = array_merge([$this->pid], $batch);
         if (isset($this->cursor[$record])) {
             $sql .= ' AND log_event_id < ?';
             $params[] = $this->cursor[$record];
@@ -160,30 +258,37 @@ final class ValueStamps
             return false;
         }
         if (!is_array($rows)) return false;
+        $in = [];
+        foreach ($batch as $rec) $in['=' . $rec] = $rec;   // prefixed: PHP turns the key "12" into a number
         $n = 0;
+        $last = null;
         foreach ($rows as $row) {
             $n++;
             $id = isset($row[0]) ? (string) $row[0] : '';
             if ($id === '' || !ctype_digit($id)) return false;
-            $this->cursor[$record] = $id;
+            $last = $id;
             // pk compared as bytes: the column's collation may match "abc" for "ABC".
-            if (!isset($row[4]) || (string) $row[4] !== $record) continue;
-            $this->any[$record] = true;
+            if (!isset($row[4]) || !isset($in['=' . $row[4]])) continue;
+            $rec = $in['=' . $row[4]];
+            $this->any[$rec] = true;
             $event = isset($row[2]) && $row[2] !== null && $row[2] !== '' ? (string) (int) $row[2] : null;
             if ($event === null) continue;
             foreach (self::parseDataValues(isset($row[3]) ? $row[3] : '') as $inst => $fields) {
                 foreach ($fields as $f => $v) {
-                    if (isset($this->seen[$record][$event][$inst]) && array_key_exists($f, $this->seen[$record][$event][$inst])) continue;
-                    $this->seen[$record][$event][$inst][$f] = [isset($row[1]) ? (string) $row[1] : '', $v];
+                    if (isset($this->seen[$rec][$event][$inst]) && array_key_exists($f, $this->seen[$rec][$event][$inst])) continue;
+                    $this->seen[$rec][$event][$inst][$f] = [isset($row[1]) ? (string) $row[1] : '', $v];
                 }
             }
         }
-        $this->rows[$record] = (isset($this->rows[$record]) ? $this->rows[$record] : 0) + $n;
-        if ($n < self::PAGE) {
-            $this->done[$record] = true;
-        } elseif ($this->rows[$record] >= self::MAX_ROWS_PER_RECORD) {
-            $this->done[$record] = true;
-            $this->capped[$record] = true;
+        foreach ($batch as $rec) {
+            if ($last !== null) $this->cursor[$rec] = $last;
+            $this->rows[$rec] = (isset($this->rows[$rec]) ? $this->rows[$rec] : 0) + $n;
+            if ($n < self::PAGE) {
+                $this->done[$rec] = true;
+            } elseif ($this->rows[$rec] >= self::MAX_ROWS_PER_RECORD) {
+                $this->done[$rec] = true;
+                $this->capped[$rec] = true;
+            }
         }
         return true;
     }
@@ -192,11 +297,20 @@ final class ValueStamps
      * data_values as instance => field => value. A field logged twice in one
      * row maps to null (ambiguous), and so does a value that spans lines (a
      * notes field): its later lines belong to it and are never read as
-     * entries, up to the line that ends with ',. A checkbox line and a blank
-     * line are skipped. Any other line means a value was split where this
-     * parse did not expect (a line of a notes value that ends with ',), so
-     * every field of the row maps to null rather than to a value read from
-     * the wrong place.
+     * entries, up to the line that ends with ',. A checkbox line, a blank
+     * line and a line REDCap writes about the record itself (SYSTEM_LINE:
+     * "__GROUPID__ = '12'" on a save made with a data access group) are
+     * skipped: none of them is a field, and none says a value was split.
+     *
+     * Any other line (a stray line) means a value was split where this parse
+     * did not expect: a line of a notes value that ends with ', closed the
+     * value early. The split value began no later than the entry read last
+     * before the stray line, so that entry and every entry after it map to
+     * null rather than to a value read from the wrong place. The entries
+     * before it keep their values (WIN-6): REDCap wrote them before the
+     * notes value began. An entry before the stray line that does not end
+     * with a comma, as every entry but a row's last does, is the split
+     * value's first line when it comes earlier, and the cut is made there.
      *
      * A notes value written to look like entries on every line is still read
      * as entries: data_values does not mark where a value ends. Doing that
@@ -208,7 +322,9 @@ final class ValueStamps
         if (!is_string($text) || $text === '') return $out;
         $instance = 1;
         $open = false;   // inside a value that spans lines
-        $stray = false;  // a line of no known shape
+        $entries = [];   // the fields in the order their lines were read
+        $bare = null;    // the first entry whose line does not end with a comma
+        $cut = null;     // the first entry a stray line makes ambiguous
         foreach (preg_split('/\r?\n/', $text) as $i => $line) {
             if ($open) {
                 if (preg_match("/',$/D", $line)) $open = false;
@@ -218,30 +334,67 @@ final class ValueStamps
                 $instance = max(1, (int) $m[1]);
                 continue;
             }
-            if (preg_match("/^([a-z][a-z0-9_]*) = '(.*)',?$/D", $line, $m)) {
+            if (preg_match("/^([a-z][a-z0-9_]*) = '(.*)'(,?)$/D", $line, $m)) {
                 $out[$instance][$m[1]] = (isset($out[$instance]) && array_key_exists($m[1], $out[$instance])) ? null : $m[2];
+                if ($m[3] === '' && $bare === null) $bare = count($entries);
+                $entries[] = $m[1];
                 continue;
             }
             if (preg_match("/^([a-z][a-z0-9_]*) = '/", $line, $m)) {
                 $out[$instance][$m[1]] = null;
+                $entries[] = $m[1];
                 $open = true;
                 continue;
             }
-            if ($line === '' || preg_match('/^[a-z][a-z0-9_]*\([^)]*\) = (?:checked|unchecked),?$/D', $line)) continue;
-            $stray = true;
+            if ($line === '' || preg_match('/^[a-z][a-z0-9_]*\([^)]*\) = (?:checked|unchecked),?$/D', $line)
+                    || preg_match(self::SYSTEM_LINE, $line)) {
+                continue;
+            }
+            if ($cut === null) {
+                $cut = max(0, count($entries) - 1);
+                if ($bare !== null && $bare < $cut) $cut = $bare;
+            }
         }
-        if ($stray) {
-            foreach ($out as $inst => $fields) foreach ($fields as $f => $v) $out[$inst][$f] = null;
+        if ($cut !== null) {
+            // One instance per row, so a field name is one entry of it.
+            foreach (array_slice($entries, $cut) as $f) $out[$instance][$f] = null;
         }
         return $out;
     }
 
-    /** A log ts (YYYYMMDDHHMMSS, log zone) as 'Y-m-d H:i:s' in the clock zone, or null. */
+    /**
+     * A log ts (YYYYMMDDHHMMSS, log zone) as ['at' => 'Y-m-d H:i:s' in the
+     * clock zone], or null.
+     *
+     * THE HOUR SHOWN TWICE (WIN-4). The ts is a time on the server's clock,
+     * and in the hour that clock repeats when daylight saving ends it names
+     * two moments an hour apart; PHP reads it as the first. 'at' is then the
+     * earlier moment, and the answer says how far the save may lie from it
+     * as the clock zone shows time: foldFuture, the seconds a time later
+     * than 'at' may still not be after the save, and foldPast, the seconds a
+     * time earlier than 'at' may still not be before it. They also hold the
+     * clock zone's own repeated hour (ClockZones::fold), where two moments
+     * share one time on the clock. Neither key is there when it is 0, which
+     * is every other hour of the year.
+     */
     private function toClock($ts)
     {
         if (!is_string($ts) || !preg_match('/^\d{14}$/D', $ts)) return null;
         $d = \DateTimeImmutable::createFromFormat('!YmdHis', $ts, $this->logZone);
         if ($d === false || $d->format('YmdHis') !== $ts) return null;
-        return $d->setTimezone($this->clockZone)->format('Y-m-d H:i:s');
+        $early = $d->getTimestamp();
+        $late = $early;
+        $log = ClockZones::fold($this->logZone, $early);
+        if ($log['past'] > 0) $late = $early + $log['past'];
+        elseif ($log['future'] > 0) $early = $late - $log['future'];
+        $first = (new \DateTimeImmutable('@' . $early))->setTimezone($this->clockZone);
+        $last = (new \DateTimeImmutable('@' . $late))->setTimezone($this->clockZone);
+        $out = ['at' => $first->format('Y-m-d H:i:s')];
+        // how much later the clock zone shows the later moment, plus its own fold there
+        $future = ($late + $last->getOffset()) - ($early + $first->getOffset()) + ClockZones::fold($this->clockZone, $late)['future'];
+        $past = ClockZones::fold($this->clockZone, $early)['past'];
+        if ($future > 0) $out['foldFuture'] = $future;
+        if ($past > 0) $out['foldPast'] = $past;
+        return $out;
     }
 }

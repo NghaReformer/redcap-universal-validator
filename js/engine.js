@@ -2442,11 +2442,54 @@ function QRID_calendarBounds(spec,a,valueType){
    built, advanced by how long the page has been open. A page left open across
    midnight therefore moves to the next day. The elapsed time never goes
    backwards, so setting the computer's clock back cannot undo a day. null
-   without a usable server clock. */
-var QRID_CLOCK_T0=Date.now(),QRID_CLOCK_ELAPSED=0;
+   without a usable server clock.
+
+   HOW LONG THE PAGE HAS BEEN OPEN (WIN-2). Two clocks say. The browser's
+   steady clock (performance.now) is moved by no change of the computer's
+   date or time, but may stand still while the computer sleeps. The
+   computer's own clock (Date.now) runs through sleep, but moves with every
+   change of its date: taken alone, and never let back, one jump forward (a
+   wrong date typed, a bad time sync) moved "today" for as long as the page
+   stayed open, also after the clock was put right, so a hard notPast refused
+   the real today and notFuture let a future date through.
+   - The two agree to within QRID_CLOCK_DRIFT_MS, or the computer's clock is
+     behind (it was set back): the steady clock counts.
+   - The computer's clock is ahead: it slept, or its clock was moved forward.
+     The page cannot tell which, so the clock it returns is the steady one and
+     carries the other reading as .alt. The caller judges against both, and
+     where they give different verdicts the parts judged against the clock
+     are not checked on this page (QRIDWindowInit says so to staff); the
+     post-save audit reads the server's clock and judges them. Once the
+     computer's clock is put right the two agree again, and so does the page.
+   The margin is half of QRID_CLOCK_SLACK_S: a sleep shorter than it leaves
+   the steady clock that much behind, inside what a date and time is allowed.
+   A browser with no steady clock keeps the largest elapsed time its own
+   clock has shown, as before. */
+var QRID_CLOCK_T0=Date.now(),QRID_CLOCK_ELAPSED=0,QRID_CLOCK_DRIFT_MS=60000;
+/* The browser's steady clock in milliseconds, or null when it has none. */
+function QRID_steadyNow(){
+  try{
+    var p=window.performance;
+    if(p&&typeof p.now==='function'){var v=p.now();if(typeof v==='number'&&isFinite(v))return v;}
+  }catch(e){}
+  return null;
+}
+var QRID_CLOCK_STEADY0=QRID_steadyNow();
+/* {ms: the time the page has been open, alt: the computer's clock's reading
+   of it when that is ahead of ms by more than the margin, else null}. */
+function QRID_clockElapsed(){
+  var wall=Date.now()-QRID_CLOCK_T0,s=QRID_CLOCK_STEADY0===null?null:QRID_steadyNow();
+  if(s===null){
+    if(wall>QRID_CLOCK_ELAPSED)QRID_CLOCK_ELAPSED=wall;
+    return {ms:QRID_CLOCK_ELAPSED,alt:null};
+  }
+  if(s-QRID_CLOCK_STEADY0>QRID_CLOCK_ELAPSED)QRID_CLOCK_ELAPSED=s-QRID_CLOCK_STEADY0;
+  return {ms:QRID_CLOCK_ELAPSED,alt:wall-QRID_CLOCK_ELAPSED>QRID_CLOCK_DRIFT_MS?wall:null};
+}
 function QRID_clockNow(base){
-  var e=Date.now()-QRID_CLOCK_T0;if(e>QRID_CLOCK_ELAPSED)QRID_CLOCK_ELAPSED=e;
-  return QRID_clockAt(base,QRID_CLOCK_ELAPSED);
+  var e=QRID_clockElapsed(),clock=QRID_clockAt(base,e.ms);
+  if(clock&&e.alt!==null){var alt=QRID_clockAt(base,e.alt);if(alt)clock.alt=alt;}
+  return clock;
 }
 /* config.clock advanced by elapsedMs. The clock also carries its moment in
    UTC milliseconds (utc), the zone's offset in seconds (offset), and the
@@ -2462,9 +2505,43 @@ function QRID_clockAt(base,elapsedMs){
   if(QRID_finiteNumber(base.utc)&&QRID_finiteNumber(base.offset)&&QRID_finiteNumber(base.next)
      &&QRID_finiteNumber(base.offsetAfter)&&base.utc+elapsedMs>=base.next)secs+=base.offsetAfter-base.offset;
   var now=QRID_temporalCanonical(secs,'datetime');
-  return now===null?null:{today:now.slice(0,10),now:now};
+  if(now===null)return null;
+  var out={today:now.slice(0,10),now:now},fold=QRID_clockFoldAt(base,elapsedMs);
+  if(fold.future>0)out.foldFuture=fold.future;
+  if(fold.past>0)out.foldPast=fold.past;
+  return out;
 }
 function QRID_finiteNumber(v){ return typeof v==='number'&&isFinite(v); }
+/* The hour the zone's clocks show twice, when daylight saving ends (WIN-4):
+   from 01:00 to 02:00 in New York on the first Sunday of November. Times are
+   compared as the clock shows them, and there one time on the clock is two
+   moments: in the second showing a time up to the change later than "now" may
+   be from the first, so it is not in the future (future, the seconds the
+   clocks went back by); in the first showing a time earlier than "now" may be
+   from the second, so it is not in the past (past). Both are 0 at any other
+   moment. The fold of the next change comes from next and offsetAfter; a page
+   opened inside the second showing gets it from the server (foldFuture until
+   foldUntil, UniversalValidator::clockStamp, which uses ClockZones::fold).
+   clockStamp for the moment base.utc+elapsedMs carries the same seconds. */
+function QRID_clockFoldAt(base,elapsedMs){
+  var out={future:0,past:0};
+  if(!base||typeof base!=='object'||!QRID_finiteNumber(base.utc))return out;
+  var t=base.utc+elapsedMs;
+  if(QRID_clockFoldOf(base,'foldFuture')>0&&QRID_finiteNumber(base.foldUntil)&&t<base.foldUntil)out.future=base.foldFuture;
+  if(QRID_finiteNumber(base.offset)&&QRID_finiteNumber(base.next)&&QRID_finiteNumber(base.offsetAfter)&&base.offsetAfter<base.offset){
+    var by=base.offset-base.offsetAfter;
+    if(t>=base.next&&t<base.next+by*1000)out.future=by;
+    else if(t<base.next&&t>=base.next-by*1000)out.past=by;
+  }
+  return out;
+}
+/* The clock's fold in seconds under key (foldFuture or foldPast), or 0 when
+   it carries none or one that is not a whole number of seconds from 1 to a
+   day. Twin of TemporalLogic::clockFold. */
+function QRID_clockFoldOf(clock,key){
+  var v=clock&&typeof clock==='object'?clock[key]:0;
+  return (QRID_finiteNumber(v)&&Math.floor(v)===v&&v>0&&v<=86400)?v:0;
+}
 /* "Now" for a date and time typed on this page is a span around the server's
    clock. futureNow (for notFuture, and the late end of a window counted from
    "now") is the clock plus 120 seconds (TemporalLogic::CLOCK_SLACK_S, which
@@ -2476,7 +2553,9 @@ function QRID_finiteNumber(v){ return typeof v==='number'&&isFinite(v); }
    is measured in UTC (QRID_deviceClockError), so the computer's time zone
    plays no part: a computer set to another zone than the rule's is still
    refused, which points to the project's time zone setting. "today" and
-   "now" are unchanged, and dates have no margin. */
+   "now" are unchanged, and dates have no margin. In an hour the zone's
+   clocks show twice the margin grows by the change (the clock's foldFuture
+   and foldPast, QRID_clockFoldAt), as TemporalLogic::clockSlack's does. */
 var QRID_CLOCK_SLACK_S=120,QRID_DEVICE_ERROR_MAX_S=600;
 function QRID_clockLenient(clock,errorSeconds){
   var b=clock?QRID_temporalDate(clock.now,'datetime_seconds','ymd'):null;if(!b)return clock;
@@ -2484,8 +2563,8 @@ function QRID_clockLenient(clock,errorSeconds){
   var lead=err>0?Math.min(Math.floor(err),QRID_DEVICE_ERROR_MAX_S):0;
   var lag=err<0?Math.min(Math.floor(-err),QRID_DEVICE_ERROR_MAX_S):0;
   var out={today:clock.today,now:clock.now};
-  var later=QRID_temporalCanonical(b.seconds+QRID_CLOCK_SLACK_S+lead,'datetime');
-  var earlier=QRID_temporalCanonical(b.seconds-QRID_CLOCK_SLACK_S-lag,'datetime');
+  var later=QRID_temporalCanonical(b.seconds+QRID_CLOCK_SLACK_S+lead+QRID_clockFoldOf(clock,'foldFuture'),'datetime');
+  var earlier=QRID_temporalCanonical(b.seconds-QRID_CLOCK_SLACK_S-lag-QRID_clockFoldOf(clock,'foldPast'),'datetime');
   if(later!==null)out.futureNow=later;
   if(earlier!==null)out.pastNow=earlier;
   return out;
@@ -6060,15 +6139,19 @@ function QRIDWindowInit(QRID_CONFIG){
   /* Whether the field's value is new or changed since the page was built.
      config.windowSaved holds the saved value of each field a today-relative
      part judges; only a new or changed value is judged in full against today,
-     as a saved one was judged against the day it was saved, after saving. A field
-     the server could not read (null) counts as unchanged, so nothing is
-     judged against today there. Without windowSaved (a record not saved yet,
-     a hand-written config) every value is new. */
+     as a saved one was judged against the day it was saved, after saving.
+     Without windowSaved (a record not saved yet, a hand-written config) every
+     value is new. null: the server could not read the field's saved value, so
+     the page cannot tell (WIN-5). Such a field counted as unchanged, and then
+     nothing typed into it was judged against today, a hard block included,
+     with no word to anyone. verdictOf judges it as new and marks the answer
+     (savedUnknown); check() then shows a finding without blocking the save,
+     and says why. */
   function isNewValue(V, fieldName, val){
     var saved = QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.windowSaved;
     if(!saved || typeof saved !== "object" || !Object.prototype.hasOwnProperty.call(saved, fieldName)) return true;
     var s = saved[fieldName];
-    if(typeof s !== "string") return false;
+    if(typeof s !== "string") return null;
     var cur = typeof val === "string" ? QRID_whenTrim(val) : "";
     var a = QRID_temporalDate(cur, V.spec.type, V.dateFormat), b = QRID_temporalDate(QRID_whenTrim(s), V.spec.type, "ymd");
     if(a && b) return a.value !== b.value;
@@ -6084,20 +6167,22 @@ function QRIDWindowInit(QRID_CONFIG){
      a value whose today-relative parts were left out (an unchanged value):
      notPast and a window counted from today or now are dropped, notFuture is
      kept (a value after today was after its save day too), and a pass shows
-     no green OK. */
-  function verdictOf(V, fieldName){
-    var val = QRID_WHEN.readRef(fieldName, null);
-    var spec = V.spec, op = V.fromOp, anchor = null, anchorHi, skipped = false;
-    if(V.todayRelative && !isNewValue(V, fieldName, val)){
-      spec = {};
-      for(var k in V.spec) if(Object.prototype.hasOwnProperty.call(V.spec, k)) spec[k] = V.spec[k];
-      spec.notPast = false;
-      if(V.clockAnchor){ spec.lo = null; spec.hi = null; spec.period = null; }
-      skipped = true;
-    }
+     no green OK. r.savedUnknown marks a value the page cannot tell is new
+     (isNewValue, WIN-5): it is judged in full. r.clockUnsure marks one the
+     page's two clocks give different verdicts for (QRID_clockNow, WIN-2): the
+     verdict is then the one with no part judged against the clock. */
+  function withoutClockParts(V, spec, notFuture){
+    var out = {};
+    for(var k in spec) if(Object.prototype.hasOwnProperty.call(spec, k)) out[k] = spec[k];
+    out.notPast = false;
+    if(!notFuture) out.notFuture = false;
+    if(V.clockAnchor){ out.lo = null; out.hi = null; out.period = null; }
+    return out;
+  }
+  /* The verdict of spec for val against one clock (null: none is needed). */
+  function verdictBy(V, fieldName, val, spec, clock){
+    var op = V.fromOp, anchor = null, anchorHi;
     var windowed = spec.lo !== null || spec.hi !== null || spec.period !== null;
-    var clock = (spec.notFuture || spec.notPast || (V.clockAnchor && windowed))
-      ? QRID_clockNow(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock) : null;
     var judge = (clock && V.spec.type !== "date")
       ? QRID_clockLenient(clock, QRID_deviceClockError(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock)) : clock;
     if(op && op[0] === "ref") anchor = op[1] === fieldName ? "" : QRID_WHEN.readRef(op[1], null);
@@ -6117,7 +6202,23 @@ function QRIDWindowInit(QRID_CONFIG){
     var r = QRID_windowVerdictSpread(spec, val, V.dateFormat, anchor, anchorHi, V.fromFormat, judge);
     r.clock = clock;
     r.anchor = anchor;
-    r.skipped = skipped;
+    return r;
+  }
+  function verdictOf(V, fieldName){
+    var val = QRID_WHEN.readRef(fieldName, null);
+    var spec = V.spec, isNew = V.todayRelative ? isNewValue(V, fieldName, val) : true;
+    if(isNew === false) spec = withoutClockParts(V, V.spec, true);
+    var needsClock = spec.notFuture || spec.notPast
+      || (V.clockAnchor && (spec.lo !== null || spec.hi !== null || spec.period !== null));
+    var clock = needsClock ? QRID_clockNow(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock) : null;
+    var r = verdictBy(V, fieldName, val, spec, clock), unsure = false;
+    if(clock && clock.alt && verdictBy(V, fieldName, val, spec, clock.alt).verdict !== r.verdict){
+      r = verdictBy(V, fieldName, val, withoutClockParts(V, spec, false), null);
+      unsure = true;
+    }
+    r.skipped = isNew === false;
+    r.savedUnknown = isNew === null;
+    r.clockUnsure = unsure;
     return r;
   }
   /* A period by name: "last month", "the month of [visit_date]". */
@@ -6229,6 +6330,26 @@ function QRIDWindowInit(QRID_CONFIG){
       try { r = verdictOf(V, fieldName); } catch(e){ inert(); return; }   /* fail open: a bug never traps a save */
       /* judged against the clock alone: never depends on the "from" date */
       var clockHit = r.verdict === "future" || r.verdict === "past";
+      var windowHit = r.verdict === "window-early" || r.verdict === "window-late";
+      if(r.clockUnsure && !windowHit){
+        /* This computer's two clocks disagree about how long the page has
+           been open, and the verdict depends on which is right (WIN-2).
+           Nothing judged against today is shown or blocks; a window counted
+           from a field that the value breaks is still shown, below. */
+        if(QRID_IS_SURVEY){ inert(); return; }
+        msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+          "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
+        msg.innerHTML = "&#9888; This date is not checked against today on this page: this computer's clock" +
+          " changed, or the computer slept, while the page was open. It is checked after the save." +
+          " Reload the page to check it here.";
+        setGuard(false); QRID_setModeState(input, "w", null);
+        return;
+      }
+      /* The saved value could not be read (WIN-5), and this finding holds
+         for a new value only: notPast, or a window counted from today or
+         now. It is shown, and does not block. A date after today is one
+         whether the value is new or not. */
+      var unsureNew = r.savedUnknown && (r.verdict === "past" || (windowHit && V.clockAnchor));
       if(r.verdict === "unknown" && !QRID_IS_SURVEY && V.fromOp && V.fromOp[0] === "lit"
          && typeof r.anchor === "string" && QRID_whenTrim(r.anchor) !== ""
          && QRID_temporalDate(QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))), V.spec.type, V.dateFormat)){
@@ -6250,12 +6371,18 @@ function QRIDWindowInit(QRID_CONFIG){
       if(r.verdict !== "ok" && !clockHit && r.verdict !== "window-early" && r.verdict !== "window-late"){ inert(); return; }
       var ok = r.verdict === "ok";
       /* An unchanged value had its today-relative parts left out: a green OK
-         would claim a check that did not run, so a pass shows nothing. */
-      if(ok && r.skipped){ inert(); return; }
+         would claim a check that did not run, so a pass shows nothing. The
+         same for a value that may be the saved one (savedUnknown), and for
+         one whose clock parts were left out (clockUnsure). */
+      if(ok && (r.skipped || r.savedUnknown || r.clockUnsure)){ inert(); return; }
       styleMsg(msg, ok);
       QRID_setModeState(input, "w", ok ? "ok" : "bad");
-      setGuard(!ok, clockHit ? V.futureBlock : V.blockSave);
+      setGuard(!ok && !unsureNew, clockHit ? V.futureBlock : V.blockSave);
       var base = V.message ? QRID_ruleHtml(V, "message") : describe(V, r);
+      if(unsureNew && !QRID_IS_SURVEY){
+        base += ' <span style="opacity:.8">(The saved value of this field could not be read, so the page cannot tell' +
+          " whether this date is new. This check does not block saving; it is re-checked after the save.)</span>";
+      }
       /* Why a verdict that rests on a value read when the page was opened does
          not block: named by what read it, the "from" date or the condition
          that decides whether the rule applies (snapshotGate). */
@@ -6294,7 +6421,10 @@ function QRIDWindowInit(QRID_CONFIG){
       if(a.length !== 1 || a[0].deferred) return null;
       if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
       var r = verdictOf(a[0], f);
-      return { verdict: r.verdict, skipped: !!r.skipped, withheld: !!a[0].windowWithheld };
+      var v = r.verdict, windowHit = v === "window-early" || v === "window-late";
+      return { verdict: v, skipped: !!r.skipped, withheld: !!a[0].windowWithheld,
+               /* a part was left out, or the finding holds for a new value only (WIN-2, WIN-5) */
+               unsure: (!!r.clockUnsure && !windowHit) || (!!r.savedUnknown && (v === "ok" || v === "past" || (windowHit && a[0].clockAnchor))) };
     }
     QRID_registerValidator(f, { type: "window", mode: { window: true, configError: configError },
       /* What the page decided, for tests/window_glue_dom_js.cjs, which holds
@@ -6305,6 +6435,7 @@ function QRIDWindowInit(QRID_CONFIG){
         if(!r) return null;
         var v = r.verdict;
         if(v === "ok" && (r.withheld || r.skipped)) return null;   /* a part was never checked */
+        if(r.unsure) return null;   /* judged in part, or a finding that holds for a new value only */
         return v === "ok" ? true : (v === "future" || v === "past" || v === "window-early" || v === "window-late") ? false : null;
       } });
   });

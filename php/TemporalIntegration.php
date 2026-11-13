@@ -318,7 +318,8 @@ trait TemporalIntegration
     {
         $this->temporalPid=$pid;$extended=[];$legacy=[];
         foreach($rules as $i=>$r){if(empty($r['configError'])&&TemporalRules::extended($r))$extended[$i]=$r;else $legacy[$i]=$r;}
-        $out=$this->foldRuleConditions($legacy,$pid,$record,$instrument,$event,$instance,$context);
+        // with the fields windowSavedValues() reads next for this page, so they come in one read (WIN-9)
+        $out=$this->foldRuleConditions($legacy,$pid,$record,$instrument,$event,$instance,$context,self::windowTodayFields($rules));
         if(!$extended)return $out;
         $this->temporalBegin($pid);
         try{

@@ -78,7 +78,8 @@ namespace {
         public static $data = [];
         public static $dictionary = [];
         public static $rights = [];
-        public static function getData($p) { return self::$data; }
+        public static $reads = [];   // the "fields" of every getData call
+        public static function getData($p) { self::$reads[] = isset($p['fields']) ? $p['fields'] : null; return self::$data; }
         public static function getDataDictionary($pid, $f = 'array') {
             if (!$pid) throw new \RuntimeException('needs pid');
             return self::$dictionary;
@@ -99,6 +100,7 @@ namespace {
         public function select($sql, array $params = [])
         {
             if (strpos($sql, 'FROM redcap_projects') !== false) return [['redcap_log_event4']];
+            if (strpos($sql, 'FROM information_schema.statistics') !== false) return [];   // no index named: no hint
             $this->reads++;
             preg_match('/LIMIT (\d+)$/', $sql, $m);
             $before = isset($params[2]) ? (int) $params[2] : PHP_INT_MAX;
@@ -319,6 +321,25 @@ namespace {
     check('clockStamp: a zone with no change has none', $st['offset'] === 0 && $st['next'] === null && $st['offsetAfter'] === null);
     $st = $UV::clockStamp(new \DateTimeImmutable('2026-10-20 12:00:00+02:00'));
     check('clockStamp: a fixed offset has no change', $st['offset'] === 7200 && $st['next'] === null);
+    // WIN-4: the hour a zone shows twice. The fixture holds the stamp of a
+    // moment and what the clock is some time later; tests/window_js.cjs
+    // advances the same stamp on the page and must reach the same clock.
+    $foldFx = json_decode(file_get_contents(__DIR__ . '/window_fold_fixture.json'), true);
+    check('fold fixture loads', is_array($foldFx) && !empty($foldFx['cases']));
+    foreach ($foldFx['cases'] as $c) {
+        $at0 = new \DateTimeImmutable($c['at'], new \DateTimeZone('UTC'));
+        $zone = new \DateTimeZone($c['zone']);
+        check('fold: ' . $c['name'] . ': the stamp (got ' . json_encode($UV::clockStamp($at0->setTimezone($zone))) . ')',
+            $UV::clockStamp($at0->setTimezone($zone)) === $c['base']);
+        foreach ($c['steps'] as $s) {
+            $st = $UV::clockStamp($at0->modify('+' . intdiv($s['elapsedMs'], 1000) . ' seconds')->setTimezone($zone));
+            $sl = \INSPIRE\UniversalValidator\TemporalLogic::clockSlack($st);
+            $got = ['elapsedMs' => $s['elapsedMs'], 'now' => $st['now'], 'foldFuture' => $st['foldFuture'] ?? 0, 'foldPast' => $st['foldPast'] ?? 0,
+                    'futureNow' => $sl['futureNow'], 'pastNow' => $sl['pastNow']];
+            check('fold: ' . $c['name'] . ' +' . $s['elapsedMs'] . ' ms (got ' . json_encode($got) . ')', $got === $s);
+            check('fold: ... foldUntil comes with foldFuture only', isset($st['foldUntil']) === isset($st['foldFuture']));
+        }
+    }
     $mz = mod($DICT, $DATA, $FULL, 'nurse');
     $rp = new \ReflectionProperty($UV, 'clockOverride'); $rp->setAccessible(true); $rp->setValue($mz, null);
     $mz->projectSettings['window-timezone'] = 'Europe/London';
@@ -737,6 +758,28 @@ namespace {
     $DW = $D9; $DW['2'][351]['w_now'] = '2026-10-09 12:19';
     list($by, $un) = $audit($stamps(mod($P9, $DW, $FULL, 'nurse'), [$row('20261009143000', "w_now = '2026-10-09 12:19'")]));
     check('audit: ...2 h 11 min before is inside the margin', !isset($by['w_now']));
+    // WIN-4: a save in the hour the clocks show twice. The reviewer's case:
+    // a time of 01:50 summer time, saved 15 minutes later at 01:05 winter time.
+    $foldAudit = function ($value, $ts, $logZone, $clockZone, $field = 'nf_dt') use ($P9, $D9, $FULL, $row, $audit) {
+        $DW = $D9; $DW['2'][351][$field] = $value;
+        $m = mod($P9 + ['nf_dt' => f('visit_form', '@UVWINDOW={"notFuture":true}', 'datetime_ymd')], $DW, $FULL, 'nurse');
+        $db = new WinLog();
+        $db->rows[] = array_merge([1, 149, '2', 351], $row($ts, $field . " = '" . $value . "'"));
+        $vs = \INSPIRE\UniversalValidator\ValueStamps::forProject($db, 149, new \DateTimeZone($logZone), new \DateTimeZone($clockZone));
+        $rp = new \ReflectionProperty($m, 'valueStampsOverride'); $rp->setAccessible(true); $rp->setValue($m, $vs);
+        return $audit($m);
+    };
+    list($by, $un) = $foldAudit('2025-11-02 01:50', '20251102010500', 'America/New_York', 'America/New_York');
+    check('audit: a time from the first showing of a repeated hour, saved in the second, is not in the future (WIN-4)',
+        !isset($by['nf_dt']) && !isset($un['nf_dt']));
+    list($by, $un) = $foldAudit('2025-11-02 03:20', '20251102010500', 'America/New_York', 'America/New_York');
+    check('audit: ... a time past the hour and its margin still is', ($by['nf_dt']['reason'] ?? null) === 'future');
+    list($by, $un) = $foldAudit('2025-10-26 01:50', '20251026010500', 'America/New_York', 'America/New_York');
+    check('audit: ... and so is the same time a week before, when no hour repeats', ($by['nf_dt']['reason'] ?? null) === 'future');
+    // The save's log time is 23:30 in Denver or 00:30 the next day: the day is not known.
+    list($by, $un) = $foldAudit('2025-11-01', '20251102013000', 'America/New_York', 'America/Denver', 'w_past');
+    check('audit: a save whose repeated hour lies either side of midnight has no known day',
+        !isset($by['w_past']) && $notKnown($un, 'w_past', 'the project log gives its time in an hour the clocks showed twice, either side of midnight'));
     // "now" with a period takes the plain now: the month is October, with no margin into September.
     $DW = $D9; $DW['2'][351]['w_now_p'] = '2026-09-30 23:59';
     list($by, $un) = $audit($stamps(mod($P9, $DW, $FULL, 'nurse'), [$row('20261001000100', "w_now_p = '2026-09-30 23:59'")]));
@@ -766,6 +809,24 @@ namespace {
     check('windowSaved: a value that is not UTF-8 is null, and the page still gets its rules',
         is_array($pu8['cfg']) && !empty($pu8['cfg']['rules']) && array_key_exists('w_today', $pu8['cfg']['windowSaved'])
         && $pu8['cfg']['windowSaved']['w_today'] === null);
+    // WIN-9: a page with a today-relative rule read the record twice, once for
+    // the conditions and "from" dates and once for the saved values.
+    \REDCap::$reads = [];
+    $p1 = page(mod($P9, $D9, $FULL, 'nurse'), 'form', '2', 'visit_form');
+    check('page: the record is read once for the conditions and the saved values (WIN-9) (got ' . count(\REDCap::$reads) . ' reads)',
+        count(\REDCap::$reads) === 1 && in_array('w_past', \REDCap::$reads[0], true) && in_array('v_start', \REDCap::$reads[0], true));
+    check('page: ... and the saved values are those of the record',($p1['cfg']['windowSaved']['w_past'] ?? null) === '2026-10-01'
+        && ($p1['cfg']['windowSaved']['w_today'] ?? null) === '2026-09-01' && ($p1['cfg']['windowSaved']['w_now'] ?? null) === '2026-10-09 12:27');
+    check('page: ... the rule counted from a field still gets its "from" as a live ref',
+        (ruleFor($p1, 'w_field_nf')['windowFromOp'] ?? null) === ['ref', 'v_start', null]);
+    $PN = ['record_id' => $DICT['record_id'], 'w_past' => $P9['w_past']];
+    \REDCap::$reads = [];
+    $p2 = page(mod($PN, $D9, $FULL, 'nurse'), 'form', '2', 'visit_form');
+    check('page: with no condition to fold, the saved values are still read, once', count(\REDCap::$reads) === 1
+        && ($p2['cfg']['windowSaved']['w_past'] ?? null) === '2026-10-01');
+    \REDCap::$reads = [];
+    $p3 = page(mod($PN, $D9, $FULL, 'nurse'), 'form', null, 'visit_form');
+    check('page: a record not saved yet reads nothing', \REDCap::$reads === []);
     // The scan: no save in progress, so a value the log does not show is not checked.
     $ms = $stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20260902100000', "w_today = '2026-08-30'"), $row('20261009090000', "w_past = '2026-10-01'")]);
     $res = $ms->scanProject(149);
@@ -778,6 +839,15 @@ namespace {
     }
     check('durable scan: the finding row keeps as_of (' . json_encode(isset($ctx['why']) ? $ctx['why'] : null) . ')',
         ($dur['w_past']['as_of'] ?? null) === '2026-10-09' && array_key_exists('as_of', $dur['collected'] ?? ['as_of' => null]));
+    // The run's read names its records to the log reader, which then reads
+    // their saves in one query, not one per record (WIN-3).
+    if (!empty($ctx['ok'])) {
+        $ctx['read'](['8', '9']);
+        $rp = new \ReflectionProperty($ms, 'valueStampsOverride'); $rp->setAccessible(true);
+        $ex = new \ReflectionProperty(\INSPIRE\UniversalValidator\ValueStamps::class, 'expected'); $ex->setAccessible(true);
+        check('durable scan: the records of a read are named to the log reader',
+            array_map('strval', array_keys($ex->getValue($rp->getValue($ms)))) === ['8', '9']);
+    }
     $sv = []; foreach ($res['violations'] as $v) $sv[$v['field']] = $v;
     check('scan: a value the log shows another value for is not checked', !isset($sv['w_today'])
         && (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('w_today', $u['fields'], true)

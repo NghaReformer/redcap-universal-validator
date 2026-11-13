@@ -1650,8 +1650,18 @@ warning.
 - **Today is the server's date.** The page gets the server clock when it opens
   and moves it forward while it stays open, so a wrong computer clock cannot
   accept tomorrow's date and a form left open past midnight moves to the next
-  day. A computer clock moved forward while the form is open moves it too; the
-  post-save audit reads the server clock and still logs the date. The date is
+  day. The page counts the time it has been open on the browser's steady clock,
+  which a change of the computer's date does not move, so a computer clock set
+  forward or back while the form is open changes nothing. That steady clock may
+  stand still while the computer sleeps, and the page cannot tell a sleep from
+  a clock set forward. When the two clocks differ by more than a minute the
+  page judges against both, and a date they judge differently is not checked
+  against today on the page: staff see why, the save is not blocked, and the
+  post-save audit, which reads the server clock, judges it. Reloading
+  the page starts a fresh clock. A saved value the server could not read when
+  the page opened gets the same treatment for `notPast` and a `from` of `today`
+  or `now`: the page cannot tell whether the date is new, so it shows the
+  finding without blocking and says so. The date is
   taken in the server's time zone unless the project setting **Time zone for
   @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. An older
   name of a zone, such as `Asia/Calcutta` or `US/Eastern`, works too, also on a
@@ -1669,6 +1679,17 @@ warning.
   post-save audit and the scan allow the most the page could have: 12 minutes
   either side of the moment the value was saved. The computer's time zone adds
   no margin, and a date has none.
+- **The hour the clocks show twice.** When daylight saving ends, one hour comes
+  twice (01:00 to 02:00 in New York), and a time in it does not say which of
+  the two it is. Times are compared as the clock shows them, so in that hour
+  the margin grows by the hour: a sample timed 01:50, saved 15 minutes later
+  at 01:05 on winter time, is not "in the future", and `notPast` treats the
+  first showing of the hour the same way. It applies on the page, after saving
+  and in the scan, also when the server's own clock repeats the hour in which
+  REDCap logged the save. A date field is not affected, except for a save
+  logged in an hour the server repeats either side of midnight in the
+  project's time zone: its day is not known, and the parts judged against that
+  day are logged as not checked.
 - **One time zone per project.** `@NOW` and `@TODAY` fill in the computer's
   time, `@NOW-UTC` and `@TODAY-UTC` UTC, `@NOW-SERVER` and `@TODAY-SERVER` the
   server's. `notFuture` on a field filled by one of the last four is refused when
@@ -1678,6 +1699,17 @@ warning.
   `now` when it differs either way. A rule that also has a window or period
   counted from a field or a fixed date keeps it; only the parts judged against
   the clock are dropped, and staff see why on the form.
+- **Sites in several time zones share one "today".** The project has one time
+  zone for these rules, and no site has its own. For a site ahead of it, the
+  hours after its own midnight are still "yesterday" to the rule: `notFuture`
+  refuses the site's own date, and a hard block holds the save until the
+  project's midnight. For a site behind it, the hours before its own midnight
+  are already "tomorrow": `notPast` refuses the site's own date, and
+  `notFuture` accepts the next day's. With `notFuture`, set the time zone to
+  the one furthest ahead among the sites, so no site's own date is refused,
+  and with `notPast` to the one furthest behind. A project that uses both, or
+  a `from` of `today`, across zones should use `"blockSave":"confirm"` for
+  them, so staff can pass the hours where the two days differ.
 - **Hours and minutes count wall-clock time.** `"window":[0,6],"unit":"hours"`
   compares the times as written, so across a daylight-saving change the window
   spans 5 or 7 hours of elapsed time.
@@ -1691,10 +1723,14 @@ warning.
   the missed bound in the detail line, such as "The window opens 21 days after
   [visit_date_bl].", "The window opens 30 days before today." or "The date must
   be in last month.". Where the log does not
-  show when a value was saved, `notFuture` is judged against the day the scan
-  runs. Each part of a durable scan reads the clock when that part runs, and
-  stores with each finding the day it was judged against (`as_of`); the durable
-  scan's report, which will show it, has not shipped yet.
+  show when a value was saved, `notFuture` is judged against the scan's day.
+  A scan takes that day once, when the run is planned, and every record of the
+  run is judged by it, also when the run goes on past midnight. The page says
+  "Dates were judged as of" that date and the downloaded file gives it on its
+  `# judged_as_of` line. A record edited after the run was planned can hold a
+  date later than that day; when the log cannot show the day it was saved,
+  that date is reported as not checked. Each finding stores the day it was
+  judged against (`as_of`), and the report's detail line names it.
 - **Configure dialog:** none. `@UVWINDOW` exists only as an action tag.
 
 ### `@UVWINDOW` JSON keys

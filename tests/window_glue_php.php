@@ -62,6 +62,7 @@ namespace {
         public function select($sql, array $params = [])
         {
             if (strpos($sql, 'FROM redcap_projects') !== false) return [['redcap_log_event4']];
+            if (strpos($sql, 'FROM information_schema.statistics') !== false) return [];   // no index named: no hint
             if (isset($params[2])) return [];
             $r = isset($this->rows[(string) $params[1]]) ? $this->rows[(string) $params[1]] : null;
             return $r === null ? [] : [['1', $r[0], '351', $r[1], (string) $params[1]]];

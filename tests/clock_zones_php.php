@@ -148,5 +148,24 @@ ClockZones::useFile(null);
 ClockZones::useKnown(null);
 check('restored: the shipped map and the names PHP knows', ClockZones::resolve('Asia/Calcutta') !== null);
 
+// ---- 5. the hour a zone shows twice (WIN-4) ------------------------------------------
+
+$ny = new \DateTimeZone('America/New_York');
+$at = function ($utc) { return (new \DateTimeImmutable($utc, new \DateTimeZone('UTC')))->getTimestamp(); };
+$none = ['future' => 0, 'past' => 0, 'until' => null];
+check('fold: an ordinary moment is in no repeated hour', ClockZones::fold($ny, $at('2026-07-01 12:00:00')) === $none);
+check('fold: the second before the first showing', ClockZones::fold($ny, $at('2026-11-01 04:59:59')) === $none);
+check('fold: the first showing of 01:00 to 02:00 (summer time)', ClockZones::fold($ny, $at('2026-11-01 05:00:00')) === ['future' => 0, 'past' => 3600, 'until' => null]
+    && ClockZones::fold($ny, $at('2026-11-01 05:59:59'))['past'] === 3600);
+check('fold: the second showing (winter time), and when it ends', ClockZones::fold($ny, $at('2026-11-01 06:00:00')) === ['future' => 3600, 'past' => 0, 'until' => $at('2026-11-01 07:00:00')]
+    && ClockZones::fold($ny, $at('2026-11-01 06:59:59'))['future'] === 3600);
+check('fold: the second after it', ClockZones::fold($ny, $at('2026-11-01 07:00:00')) === $none);
+check('fold: clocks going forward repeat nothing', ClockZones::fold($ny, $at('2026-03-08 06:30:00')) === $none
+    && ClockZones::fold($ny, $at('2026-03-08 07:30:00')) === $none);
+check('fold: a change of half an hour', ClockZones::fold(new \DateTimeZone('Australia/Lord_Howe'), $at('2027-04-03 14:45:00'))['past'] === 1800
+    && ClockZones::fold(new \DateTimeZone('Australia/Lord_Howe'), $at('2027-04-03 15:10:00'))['future'] === 1800);
+check('fold: a zone with no change, and a fixed offset', ClockZones::fold(new \DateTimeZone('Africa/Douala'), $at('2026-11-01 06:30:00')) === $none
+    && ClockZones::fold(new \DateTimeZone('+02:00'), $at('2026-11-01 06:30:00')) === $none);
+
 echo "clock_zones_php: $n checks, $fails failure(s)\n";
 exit($fails ? 1 : 0);

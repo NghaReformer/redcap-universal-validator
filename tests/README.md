@@ -234,9 +234,15 @@ D-M-Y, M-D-Y and Y-M-D input, leap days and year ends, open and negative bounds,
 every unit, a blank value or `from` date, half-typed and impossible dates, a
 date against a datetime, and `notFuture` exactly at today, at the next minute
 and one second ahead of now. The clock is an input, so no case depends on the
-day the tests run. `window_js.cjs` also checks `QRID_clockNow`: the page clock
-moves forward with `Date.now()`, never backwards, and is null without a valid
-server clock. The fixture's `calendar` cases lock the month, week and period
+day the tests run. `window_js.cjs` also checks `QRID_clockNow`: with no steady
+clock in the browser the page clock moves forward with `Date.now()`, never
+backwards, and is null without a valid server clock. `window_dom_js.cjs` gives
+the page a steady clock (`performance.now`) and moves the computer's clock
+forward, back and through a sleep. `window_fold_fixture.json` holds the server's
+clock around the hour a zone shows twice when daylight saving ends:
+`window_module_php.php` stamps each moment afresh and `window_js.cjs` advances
+the first stamp on the page, and both must give the same clock and the same
+margin for a date and time. The fixture's `calendar` cases lock the month, week and period
 arithmetic, its `spread` cases a window counted from the span of "now", and its
 `labels` cases the name of a period, which the page shows and the scan report
 repeats.

@@ -160,16 +160,35 @@ final class TemporalLogic
      * "now" (for notFuture) and pastNow as much before it (for notPast and the
      * early end of a window counted from "now"). "now" and "today" are
      * unchanged; $clock comes back as it is when its "now" does not read.
+     *
+     * In an hour the zone's clocks show twice (daylight saving ends) the
+     * margin grows by the change, which the clock carries as foldFuture and
+     * foldPast (clockFold, WIN-4): times are compared as the clock shows
+     * them, and there a time 45 minutes later on the clock than "now" may be
+     * 15 minutes old. Twin of QRID_clockLenient, which adds the same.
      */
     public static function clockSlack(array $clock, $seconds = self::CLOCK_SLACK_S)
     {
         $now = isset($clock['now']) ? TemporalValue::parse((string) $clock['now'], 'datetime_seconds', 'ymd') : null;
         if (!$now || $now['state'] !== 'ok') return $clock;
-        $later = TemporalValue::canonical($now['seconds'] + (int) $seconds, 'datetime');
-        $earlier = TemporalValue::canonical($now['seconds'] - (int) $seconds, 'datetime');
+        $later = TemporalValue::canonical($now['seconds'] + (int) $seconds + self::clockFold($clock, 'foldFuture'), 'datetime');
+        $earlier = TemporalValue::canonical($now['seconds'] - (int) $seconds - self::clockFold($clock, 'foldPast'), 'datetime');
         if ($later !== null) $clock['futureNow'] = $later;
         if ($earlier !== null) $clock['pastNow'] = $earlier;
         return $clock;
+    }
+
+    /**
+     * The seconds $clock's "now" may be off by on the clock face, in an hour
+     * the zone shows twice: $key is foldFuture (how much later a time that is
+     * not in the future may read) or foldPast (how much earlier one that is
+     * not in the past may). 0 when the clock carries none, or one that is not
+     * a whole number of seconds from 1 to a day. Twin of QRID_clockFoldOf.
+     */
+    public static function clockFold(array $clock, $key)
+    {
+        $v = isset($clock[$key]) ? $clock[$key] : 0;
+        return (is_int($v) && $v > 0 && $v <= 86400) ? $v : 0;
     }
 
     /**

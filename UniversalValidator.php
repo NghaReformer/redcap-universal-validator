@@ -4199,7 +4199,8 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 if ($st['at'] !== null) {
                     $asOf = $st['at'];
-                    $clock = ['today' => substr($asOf, 0, 10), 'now' => $asOf];
+                    // with the fold of an hour shown twice, when the save lies in one (WIN-4)
+                    $clock = ['today' => substr($asOf, 0, 10), 'now' => $asOf] + array_diff_key($st, ['at' => 1, 'why' => 1]);
                 } elseif ($st['why'] !== null) {
                     // THE ONE PART JUDGED AGAINST TODAY, and in a durable run
                     // the today it froze (W10BF-3): a run that read this value
@@ -4304,7 +4305,22 @@ class UniversalValidator extends AbstractExternalModule
         $stamps = $this->valueStamps($pid);
         if ($stamps === null) return ['at' => null, 'why' => 'the project log could not be read'];
         $r = $stamps->savedAt($record, $eventId, $instance, $field, $value);
-        if ($r['state'] === 'logged') return ['at' => $r['at'], 'why' => null];
+        if ($r['state'] === 'logged') {
+            // A save in an hour a clock showed twice (ValueStamps::toClock,
+            // WIN-4): the day is known only when the whole span the save
+            // may lie in is on one day.
+            $fold = ['foldFuture' => TemporalLogic::clockFold($r, 'foldFuture'), 'foldPast' => TemporalLogic::clockFold($r, 'foldPast')];
+            if ($fold['foldFuture'] || $fold['foldPast']) {
+                $at = TemporalValue::parse((string) $r['at'], 'datetime_seconds', 'ymd');
+                $late = $at['state'] === 'ok' ? TemporalValue::canonical($at['seconds'] + $fold['foldFuture'], 'datetime') : null;
+                $early = $at['state'] === 'ok' ? TemporalValue::canonical($at['seconds'] - $fold['foldPast'], 'datetime') : null;
+                $day = substr((string) $r['at'], 0, 10);
+                if ($late === null || $early === null || substr($late, 0, 10) !== $day || substr($early, 0, 10) !== $day) {
+                    return ['at' => null, 'why' => 'the project log gives its time in an hour the clocks showed twice, either side of midnight'];
+                }
+            }
+            return ['at' => $r['at'], 'why' => null] + array_filter($fold);
+        }
         $why = ['changed' => 'the project log shows another value for it',
                 'unlogged' => 'the project log does not show when it was saved',
                 'capped' => 'the project log holds more saves of this record than are read',
@@ -4329,7 +4345,8 @@ class UniversalValidator extends AbstractExternalModule
         if ($v['state'] !== 'ok' || $now['state'] !== 'ok') return false;
         $date = $v['type'] === 'date';
         if (!empty($spec['notFuture'])
-            && ($date ? strcmp($v['value'], (string) $clock['today']) > 0 : $v['seconds'] > $now['seconds'] + TemporalLogic::AFTER_SAVE_SLACK_S)) {
+            && ($date ? strcmp($v['value'], (string) $clock['today']) > 0
+                      : $v['seconds'] > $now['seconds'] + TemporalLogic::AFTER_SAVE_SLACK_S + TemporalLogic::clockFold($clock, 'foldFuture'))) {
             return true;
         }
         if (!empty($spec['notPast']) && empty($spec['notFuture']) && !$clockAnchor) {
@@ -4362,6 +4379,21 @@ class UniversalValidator extends AbstractExternalModule
             $this->valueStampsMemo[$key] = ValueStamps::forProject(new Scan\ModuleDb($this), $pid, $server, $zone === null ? $server : $zone);
         }
         return $this->valueStampsMemo[$key];
+    }
+
+    /**
+     * The records a scan judges next: the log reader then reads their saves
+     * in one query, not one per record (ValueStamps::expect, WIN-3). A reader
+     * a test set that cannot do so is left as it is.
+     */
+    private function expectSavedDays($pid, array $recordIds)
+    {
+        try {
+            $stamps = $this->valueStamps($pid);
+            if ($stamps instanceof ValueStamps) $stamps->expect($recordIds);
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::expectSavedDays');
+        }
     }
 
     /**
@@ -5252,6 +5284,19 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         }
+        // A moment in an hour the zone's clocks show twice (ClockZones::fold,
+        // WIN-4) carries the seconds the clocks went back by: foldFuture in
+        // the second showing, with foldUntil, the UTC millisecond it ends, so
+        // the page drops it then (QRID_clockAt), and foldPast in the first.
+        // TemporalLogic::clockSlack adds them to a date and time's margin. No
+        // other moment carries these keys; the page works out the fold of
+        // the next change from "next" and "offsetAfter".
+        $fold = ClockZones::fold($now->getTimezone(), $ts);
+        if ($fold['future'] > 0) {
+            $out['foldFuture'] = $fold['future'];
+            $out['foldUntil'] = $fold['until'] * 1000;
+        }
+        if ($fold['past'] > 0) $out['foldPast'] = $fold['past'];
         return $out;
     }
 
@@ -6293,7 +6338,9 @@ class UniversalValidator extends AbstractExternalModule
         // today (it was after every earlier day too), but a pass shows no
         // green "OK": the value may have been in the future on its save day
         // (WIN-2). A field whose saved value could not be read, or is not
-        // valid UTF-8, maps to null, and the page treats it as unchanged.
+        // valid UTF-8, maps to null: the page cannot tell whether a value
+        // there is new, so it judges it, shows a finding without blocking
+        // the save, and says why (WIN-5).
         $todayFields = self::windowTodayFields($config['rules']);
         if ($todayFields) {
             $config['windowSaved'] = $this->windowSavedValues($pid, $record, $instrument, $event_id, $repeat_instance, $todayFields);
@@ -6411,16 +6458,43 @@ class UniversalValidator extends AbstractExternalModule
         return array_keys($out);
     }
 
-    /** field => saved value (null when it could not be read) for this entry; empty for a record not saved yet. */
+    /**
+     * @var ?array what foldRuleConditions() read for the page being built
+     * (key, fields, values, resolution), for windowSavedValues() to take
+     * (WIN-9). One hand-over: taken or dropped by the next page build, never
+     * kept across a save.
+     */
+    private $pageRead = null;
+
+    /** The entry a page read was made for, as one string. */
+    private static function pageReadKey($pid, $record, $instrument, $event_id, $repeat_instance)
+    {
+        return json_encode([(string) $pid, (string) $record, (string) $instrument, (string) $event_id, (string) $repeat_instance]);
+    }
+
+    /**
+     * field => saved value (null when it could not be read) for this entry;
+     * empty for a record not saved yet. The values come from the read
+     * foldRuleConditions() made for this page when it holds every field
+     * asked for (WIN-9), else from a read of its own.
+     */
     private function windowSavedValues($pid, $record, $instrument, $event_id, $repeat_instance, array $fields)
     {
+        $held = $this->pageRead;
+        $this->pageRead = null;
         if ($record === null || $record === '' || $pid === null) return new \stdClass();
         $resolution = [];
-        try {
-            $values = $this->readValues($pid, $record, $fields, $event_id, $instrument, $repeat_instance, true, $resolution);
-        } catch (\Throwable $e) {
-            $values = [];
-            foreach ($fields as $f) $resolution[$f] = 'unreadable';
+        if ($held !== null && $held['key'] === self::pageReadKey($pid, $record, $instrument, $event_id, $repeat_instance)
+                && !array_diff_key(array_fill_keys(array_map('strval', $fields), true), $held['fields'])) {
+            $values = $held['values'];
+            $resolution = $held['resolution'];
+        } else {
+            try {
+                $values = $this->readValues($pid, $record, $fields, $event_id, $instrument, $repeat_instance, true, $resolution);
+            } catch (\Throwable $e) {
+                $values = [];
+                foreach ($fields as $f) $resolution[$f] = 'unreadable';
+            }
         }
         $out = [];
         foreach ($fields as $f) {
@@ -6886,9 +6960,17 @@ class UniversalValidator extends AbstractExternalModule
      * Values are read in ONE getData call for all rules. Without a record
      * (a brand-new form) there is nothing to read and every off-page
      * comparison folds against '' — exactly what REDCap's own branching sees.
+     *
+     * $alsoRead: fields the page build reads later for this same entry (the
+     * saved values of the today-relative @UVWINDOW fields, windowSavedValues).
+     * They ride on this call and are kept in $pageRead for that reader, so a
+     * page with such a rule asks REDCap for the record once, not twice
+     * (WIN-9). They take no part in the folding.
      */
-    private function foldRuleConditions(array $rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context = 'form')
+    private function foldRuleConditions(array $rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context = 'form', array $alsoRead = [])
     {
+        // nothing read for an earlier page build is handed to this one (WIN-9)
+        $this->pageRead = null;
         // condition text => parsed AST, for every live rule/branch on the page
         $asts = [];
         $refs = [];
@@ -6949,11 +7031,19 @@ class UniversalValidator extends AbstractExternalModule
         $values = [];
         $resolution = [];
         if ($refs && $record !== null && $record !== '') {
+            $read = array_values(array_unique(array_merge(array_map('strval', array_keys($refs)), array_map('strval', $alsoRead))));
             try {
-                $values = $this->readValues($pid, $record, array_keys($refs), $event_id, $instrument, $repeat_instance, true, $resolution);
+                $values = $this->readValues($pid, $record, $read, $event_id, $instrument, $repeat_instance, true, $resolution);
+                // Kept whole for windowSavedValues (WIN-9); the folding below
+                // sees the fields its conditions name, as before.
+                $this->pageRead = ['key' => self::pageReadKey($pid, $record, $instrument, $event_id, $repeat_instance),
+                                   'fields' => array_fill_keys($read, true), 'values' => $values, 'resolution' => $resolution];
+                $values = array_intersect_key($values, $refs);
+                $resolution = array_intersect_key($resolution, $refs);
             } catch (\Throwable $e) {
                 // readValues already reports 'unreadable' per field for a failed
                 // read; this catch only covers a throw from outside it.
+                $resolution = [];
                 foreach (array_keys($refs) as $rf) $resolution[$rf] = 'unreadable';
             }
         }
@@ -12494,8 +12584,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     const SCAN_NOT_MEMOS = ['existsIndexCap', 'clockOverride', 'valueStampsOverride', 'returnQueue', 'surveySave', 'pageHookFailed',
         'returnBarred', 'valueHistoryOverride', 'roleBookOverride', 'auditPid', 'uniqueAuditPlan', 'uniqueAuditReads',
-        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveReadSkipped',
-        'parseCacheMinMs'];
+        'scanJustified', 'missingLogged', 'judgedClock', 'judgedSettled', 'liveReadSkipped', 'parseCacheMinMs', 'pageRead'];
 
     /** Every SCAN_MEMOS property back to its declared default. */
     private function resetScanMemos()

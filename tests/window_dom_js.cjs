@@ -669,13 +669,159 @@ const CLK = { today: '2026-10-09', now: '2026-10-09 12:00:00' };
   const v = dateEl('seen', '2026-10-08');
   const rule = { type: 'window', fields: ['seen'], windowNotPast: true, windowNotFuture: true,
     dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' };
+  // WIN-5: the server could not read the saved value, so the page cannot tell
+  // whether the value is new. It counted as unchanged: nothing typed there was
+  // judged against today, a hard block included, and nobody was told.
   const env = boot([v], { clock: CLK, windowSaved: { seen: null }, rules: [rule] });
   const msg = wMsg(env, 'seen');
-  check('saved value unreadable: notPast is not judged, and a pass shows nothing', !shown(msg));
+  check('saved value unreadable: a date before today is shown (WIN-5)', /before today \(2026-10-09\)/.test(msg.innerHTML));
+  check('saved value unreadable: ... with why it does not block',
+    /saved value of this field could not be read/.test(msg.innerHTML) && /does not block saving/.test(msg.innerHTML));
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('saved value unreadable: ... and the save goes through', ev._prevented === false);
+  check('saved value unreadable: test() has no verdict on it', env.NS.validators.seen.test() === null);
   v.value = '2026-10-07'; v.fire('change');
-  check('saved value unreadable: not judged even when changed', !shown(msg));
+  check('saved value unreadable: judged when changed too', /before today/.test(msg.innerHTML));
+  v.value = '2026-10-09'; v.fire('change');
+  check('saved value unreadable: a pass shows no green OK', !shown(msg) && env.NS.validators.seen.test() === null);
   v.value = '2026-10-10'; v.fire('change');
   check('saved value unreadable: notFuture still judges', /after today \(2026-10-09\)/.test(msg.innerHTML));
+  check('saved value unreadable: ... with no such note, as a date after today is one new or not',
+    !/could not be read/.test(msg.innerHTML) && env.NS.validators.seen.test() === false);
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('saved value unreadable: ... and blocks as set', ev._prevented === true);
+}
+{
+  // The same for a window counted from today, and not for one counted from a field.
+  const v = dateEl('seen', '2025-01-01');
+  const f = dateEl('start', '2026-10-01');
+  const env = boot([v, f], { clock: CLK, windowSaved: { seen: null }, rules: [
+    { type: 'window', fields: ['seen'], windowAnchor: 'today', windowLo: 0, windowHi: 30, windowUnit: 'days',
+      dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' }] });
+  const msg = wMsg(env, 'seen');
+  check('saved value unreadable: a window from today is judged, shown and does not block (WIN-5)',
+    /on or after|between/.test(msg.innerHTML) && /could not be read/.test(msg.innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('saved value unreadable: ... the save goes through', ev._prevented === false);
+}
+{
+  const v = dateEl('seen', '2026-09-01');
+  const f = dateEl('start', '2026-10-01');
+  const env = boot([v, f], { clock: CLK, windowSaved: { seen: null }, rules: [
+    { type: 'window', fields: ['seen'], windowFrom: '[start]', windowFromOp: ['ref', 'start', null], fromType: 'date', fromFormat: 'ymd',
+      windowLo: 0, windowHi: 30, windowUnit: 'days', windowNotPast: true, dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' }] });
+  const msg = wMsg(env, 'seen');
+  check('saved value unreadable: notPast is advisory', /before today/.test(msg.innerHTML) && /could not be read/.test(msg.innerHTML));
+  v.value = '2026-12-25'; v.fire('change');
+  check('saved value unreadable: a window counted from a field still judges', /between 2026-10-01 and 2026-10-31/.test(msg.innerHTML)
+    && !/could not be read/.test(msg.innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('saved value unreadable: ... and blocks as set', ev._prevented === true);
+}
+// ---- WIN-2: the computer's clock jumps while the page is open ----------------
+// The page counts how long it has been open on the browser's steady clock,
+// with the computer's own clock as a second reading. Before, one jump forward
+// moved "today" for good.
+{
+  let wall = Date.UTC(2026, 10, 13, 9, 0, 0), steady = 5000;
+  Date.now = () => wall;
+  const d = dateEl('appt', '2026-11-13');
+  const env = boot([d], { clock: { today: '2026-11-13', now: '2026-11-13 10:00:00', utc: wall, offset: 3600, next: null, offsetAfter: null },
+    rules: [{ type: 'window', fields: ['appt'], windowNotPast: true, windowNotFuture: true, dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' }] },
+    (win) => { win.performance = { now: () => steady }; });
+  const msg = wMsg(env, 'appt');
+  const save = () => { const ev = submitEv(); env.doc.fire('submit', ev); return ev._prevented; };
+  const type = (val) => { d.value = val; d.fire('change'); };
+  check('clock jump: at load, today passes', /OK/.test(msg.innerHTML));
+  wall += 30 * 86400 * 1000;                 // the computer's clock is moved 30 days on
+  type('2026-11-13');
+  check('clock jump: the real today is not refused; it is not checked here, and staff are told (WIN-2)',
+    /not checked against today on this page/.test(msg.innerHTML) && !/before today/.test(msg.innerHTML));
+  check('clock jump: ... the save goes through, and test() has no verdict', save() === false && env.NS.validators.appt.test() === null);
+  type('2026-12-10');
+  check('clock jump: a date inside the jump is not accepted as OK', !/OK/.test(msg.innerHTML)
+    && /not checked against today/.test(msg.innerHTML) && env.NS.validators.appt.test() === null);
+  type('2027-06-01');
+  check('clock jump: a date after both readings is still in the future, and blocks',
+    /after today \(2026-11-13\)/.test(msg.innerHTML) && save() === true);
+  type('2026-01-01');
+  check('clock jump: a date before both readings is still in the past, and blocks', /before today \(2026-11-13\)/.test(msg.innerHTML) && save() === true);
+  wall -= 30 * 86400 * 1000; wall += 60 * 1000; steady += 60 * 1000;   // the clock is put right
+  type('2026-11-13');
+  check('clock jump: once the clock is put right, today passes again', /OK/.test(msg.innerHTML) && save() === false);
+  type('2026-12-10');
+  check('clock jump: ... and a future date is refused again', /after today \(2026-11-13\)/.test(msg.innerHTML) && save() === true);
+  wall -= 5 * 86400 * 1000;                  // set back: the steady clock still counts
+  type('2026-11-13');
+  check('clock set back: today is still today', /OK/.test(msg.innerHTML));
+  type('2026-11-12');
+  check('clock set back: yesterday is still in the past', /before today \(2026-11-13\)/.test(msg.innerHTML));
+  wall += 5 * 86400 * 1000 + 15 * 3600 * 1000; steady += 15 * 3600 * 1000;   // the page stays open past midnight
+  type('2026-11-14');
+  check('both clocks past midnight: the next day is today', /OK/.test(msg.innerHTML));
+  wall += 8 * 3600 * 1000;                   // the computer sleeps: the steady clock stands still
+  type('2026-11-14');
+  check('after a sleep: a date both readings pass still passes', /OK/.test(msg.innerHTML) && save() === false);
+  wall += 86400 * 1000;
+  type('2026-11-15');
+  check('after a sleep across midnight: the new day is not refused; it is not checked here',
+    /not checked against today/.test(msg.innerHTML) && save() === false);
+  Date.now = realNow;
+}
+{
+  // A drift inside the margin is not a jump: the steady clock counts.
+  let wall = Date.UTC(2026, 10, 13, 22, 58, 30), steady = 0;
+  Date.now = () => wall;
+  const d = dateEl('appt', '2026-11-14');
+  const env = boot([d], { clock: { today: '2026-11-13', now: '2026-11-13 23:59:30', utc: wall, offset: 3600, next: null, offsetAfter: null },
+    rules: [{ type: 'window', fields: ['appt'], windowNotFuture: true, dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' }] },
+    (win) => { win.performance = { now: () => steady }; });
+  const msg = wMsg(env, 'appt');
+  wall += 45 * 1000;                         // 45 s ahead of the steady clock: past midnight by the computer's clock only
+  d.value = '2026-11-14'; d.fire('change');
+  check('a clock 45 s ahead is inside the margin: the steady clock decides', /after today \(2026-11-13\)/.test(msg.innerHTML));
+  steady += 45 * 1000;
+  d.fire('change');
+  check('... and moves to the next day when it gets there', /OK/.test(msg.innerHTML));
+  Date.now = realNow;
+}
+{
+  // A window counted from a field does not need the clock: it is still judged.
+  let wall = Date.UTC(2026, 10, 13, 9, 0, 0), steady = 0;
+  Date.now = () => wall;
+  const d = dateEl('appt', '2026-11-13');
+  const f = dateEl('start', '2026-10-01');
+  const env = boot([d, f], { clock: { today: '2026-11-13', now: '2026-11-13 10:00:00', utc: wall, offset: 3600, next: null, offsetAfter: null },
+    rules: [{ type: 'window', fields: ['appt'], windowFrom: '[start]', windowFromOp: ['ref', 'start', null], fromType: 'date', fromFormat: 'ymd',
+      windowLo: 0, windowHi: 7, windowUnit: 'days', windowNotPast: true, dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' }] },
+    (win) => { win.performance = { now: () => steady }; });
+  const msg = wMsg(env, 'appt');
+  wall += 30 * 86400 * 1000;
+  d.fire('change');
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('clock jump: a window counted from a field is still judged, and blocks',
+    /between 2026-10-01 and 2026-10-08/.test(msg.innerHTML) && ev._prevented === true);
+  f.value = '2026-11-10'; f.fire('change');
+  d.value = '2026-11-13'; d.fire('change');
+  check('clock jump: ... and a date inside it gets the notice, not a green OK',
+    /not checked against today/.test(msg.innerHTML) && env.NS.validators.appt.test() === null);
+  d.value = '2026-11-01'; d.fire('change');
+  check('clock jump: ... a date both readings call past is past', /before today \(2026-11-13\)/.test(msg.innerHTML));
+  Date.now = realNow;
+}
+{
+  // A survey respondent is told nothing about the computer's clock.
+  let wall = Date.UTC(2026, 10, 13, 9, 0, 0);
+  Date.now = () => wall;
+  const d = dateEl('appt', '2026-11-13');
+  const env = boot([d], { context: 'survey', clock: { today: '2026-11-13', now: '2026-11-13 10:00:00', utc: wall, offset: 3600, next: null, offsetAfter: null },
+    rules: [{ type: 'window', fields: ['appt'], windowNotPast: true, dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' }] },
+    (win) => { win.performance = { now: () => 0 }; });
+  wall += 30 * 86400 * 1000;
+  d.fire('change');
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('clock jump on a survey: no line, no block', !shown(wMsg(env, 'appt')) && ev._prevented === false);
+  Date.now = realNow;
 }
 {
   const v = dateEl('seen', '2026-10-08');
