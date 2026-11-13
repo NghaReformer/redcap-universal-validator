@@ -396,7 +396,11 @@ trait ScanRuns
         // PLUS THE HOST FORMS' STATUS FIELDS (R2O-2), on the same terms and for
         // the reason scanPlan() gives: they say where each host was started.
         $pk = isset($plan['recordIdField']) ? (string) $plan['recordIdField'] : '';
-        $read = function (array $recordIds) use ($pid, $plan, $pk) {
+        // The saved day of the values a @UVWINDOW rule judges comes from the
+        // project log, read for these records together (WIN-3).
+        $savedDays = ModeRegistry::rulesNeed($plan['live'], 'clock');
+        $read = function (array $recordIds) use ($pid, $plan, $pk, $savedDays) {
+            if ($savedDays) $this->expectSavedDays($pid, $recordIds);
             try {
                 if (!is_callable(['\REDCap', 'getData'])) {
                     return ['ok' => false, 'data' => [],

@@ -32,20 +32,32 @@ final class FakeLog implements ScanDb
     public $table = 'redcap_log_event4';
     public $queries = 0;
     public $fail = false;
+    /** information_schema.statistics rows of the log table: [index_name, seq_in_index, column_name]; null = cannot be read */
+    public $index = [['PRIMARY', '1', 'log_event_id'], ['pk', '1', 'pk'], ['project_id', '1', 'project_id']];
+    /** every statement on the log table, as sent */
+    public $sent = [];
     public function select($sql, array $params = [])
     {
         $this->queries++;
         if ($this->fail) throw new \RuntimeException('down');
         if (strpos($sql, 'FROM redcap_projects') !== false) return [[$this->table]];
+        if (strpos($sql, 'FROM information_schema.statistics') !== false) {
+            if ($this->index === null) throw new \RuntimeException('no catalogue');
+            return $params === [$this->table] ? $this->index : [];
+        }
         if (strpos($sql, 'FROM ' . $this->table . ' ') === false) throw new \RuntimeException('wrong table');
+        $this->sent[] = $sql;
         preg_match('/LIMIT (\d+)$/', $sql, $m);
         $limit = (int) $m[1];
-        list($pid, $pk) = $params;
-        $before = isset($params[2]) ? (int) $params[2] : PHP_INT_MAX;
+        $marks = substr_count($sql, '?');
+        $pid = array_shift($params);
+        $before = strpos($sql, ' AND log_event_id < ?') !== false ? (int) array_pop($params) : PHP_INT_MAX;
+        $pks = array_map('strtolower', array_map('strval', $params));
+        if ($marks !== count($pks) + 1 + ($before === PHP_INT_MAX ? 0 : 1)) throw new \RuntimeException('placeholders');
         $out = [];
         foreach ($this->rows as $r) {
             // the collation matches letter case loosely, as MySQL's may
-            if ($r[1] !== $pid || strtolower($r[2]) !== strtolower($pk) || $r[0] >= $before) continue;
+            if ($r[1] !== $pid || !in_array(strtolower($r[2]), $pks, true) || $r[0] >= $before) continue;
             if ($r[6] !== 'redcap_data' || !in_array($r[7], ['INSERT', 'UPDATE'], true)) continue;
             $out[] = [(string) $r[0], $r[4], $r[3], $r[5], $r[2]];
         }
@@ -192,7 +204,7 @@ $db->rows[] = $row(1, '1', 351, '20260101000000', "visit = '2026-01-01'");
 for ($i = 2; $i <= 1200; $i++) $db->rows[] = $row($i, '1', 351, '20260102000000', "wt = '" . $i . "'");
 $s = ValueStamps::forProject($db, 149, $utc, $utc);
 check('a value logged 1199 rows back is found across pages', $s->savedAt('1', 351, 1, 'visit', '2026-01-01')['at'] === '2026-01-01 00:00:00');
-check('...in three queries after the table lookup', $db->queries === 4);
+check('...in three queries after the table and index lookups', $db->queries === 5 && count($db->sent) === 3);
 $db = new FakeLog();
 $db->rows[] = $row(1, '1', 351, '20260101000000', "visit = '2026-01-01'");
 for ($i = 2; $i <= ValueStamps::MAX_ROWS_PER_RECORD + 1; $i++) $db->rows[] = $row($i, '1', 351, '20260102000000', "wt = '" . $i . "'");
@@ -215,6 +227,78 @@ check('a dropped record is read again, and answers the same', $s->savedAt('R1', 
 $q = $db->queries;
 $s->savedAt('R40', 351, 1, 'visit', '2026-10-01');
 check('a kept record is not read again', $db->queries === $q);
+
+// ---- the query: its shape, its index, and a scan's records read together (WIN-3) --------
+$SELECT = 'SELECT log_event_id, ts, event_id, data_values, CAST(pk AS BINARY) AS p FROM redcap_log_event4';
+$WHERE = " AND object_type = 'redcap_data' AND event IN ('INSERT', 'UPDATE')";
+$db = new FakeLog();
+$db->rows[] = $row(1, '1', 351, '20260101000000', "visit = '2026-01-01'");
+for ($i = 2; $i <= 600; $i++) $db->rows[] = $row($i, '1', 351, '20260102000000', "wt = '" . $i . "'");
+$s = ValueStamps::forProject($db, 149, $utc, $utc);
+$s->savedAt('1', 351, 1, 'visit', '2026-01-01');
+check('the read names the index that leads with pk, one record, newest first, one page (got ' . json_encode($db->sent[0]) . ')',
+    $db->sent[0] === $SELECT . ' FORCE INDEX (`pk`) WHERE project_id = ? AND pk = ?' . $WHERE . ' ORDER BY log_event_id DESC LIMIT 500');
+check('the next page goes on below the last row read',
+    $db->sent[1] === $SELECT . ' FORCE INDEX (`pk`) WHERE project_id = ? AND pk = ?' . $WHERE . ' AND log_event_id < ? ORDER BY log_event_id DESC LIMIT 500');
+$q = $db->queries;
+$s->savedAt('2', 351, 1, 'visit', '2026-01-01');
+check('the index is looked up once per reader', $db->queries === $q + 1);
+foreach ([
+    'an index on pk and project_id is preferred' => [[['pk', '1', 'pk'], ['pk_project', '1', 'pk'], ['pk_project', '2', 'project_id']], ' FORCE INDEX (`pk_project`)'],
+    'an index that holds pk only further on is not one' => [[['project_pk', '1', 'project_id'], ['project_pk', '2', 'pk']], ''],
+    'a name that is not a plain identifier is never sent' => [[['pk`) x', '1', 'pk']], ''],
+    'no index, no hint' => [[], ''],
+    'a catalogue that cannot be read, no hint' => [null, ''],
+] as $label => $case) {
+    $db = new FakeLog();
+    $db->index = $case[0];
+    $db->rows[] = $row(1, '1', 351, '20260101000000', "visit = '2026-01-01'");
+    $s = ValueStamps::forProject($db, 149, $utc, $utc);
+    $r = $s->savedAt('1', 351, 1, 'visit', '2026-01-01');
+    check($label, $r['state'] === 'logged' && $db->sent[0] === $SELECT . $case[1] . ' WHERE project_id = ? AND pk = ?' . $WHERE . ' ORDER BY log_event_id DESC LIMIT 500');
+}
+// A scan names the records it judges next: one query for RECORDS_KEPT of them.
+$db = new FakeLog();
+for ($i = 1; $i <= 40; $i++) $db->rows[] = $row($i, 'R' . $i, 351, '20261001090000', "visit = '2026-10-" . sprintf('%02d', 1 + $i % 28) . "'");
+$db->rows[] = $row(41, 'r3', 351, '20261002090000', "visit = '2026-10-30'");
+$s = ValueStamps::forProject($db, 149, $utc, $utc);
+$ids = [];
+for ($i = 1; $i <= 40; $i++) $ids[] = 'R' . $i;
+$ids[] = 'R-NONE';
+$s->expect($ids);
+$ok = true;
+foreach ($ids as $i => $id) {
+    $r = $s->savedAt($id, 351, 1, 'visit', '2026-10-' . sprintf('%02d', 1 + ($i + 1) % 28));
+    $ok = $ok && ($id === 'R-NONE' ? $r === ['state' => 'none', 'at' => null] : $r === ['state' => 'logged', 'at' => '2026-10-01 09:00:00']);
+}
+check('41 expected records answer as they do one by one', $ok);
+check('... in 3 queries, not 41 (got ' . count($db->sent) . ')', count($db->sent) === 3);
+check('... each for ' . ValueStamps::RECORDS_KEPT . ' records at most (got ' . json_encode($db->sent[0]) . ')',
+    $db->sent[0] === $SELECT . ' FORCE INDEX (`pk`) WHERE project_id = ? AND pk IN (' . implode(', ', array_fill(0, ValueStamps::RECORDS_KEPT, '?')) . ')'
+        . $WHERE . ' ORDER BY log_event_id DESC LIMIT 500'
+    && substr_count($db->sent[2], '?') === 1 + 41 - 2 * ValueStamps::RECORDS_KEPT);
+check('... holding no more than RECORDS_KEPT records', count($kept->getValue($s)) <= ValueStamps::RECORDS_KEPT);
+$s->expect(['R3', 'r3']);
+check('a record that differs only in case, read in the same batch, is its own record',
+    $s->savedAt('r3', 351, 1, 'visit', '2026-10-30') === ['state' => 'logged', 'at' => '2026-10-02 09:00:00']
+    && $s->savedAt('R3', 351, 1, 'visit', '2026-10-04')['at'] === '2026-10-01 09:00:00');
+// A batch whose page is full: each record goes on alone from the last row read.
+$db = new FakeLog();
+$db->rows[] = $row(1, 'A', 351, '20260101000000', "visit = '2026-01-01'");
+$db->rows[] = $row(2, 'B', 351, '20260102000000', "visit = '2026-01-02'");
+for ($i = 3; $i <= 700; $i++) $db->rows[] = $row($i, 'B', 351, '20260103000000', "wt = '" . $i . "'");
+$s = ValueStamps::forProject($db, 149, $utc, $utc);
+$s->expect(['A', 'B', 'C']);
+check('a record crowded out of a full batch page is read on from there',
+    $s->savedAt('A', 351, 1, 'visit', '2026-01-01') === ['state' => 'logged', 'at' => '2026-01-01 00:00:00']
+    && count($db->sent) === 2 && strpos($db->sent[0], 'pk IN (?, ?, ?)') !== false
+    && strpos($db->sent[1], 'pk = ? ') !== false && strpos($db->sent[1], 'log_event_id < ?') !== false);
+check('... and so is the record that filled it', $s->savedAt('B', 351, 1, 'visit', '2026-01-02')['at'] === '2026-01-02 00:00:00');
+check('... and one with no rows is "none"', $s->savedAt('C', 351, 1, 'visit', 'x') === ['state' => 'none', 'at' => null]);
+$q = count($db->sent);
+$s->expect(['A', 'B', 'Z']);
+$s->savedAt('Z', 351, 1, 'visit', 'x');
+check('a record already held is not read again with the next batch', count($db->sent) === $q + 1 && strpos($db->sent[$q], 'pk = ? ') !== false);
 
 // ---- the log cannot be read ----------------------------------------------------------
 $db = new FakeLog();

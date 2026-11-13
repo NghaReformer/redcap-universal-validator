@@ -74,6 +74,10 @@ final class ValueStamps
     private $capped = [];
     /** record => true, in the order the records were first read */
     private $kept = [];
+    /** record => true: the records a scan asks about next (expect()), not read yet */
+    private $expected = [];
+    /** @var ?string the log table's index that leads with pk, '' for none; null until asked (indexHint) */
+    private $pkIndex = null;
 
     private function __construct(ScanDb $db, $pid, $table, \DateTimeZone $logZone, \DateTimeZone $clockZone)
     {
@@ -148,14 +152,98 @@ final class ValueStamps
     }
 
     /**
-     * One page of the record's log, newest first, into $seen. false when the
-     * log could not be read.
+     * The records a scan will ask about next, in its order. The first one
+     * asked about is then read together with the ones after it, up to
+     * RECORDS_KEPT in one query (WIN-3): a scan asked the log once per
+     * record, 400,000 queries for 400,000 records. A record not named here
+     * is read on its own, as a save's audit reads its one record.
+     */
+    public function expect(array $records)
+    {
+        $this->expected = [];
+        foreach ($records as $r) {
+            $r = (string) $r;
+            if ($r !== '' && !isset($this->kept[$r])) $this->expected[$r] = true;
+        }
+    }
+
+    /**
+     * The records to read with $record in one query: itself, and on its first
+     * read the records expect() named that are still unread, RECORDS_KEPT at
+     * most, so none of them is dropped before it is asked about.
+     */
+    private function batchFor($record)
+    {
+        $batch = [$record];
+        if (isset($this->cursor[$record]) || !isset($this->expected[$record])) return $batch;
+        unset($this->expected[$record]);
+        foreach (array_keys($this->expected) as $r) {
+            if (count($batch) >= self::RECORDS_KEPT) break;
+            $r = (string) $r;
+            unset($this->expected[$r]);
+            if (!isset($this->kept[$r])) $batch[] = $r;
+        }
+        // $record goes in last, so keeping the others never drops it
+        unset($this->kept[$record]);
+        foreach ($batch as $i => $r) if ($i > 0) $this->keep($r);
+        $this->keep($record);
+        return $batch;
+    }
+
+    /**
+     * " FORCE INDEX (name)" for the log table's index that leads with pk, or
+     * '' when it has none. THE PLAN (WIN-3): the read is "this record's
+     * rows, newest first, 500 at most", and a server may answer an ORDER BY
+     * log_event_id ... LIMIT by walking the primary key backwards until it
+     * has 500 rows of the record, which for a record with fewer is the whole
+     * log table. Read through the pk index it touches the record's rows only.
+     * The name is read from the server once per reader and never assumed:
+     * REDCap's index names are not part of any contract (the index has been
+     * "pk", on the first 191 characters of the column). An index that also
+     * holds project_id is preferred. With no such index, a name that is not a
+     * plain identifier, or a catalogue that cannot be read, the query carries
+     * no hint, as before.
+     */
+    private function indexHint()
+    {
+        if ($this->pkIndex === null) {
+            $this->pkIndex = '';
+            try {
+                $rows = $this->db->select('SELECT index_name, seq_in_index, column_name FROM information_schema.statistics'
+                    . ' WHERE table_schema = DATABASE() AND table_name = ? ORDER BY index_name, seq_in_index', [$this->table]);
+            } catch (\Throwable $e) {
+                $rows = [];
+            }
+            $cols = [];
+            foreach ((array) $rows as $r) {
+                if (!is_array($r) || !isset($r[0], $r[1], $r[2])) continue;
+                $cols[(string) $r[0]][(int) $r[1]] = strtolower((string) $r[2]);
+            }
+            foreach ($cols as $name => $c) {
+                $name = (string) $name;
+                if (!preg_match('/^[A-Za-z0-9_]+\z/', $name) || !isset($c[1]) || $c[1] !== 'pk') continue;
+                if (in_array('project_id', $c, true)) { $this->pkIndex = $name; break; }
+                if ($this->pkIndex === '') $this->pkIndex = $name;
+            }
+        }
+        return $this->pkIndex === '' ? '' : ' FORCE INDEX (`' . $this->pkIndex . '`)';
+    }
+
+    /**
+     * One page of the record's log, newest first, into $seen: of $record
+     * alone, or on its first read of $record and the records expect() named
+     * after it (batchFor). The rows of a batch come newest first across all
+     * its records, so every record of it has been read down to the oldest
+     * row returned, and each goes on from there on its own when the page was
+     * full. false when the log could not be read.
      */
     private function readPage($record)
     {
-        $sql = 'SELECT log_event_id, ts, event_id, data_values, CAST(pk AS BINARY) AS p FROM ' . $this->table
-             . ' WHERE project_id = ? AND pk = ? AND object_type = \'redcap_data\' AND event IN (\'INSERT\', \'UPDATE\')';
-        $params = [$this->pid, $record];
+        $batch = $this->batchFor($record);
+        $sql = 'SELECT log_event_id, ts, event_id, data_values, CAST(pk AS BINARY) AS p FROM ' . $this->table . $this->indexHint()
+             . ' WHERE project_id = ? AND pk ' . (count($batch) === 1 ? '= ?' : 'IN (' . implode(', ', array_fill(0, count($batch), '?')) . ')')
+             . ' AND object_type = \'redcap_data\' AND event IN (\'INSERT\', \'UPDATE\')';
+        $params = array_merge([$this->pid], $batch);
         if (isset($this->cursor[$record])) {
             $sql .= ' AND log_event_id < ?';
             $params[] = $this->cursor[$record];
@@ -167,30 +255,37 @@ final class ValueStamps
             return false;
         }
         if (!is_array($rows)) return false;
+        $in = [];
+        foreach ($batch as $rec) $in['=' . $rec] = $rec;   // prefixed: PHP turns the key "12" into a number
         $n = 0;
+        $last = null;
         foreach ($rows as $row) {
             $n++;
             $id = isset($row[0]) ? (string) $row[0] : '';
             if ($id === '' || !ctype_digit($id)) return false;
-            $this->cursor[$record] = $id;
+            $last = $id;
             // pk compared as bytes: the column's collation may match "abc" for "ABC".
-            if (!isset($row[4]) || (string) $row[4] !== $record) continue;
-            $this->any[$record] = true;
+            if (!isset($row[4]) || !isset($in['=' . $row[4]])) continue;
+            $rec = $in['=' . $row[4]];
+            $this->any[$rec] = true;
             $event = isset($row[2]) && $row[2] !== null && $row[2] !== '' ? (string) (int) $row[2] : null;
             if ($event === null) continue;
             foreach (self::parseDataValues(isset($row[3]) ? $row[3] : '') as $inst => $fields) {
                 foreach ($fields as $f => $v) {
-                    if (isset($this->seen[$record][$event][$inst]) && array_key_exists($f, $this->seen[$record][$event][$inst])) continue;
-                    $this->seen[$record][$event][$inst][$f] = [isset($row[1]) ? (string) $row[1] : '', $v];
+                    if (isset($this->seen[$rec][$event][$inst]) && array_key_exists($f, $this->seen[$rec][$event][$inst])) continue;
+                    $this->seen[$rec][$event][$inst][$f] = [isset($row[1]) ? (string) $row[1] : '', $v];
                 }
             }
         }
-        $this->rows[$record] = (isset($this->rows[$record]) ? $this->rows[$record] : 0) + $n;
-        if ($n < self::PAGE) {
-            $this->done[$record] = true;
-        } elseif ($this->rows[$record] >= self::MAX_ROWS_PER_RECORD) {
-            $this->done[$record] = true;
-            $this->capped[$record] = true;
+        foreach ($batch as $rec) {
+            if ($last !== null) $this->cursor[$rec] = $last;
+            $this->rows[$rec] = (isset($this->rows[$rec]) ? $this->rows[$rec] : 0) + $n;
+            if ($n < self::PAGE) {
+                $this->done[$rec] = true;
+            } elseif ($this->rows[$rec] >= self::MAX_ROWS_PER_RECORD) {
+                $this->done[$rec] = true;
+                $this->capped[$rec] = true;
+            }
         }
         return true;
     }

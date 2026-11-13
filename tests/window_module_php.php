@@ -93,6 +93,7 @@ namespace {
         public function select($sql, array $params = [])
         {
             if (strpos($sql, 'FROM redcap_projects') !== false) return [['redcap_log_event4']];
+            if (strpos($sql, 'FROM information_schema.statistics') !== false) return [];   // no index named: no hint
             $this->reads++;
             preg_match('/LIMIT (\d+)$/', $sql, $m);
             $before = isset($params[2]) ? (int) $params[2] : PHP_INT_MAX;
@@ -772,6 +773,15 @@ namespace {
     }
     check('durable scan: the finding row keeps as_of (' . json_encode(isset($ctx['why']) ? $ctx['why'] : null) . ')',
         ($dur['w_past']['as_of'] ?? null) === '2026-10-09' && array_key_exists('as_of', $dur['collected'] ?? ['as_of' => null]));
+    // The run's read names its records to the log reader, which then reads
+    // their saves in one query, not one per record (WIN-3).
+    if (!empty($ctx['ok'])) {
+        $ctx['read'](['8', '9']);
+        $rp = new \ReflectionProperty($ms, 'valueStampsOverride'); $rp->setAccessible(true);
+        $ex = new \ReflectionProperty(\INSPIRE\UniversalValidator\ValueStamps::class, 'expected'); $ex->setAccessible(true);
+        check('durable scan: the records of a read are named to the log reader',
+            array_map('strval', array_keys($ex->getValue($rp->getValue($ms)))) === ['8', '9']);
+    }
     $sv = []; foreach ($res['violations'] as $v) $sv[$v['field']] = $v;
     check('scan: a value the log shows another value for is not checked', !isset($sv['w_today'])
         && (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('w_today', $u['fields'], true)

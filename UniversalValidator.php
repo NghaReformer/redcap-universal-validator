@@ -4007,6 +4007,21 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * The records a scan judges next: the log reader then reads their saves
+     * in one query, not one per record (ValueStamps::expect, WIN-3). A reader
+     * a test set that cannot do so is left as it is.
+     */
+    private function expectSavedDays($pid, array $recordIds)
+    {
+        try {
+            $stamps = $this->valueStamps($pid);
+            if ($stamps instanceof ValueStamps) $stamps->expect($recordIds);
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::expectSavedDays');
+        }
+    }
+
+    /**
      * Range mode (@UVRANGE): each saved number must lie inside the "hard"
      * range, and is reported as unusual outside the "soft" one. The verdict is
      * Logic::rangeVerdict, the twin of the browser's. A blank value checks
