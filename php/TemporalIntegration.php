@@ -1,7 +1,5 @@
 <?php
 namespace INSPIRE\UniversalValidator;
-require_once __DIR__.'/TemporalMetadata.php';
-require_once __DIR__.'/TemporalRules.php';
 
 /** Project adapter; pure resolution/evaluation remains in the temporal components. */
 trait TemporalIntegration

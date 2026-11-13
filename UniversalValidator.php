@@ -20,61 +20,12 @@ namespace INSPIRE\UniversalValidator;
 
 use ExternalModules\AbstractExternalModule;
 
-require_once __DIR__ . '/php/Faults.php';
-require_once __DIR__ . '/php/CheckCharacter.php';
-require_once __DIR__ . '/php/AnnotationRules.php';
-require_once __DIR__ . '/php/ModeRegistry.php';
-require_once __DIR__ . '/php/Logic.php';
-require_once __DIR__ . '/php/GrowthReference.php';
-require_once __DIR__ . '/php/GrowthOutputs.php';
-require_once __DIR__ . '/php/GrowthCurve.php';
-require_once __DIR__ . '/php/TemporalIntegration.php';
-require_once __DIR__ . '/php/ReturnedValues.php';
-require_once __DIR__ . '/php/ScanRuns.php';
-require_once __DIR__ . '/php/LiveLookups.php';
-require_once __DIR__ . '/php/ValueStamps.php';
-require_once __DIR__ . '/php/ValueHistory.php';
-require_once __DIR__ . '/php/RoleBook.php';
-require_once __DIR__ . '/php/ClockZones.php';
-require_once __DIR__ . '/php/Branching.php';
-require_once __DIR__ . '/php/ScanPageView.php';
-require_once __DIR__ . '/php/FindingSink.php';
-require_once __DIR__ . '/php/ScanCapabilities.php';
-require_once __DIR__ . '/php/ScanDimensions.php';
-require_once __DIR__ . '/php/MessageCatalog.php';
-require_once __DIR__ . '/php/ScanColumns.php';
-// The durable scan. Loaded here rather than lazily because a partial load is
-// how a class that decides an authorisation ends up absent at the moment it is
-// asked - and the framework has no autoloader to fall back on.
-require_once __DIR__ . '/php/Scan/Schema.php';
-require_once __DIR__ . '/php/Scan/ScanDb.php';
-require_once __DIR__ . '/php/Scan/DbError.php';
-require_once __DIR__ . '/php/Scan/ScanStoreUnavailable.php';
-require_once __DIR__ . '/php/Scan/ScanStore.php';
-require_once __DIR__ . '/php/Scan/ScanOutcome.php';
-require_once __DIR__ . '/php/Scan/ScanPhase.php';
-require_once __DIR__ . '/php/Scan/ScanPolicy.php';
-require_once __DIR__ . '/php/Scan/ScanAuthorization.php';
-require_once __DIR__ . '/php/Scan/Hmac.php';
-require_once __DIR__ . '/php/Scan/ReasonCode.php';
-require_once __DIR__ . '/php/Scan/FindingRowMapper.php';
-require_once __DIR__ . '/php/Scan/ScanReport.php';
-require_once __DIR__ . '/php/Scan/SqlScanStore.php';
-require_once __DIR__ . '/php/Scan/WorkerSlots.php';
-require_once __DIR__ . '/php/Scan/ScanRetention.php';
-require_once __DIR__ . '/php/Scan/RecordManifestSource.php';
-require_once __DIR__ . '/php/Scan/FieldValues.php';
-require_once __DIR__ . '/php/Scan/LookupIndex.php';
-require_once __DIR__ . '/php/Scan/SourceFence.php';
-require_once __DIR__ . '/php/Scan/ScanPlanner.php';
-require_once __DIR__ . '/php/Scan/WorkBudget.php';
-require_once __DIR__ . '/php/Scan/UniqueFinalizer.php';
-require_once __DIR__ . '/php/Scan/CatchUp.php';
-require_once __DIR__ . '/php/Scan/RollupBuilder.php';
-require_once __DIR__ . '/php/Scan/ScanPromotion.php';
-require_once __DIR__ . '/php/Scan/ScanWorker.php';
-require_once __DIR__ . '/php/Scan/ScanService.php';
-require_once __DIR__ . '/php/Scan/ScanMaintenance.php';
+// The module's classes are read when they are first used, not all 63 files on
+// every project page (php/Autoload.php says why and what it answers for). A
+// class that decides an authorisation is loaded by naming it, so it cannot be
+// absent at the moment it is asked.
+require_once __DIR__ . '/php/Autoload.php';
+Autoload::register();
 
 class UniversalValidator extends AbstractExternalModule
 {
@@ -11078,11 +11029,17 @@ class UniversalValidator extends AbstractExternalModule
         }
     }
 
-    /** The system setting the disable hook writes its time to (M17). */
-    const SCAN_DISABLED_AT = Scan\ScanService::DISABLED_AT;
+    /**
+     * The system setting the disable hook writes its time to (M17). Written
+     * out, not as Scan\ScanService::DISABLED_AT: a constant that names
+     * another class makes PHP read that class's file, 193 KB, when the module
+     * object is built on every project page (FRM-4). tests/autoload_php.php
+     * holds the two equal.
+     */
+    const SCAN_DISABLED_AT = 'scan-disabled-at';
 
-    /** The system setting the enable hook writes its time to (review rv10a2-3). */
-    const SCAN_ENABLED_AT = Scan\ScanService::ENABLED_AT;
+    /** The system setting the enable hook writes its time to (review rv10a2-3). As above. */
+    const SCAN_ENABLED_AT = 'scan-enabled-at';
 
     /** The opt-in that lets the disable hook drop the module's tables. Off by default. */
     const SCAN_DROP_ON_DISABLE = 'scan-system-drop-tables-on-disable';

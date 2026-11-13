@@ -826,7 +826,10 @@ final class ModeRegistry
         $fn = (isset($scan['detailDerive']) && is_string($scan['detailDerive'])) ? $scan['detailDerive'] : '';
         if (!preg_match('/^([A-Za-z]\w*)::([A-Za-z]\w*)$/D', $fn, $m)) return [];
         $cls = __NAMESPACE__ . '\\' . $m[1];
-        if (!class_exists($cls, false) || !is_callable([$cls, $m[2]])) return [];
+        // The class is one of this module's, read on first use (php/Autoload.php)
+        // when the module loaded this file, and already loaded or absent when
+        // a test loaded it alone.
+        if (!class_exists($cls, class_exists(__NAMESPACE__ . '\\Autoload', false)) || !is_callable([$cls, $m[2]])) return [];
         $out = call_user_func([$cls, $m[2]], $rule);
         $clean = [];
         if (is_array($out)) foreach ($out as $k => $v) if (is_string($k) && is_scalar($v)) $clean[$k] = (string) $v;
