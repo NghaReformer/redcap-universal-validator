@@ -197,6 +197,16 @@ final class ModeRegistry
                     || (isset($rk['withholdIf']) && (!self::isKeyList($rk['withholdIf']) || $rk['kind'] !== 'operand'))) {
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has a malformed refKeys entry');
                 }
+                if (isset($rk['nearest'])) {
+                    // {unless: a branch key, found: a client key, staff only}: where the value was found may name an event
+                    $nr = $rk['nearest'];
+                    if ($rk['kind'] !== 'operand' || !is_array($nr) || array_keys($nr) !== ['unless', 'found']
+                            || !is_string($nr['unless']) || !in_array($nr['unless'], $m['branchKeys'], true)
+                            || !is_string($nr['found']) || !in_array($nr['found'], $m['clientKeys'], true)
+                            || !in_array($nr['found'], isset($m['staffOnlyKeys']) && is_array($m['staffOnlyKeys']) ? $m['staffOnlyKeys'] : [], true)) {
+                        throw new \RuntimeException('mode "' . $m['mode'] . '" has a refKeys "nearest" that is not {unless: one of its branchKeys, found: one of its staffOnlyKeys}');
+                    }
+                }
             }
             $seenTags[strtolower($m['tag'])] = true;
             $byMode[$m['mode']] = $m;
@@ -750,6 +760,20 @@ final class ModeRegistry
             if (!empty($rule[$k])) return true;
         }
         return false;
+    }
+
+    /**
+     * Whether an operand's "previous" event or instance is the nearest
+     * earlier one that holds a value (AddressResolver::resolveNearest): its
+     * refKeys entry says so ("nearest"), unless the rule key it names
+     * ("unless") is true on $rule (a rule or one branch). The answer is the
+     * key the compiled rule says where the value was found under ("found"),
+     * or null for an operand read from the slot right before.
+     */
+    public static function nearestKey(array $rk, array $rule)
+    {
+        if (!isset($rk['nearest']['found']) || !empty($rule[$rk['nearest']['unless']])) return null;
+        return $rk['nearest']['found'];
     }
 
     /**

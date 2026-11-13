@@ -144,6 +144,21 @@ A "note" below is the message under the field. Red notes start with ✗.
 | E2 | The detail lines | `ud_height`: "The value fell more than allowed from the value it is compared with. Allowed a fall of at most 0.5 cm from the first event." `ud_sbp2`: "The two readings differ by more than 20 mmHg. Take a third. Allowed a change of at most 20 mmHg from [ud_sbp1]." |
 | E3 | Rule problems | The six `ud_bad_*` fields are listed as rule problems, never as data |
 
+## Section G: the nearest earlier value (references on)
+
+`previous-event` and `previous-instance` compare with the nearest earlier
+event or instance that holds a value. Run this section after E, on what the
+sheet has left: `ud_wt` is 76 at baseline, 78 at visit 1 and 80 at visit 2, and
+`ud_rep` is 10.0 in instance 1 and 7.5 in instance 2.
+
+| # | Action | Expect |
+|---|---|---|
+| G1 | Visit 1 (380): clear `ud_wt`; Save | No note and no new entry. The save re-checks visit 2, whose 80 is now compared with baseline's 76 (5.3% above) |
+| G2 | Visit 2 (381): `ud_wt` = 90, leave | "✗ This value rose by 14 kg (18.4%) from 76 kg (the nearest earlier value, at baseline_arm_1). Allowed: a change of at most 10%. (compared with saved event/instance values …)" |
+| G3 | Save | The record saves. One entry at event 381: `ud_wt` `up`, `vs` `[previous-event-name][ud_wt]`, `vs_found` `baseline_arm_1` |
+| G4 | `xr_specimen` at baseline, instance 2: clear `ud_rep`; Save. Then add instance 3: `ud_rep` = 5.0, leave; Save | First save: no entry (D2's finding no longer holds). Instance 3: "✗ This value fell by 5 (50%) from 10.0 (the nearest earlier value, in instance 1). Allowed: a fall of at most 20%. (compared with saved event/instance values …)". The record saves. One entry: `ud_rep` `down`, `vs` `[ud_rep][previous-instance]`, `vs_found` `instance 1`, event 379, instance 3 |
+| G5 | Run the scan again | `ud_wt` is listed at event 381, not 380: "The value rose more than allowed from the value it is compared with. Allowed a change of at most 10% from the previous event. Compared with event 379, the nearest earlier entry that holds a value." `ud_rep` is listed at instance 3, not 2: "The value fell more than allowed from the value it is compared with. Allowed a fall of at most 20% from the previous instance. Compared with instance 1, the nearest earlier entry that holds a value." The other findings are those of E1 |
+
 ## Section F: configuration errors
 
 Open visit 1. Each `ud_bad_*` field shows its error under the field. A broken

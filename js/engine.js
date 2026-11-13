@@ -7368,6 +7368,17 @@ function QRIDDeltaInit(QRID_CONFIG){
     el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
       "font-size:13px;font-family:inherit;border:1px solid " + c;
   }
+  /* Where the earlier value came from when that is further back than the event
+     or instance right before: a missed visit, a deleted instance or a blank
+     measurement is stepped over (AddressResolver::resolveNearest, DLT-1), and
+     the note says which entry the value was compared with. The server sends
+     it to staff only (deltaVsFound: { event: name } or { instance: n }). */
+  function foundText(at){
+    if(!at || typeof at !== "object") return "";
+    if(typeof at.event === "string" && at.event !== "") return "the nearest earlier value, at " + at.event;
+    if(typeof at.instance === "number" && at.instance >= 1) return "the nearest earlier value, in instance " + at.instance;
+    return "";
+  }
   function makeVariant(cfg){
     var configError = cfg.configErrorOverride || "";
     var BLOCK = cfg.blockSave || "off";
@@ -7429,6 +7440,7 @@ function QRIDDeltaInit(QRID_CONFIG){
              vsOp: vsOp,
              label: (typeof cfg.deltaVsLabel === "string" && cfg.deltaVsLabel !== "") ? cfg.deltaVsLabel
                   : (typeof cfg.deltaVs === "string" ? cfg.deltaVs : ""),
+             found: foundText(cfg.deltaVsFound),
              text: (typeof cfg.deltaText === "string") ? cfg.deltaText : "",
              unit: (typeof cfg.deltaUnit === "string") ? cfg.deltaUnit : "",
              mode: { delta: true } };
@@ -7502,7 +7514,8 @@ function QRIDDeltaInit(QRID_CONFIG){
     var earlier = tidy(QRID_deltaNumber(r.earlier, V.spec.earlierComma));
     /* Survey respondents are not told which field or entry the value is
        compared with. */
-    var from = shown(earlier, V.spec.earlierComma) + unit + (QRID_IS_SURVEY || !V.label ? "" : " (" + V.label + ")");
+    var where = V.found || V.label;
+    var from = shown(earlier, V.spec.earlierComma) + unit + (QRID_IS_SURVEY || !where ? "" : " (" + where + ")");
     var text = (r.verdict === "up" ? "This value rose by " : "This value fell by ") + shown(size, comma) + unit +
       percentText(V, r, earlier, comma) + " from " + from + ".";
     return QRID_escapeHtml(text) + (V.text ? " " + QRID_escapeHtml("Allowed: " + V.text + ".") : "");
@@ -10072,9 +10085,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "rangePercentileDecimals", "rangeReturnComma", "deferredOnSave",
                       "extendedAdvisory", "growthIdle", "selectorBlocked", "rangeShow",
                       "growthCurveKey", "growthTableKey", "growthChartWhy", "growthChartSource",
-                      "deltaVs", "deltaVsOp", "deltaVsLabel", "deltaVsComma", "deltaMax",
-                      "deltaMaxPct", "deltaDirection", "deltaUnit", "deltaText", "deltaGroup",
-                      "deltaComputed", "writeonceRolesUnread", "writeonceSaved",
+                      "deltaVs", "deltaVsOp", "deltaVsLabel", "deltaVsFound", "deltaVsComma",
+                      "deltaMax", "deltaMaxPct", "deltaDirection", "deltaUnit", "deltaText",
+                      "deltaGroup", "deltaComputed", "writeonceRolesUnread", "writeonceSaved",
                       "writeonceValuesUnread", "justifyReason"];
   var MODE_OF_TYPE = {
     "single": "check",

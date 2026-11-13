@@ -4110,6 +4110,12 @@ class UniversalValidator extends AbstractExternalModule
      * read. A "vs" that resolved to the field itself in this same entry (the
      * extended path's deltaVsValueSelf: [baseline_arm_1][weight] saved on the
      * baseline visit) has nothing to compare with there.
+     *
+     * A previous event or instance is the nearest earlier one that holds a
+     * value (AddressResolver::resolveNearest, review DLT-1). Where that is
+     * further back than the one right before, the extended path says which
+     * (deltaVsFound) and the finding names it: vsFound for the log, vsFoundAt
+     * for the scan, which keeps 16 characters (php/modes.json findingKeys).
      */
     private function findingsDelta(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
     {
@@ -4143,6 +4149,7 @@ class UniversalValidator extends AbstractExternalModule
         // An earlier value marked with a Missing Data Code was not entered.
         if (self::isMissingCode($earlier, $this->missingDataCodes($project_id))) $earlier = '';
         $self = isset($rule['deltaVsValueSelf']) ? $rule['deltaVsValueSelf'] : null;
+        $found = self::deltaFoundKeys(isset($rule['deltaVsFound']) ? $rule['deltaVsFound'] : null);
         // Long numbers pay the record's evaluation budget (Logic::deltaVerdict).
         // The extended audit and the scan start one per record; a save with no
         // event or instance rule has not, and starts it here.
@@ -4175,9 +4182,32 @@ class UniversalValidator extends AbstractExternalModule
             // vs: what the value was compared with, so two tags on one field
             // (the previous visit, baseline) log findings that can be told apart.
             $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'delta', 'type' => 'delta', 'reason' => $r['verdict'],
-                'vs' => $vs];
+                'vs' => $vs] + $found;
         }
         return $out;
+    }
+
+    /**
+     * What a @UVDELTA finding says of a value found further back than the
+     * event or instance right before ($at: TemporalRules::compile's
+     * deltaVsFound, ['event' => name, 'eventId' => id] or ['instance' => n]):
+     * vsFound, the event's unique name or "instance n", and vsFoundAt, "event
+     * <id>" or "instance n", left out when it would not fit the scan's
+     * 16-character column. [] when the value came from the one right before.
+     */
+    private static function deltaFoundKeys($at)
+    {
+        if (!is_array($at)) return [];
+        if (isset($at['instance']) && is_int($at['instance'])) {
+            $text = 'instance ' . $at['instance'];
+            $short = $text;
+        } elseif (isset($at['event']) && is_string($at['event']) && $at['event'] !== '') {
+            $text = $at['event'];
+            $short = isset($at['eventId']) && is_string($at['eventId']) ? 'event ' . $at['eventId'] : '';
+        } else {
+            return [];
+        }
+        return ['vsFound' => $text] + ($short !== '' && strlen($short) <= 16 ? ['vsFoundAt' => $short] : []);
     }
 
     /**

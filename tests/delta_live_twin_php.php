@@ -190,7 +190,9 @@ namespace {
         $out = [];
         foreach (logs($m, 'invalid-id-saved') as $e) {
             if ($e['type'] !== 'delta' || ($evt !== null && $e['event_id'] !== (string) $evt)) continue;
-            $out[] = $e['field'] . '@' . $e['event_id'] . '#' . $e['instance'] . ':' . $e['reason'] . ' ' . $e['vs'];
+            // "found": the entry the value came from, when that is further back than the one right before (Section G)
+            $out[] = $e['field'] . '@' . $e['event_id'] . '#' . $e['instance'] . ':' . $e['reason'] . ' ' . $e['vs']
+                . (isset($e['vs_found']) ? ' found ' . $e['vs_found'] : '');
         }
         sort($out);
         return $out;
@@ -432,6 +434,47 @@ namespace {
     foreach ($res['unconfigurable'] as $u) foreach ($u['fields'] as $f) if (strpos($f, 'ud_') === 0) $bad[$f] = true;
     ksort($bad);
     check('sheet E: the six bad fields are rule problems', array_keys($bad) === ['ud_bad_email', 'ud_bad_inst', 'ud_bad_nofield', 'ud_bad_nolimit', 'ud_bad_self', 'ud_bad_vs'], array_keys($bad));
+
+    // ---- Section G: the nearest earlier value (DLT-1), on from what the sheet left ------------
+    // G1: visit 1's weight is cleared. Visit 2's 80 is now compared with baseline's 76: inside 10%.
+    $S['XE-1'][380]['ud_wt'] = '';
+    $step('G1', save($S, true, 380, 'uv_delta_test'), []);
+    $opened('sheet_g2', $S, true, 381, 'uv_delta_test');
+    $r = ruleOf($pages['sheet_g2'], 'ud_wt');
+    check('G2: the page at visit 2 reads baseline\'s 76 and names the event', ($r['deltaVsOp'] ?? null) === ['lit', '76']
+        && ($r['deltaVsFound'] ?? null) === ['event' => 'baseline_arm_1'], $r);
+    $S['XE-1'][381]['ud_wt'] = '90';
+    $step('G3', save($S, true, 381, 'uv_delta_test'), ['ud_wt@381#1:up [previous-event-name][ud_wt] found baseline_arm_1']);
+    // G4: instance 2's value is cleared, so D2's finding is gone and instance 3 compares with instance 1.
+    $S['XE-1']['repeat_instances'][379]['xr_specimen'][2]['ud_rep'] = '';
+    $step('G4 (instance 2 cleared)', save($S, true, 379, 'xr_specimen', 2), []);
+    $opened('sheet_g4', $S, true, 379, 'xr_specimen', 3);
+    $r = ruleOf($pages['sheet_g4'], 'ud_rep');
+    check('G4: the page of a new instance 3 reads instance 1 and names it', ($r['deltaVsOp'] ?? null) === ['lit', '10.0']
+        && ($r['deltaVsFound'] ?? null) === ['instance' => 1], $r);
+    $S['XE-1']['repeat_instances'][379]['xr_specimen'][3] = ['ud_rep' => '5.0'];
+    $step('G4', save($S, true, 379, 'xr_specimen', 3), ['ud_rep@379#3:down [ud_rep][previous-instance] found instance 1']);
+    // G5: the scan agrees, and its detail lines name the entry compared with.
+    $res = mod($S, true)->scanProject(149);
+    $got = [];
+    foreach ($res['violations'] as $v) if ($v['type'] === 'delta') $got[] = $v['field'] . '@' . $v['event_id'] . '#' . ($v['instance'] ?? 1) . ':' . $v['reason'];
+    sort($got);
+    check('sheet G5: the scan of what Section G leaves', $got === ['ud_bl@380#1:up', 'ud_height@380#1:down', 'ud_htcalc@380#1:up', 'ud_rep@379#3:down',
+        'ud_sbp2@380#1:up', 'ud_snap@380#1:up', 'ud_twoev@380#1:up', 'ud_twoev@381#1:up', 'ud_twoev@381#1:up', 'ud_wt@381#1:up'], $got);
+    $m = mod($S, true);
+    $dims = $m->scanDimensions(149, $res['rules'] ?? null);
+    $cols = \INSPIRE\UniversalValidator\ScanColumns::all($dims);
+    $G5 = [
+        'ud_wt' => 'The value rose more than allowed from the value it is compared with. Allowed a change of at most 10% from the previous event. Compared with event 379, the nearest earlier entry that holds a value.',
+        'ud_rep' => 'The value fell more than allowed from the value it is compared with. Allowed a fall of at most 20% from the previous instance. Compared with instance 1, the nearest earlier entry that holds a value.',
+    ];
+    $seenG5 = [];
+    foreach ($res['violations'] as $v) if ($v['type'] === 'delta' && isset($G5[$v['field']])) {
+        $line = \INSPIRE\UniversalValidator\ScanColumns::row($v, $dims, $cols)['problem'] ?? '';
+        check('G5: the detail line of ' . $v['field'] . ' word for word', $line === $G5[$v['field']], $line);
+        $seenG5[$v['field']] = true;
+    }
+    check('G5: both findings were in the scan', count($seenG5) === 2, array_keys($seenG5));
 
     // The labels the save dialog names, for the engine replay (the stub reads them from here).
     $pages['labels'] = $LABELS;

@@ -1141,7 +1141,9 @@ and flags a change larger than its limit:
   or instance need event and instance references on. `max` limits the change in
   the field's unit and `maxPct` as a percent of the earlier value; give one or
   both. `direction` (`both`, `up` or `down`) says which changes the limits
-  apply to. Optional `unit`, `when`, `message`, `blockSave`.
+  apply to. `previous` (`nearest`, the default, or `adjacent`) says which
+  entry a previous event or instance is. Optional `unit`, `when`, `message`,
+  `blockSave`.
 - **Number fields:** Text fields with no, integer or number validation
   (including comma decimals), calc fields and sliders. The `vs` field must
   hold numbers too: a Text field with no, integer or number validation, a calc
@@ -1158,6 +1160,24 @@ and flags a change larger than its limit:
 - **Nothing to compare with.** A blank value, a blank earlier value and a
   missing data code on either side check nothing. On the first visit or the
   first instance there is no earlier value.
+- **The previous value.** `previous-event` and `previous-instance`, and a
+  reference written with `[previous-event-name]` or `[previous-instance]`,
+  compare with the nearest earlier event or instance that holds a value. A
+  missed visit, a deleted instance, a measurement left blank and a missing
+  data code are stepped over, so 70, a missed visit, then 170 is checked
+  against the 70. The events are those of the arm that hold the form, and the
+  instances are those that exist. When the value comes from further back than
+  the entry right before, the note names the event or instance it compared
+  with, the log entry carries it as `vs_found`, and the scan's detail line
+  says "Compared with event 41" or "Compared with instance 1" (the event by
+  its id). A survey page is told neither. A value that is there but is not a
+  number stops the walk and is reported, never stepped over. With an instance
+  as well, as in `[previous-event-name][weight][last-instance]`, the walk goes
+  over the events and reads that instance at each. `"previous":"adjacent"`
+  compares only with the event or instance right before, and checks nothing
+  when that one holds no value; it is refused beside a `vs` that names no
+  previous event or instance. `first-event` and `first-instance` name the
+  first one, whatever it holds.
 - **Checked at every event.** Each entry resolves its shorthand on its own, so
   the tag is checked at every event that holds the form, arm by arm. An event
   shorthand is refused when no arm has two events with the form, or when an

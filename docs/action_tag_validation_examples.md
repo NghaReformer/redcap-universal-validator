@@ -4374,13 +4374,16 @@ Without it the tag shows a configuration error that says so.
 
 # on: weight — at most 15% below baseline
 @UVDELTA={"vs":"first-event","maxPct":15,"direction":"down"}
+
+# on: weight — only the visit right before: after a missed visit nothing is checked
+@UVDELTA={"vs":"previous-event","maxPct":10,"previous":"adjacent"}
 ```
 
 | `vs`                | Means                                         | Written out for a field `weight`  |
 | ------------------- | --------------------------------------------- | --------------------------------- |
-| `previous-event`    | This field at the event before this one, among those with the form | `[previous-event-name][weight]`   |
+| `previous-event`    | This field at the nearest earlier event, among those with the form, that holds a value | `[previous-event-name][weight]`   |
 | `first-event`       | This field at the first event of the arm with the form             | `[first-event-name][weight]`      |
-| `previous-instance` | This field in the instance before this one    | `[weight][previous-instance]`     |
+| `previous-instance` | This field in the nearest earlier instance that holds a value | `[weight][previous-instance]`     |
 | `first-instance`    | This field in the first instance              | `[weight][first-instance]`        |
 
 Any one field reference works too, in this entry, another event or another
@@ -4392,9 +4395,31 @@ instance:
 @UVDELTA={"vs":"[previous-event-name][weight][last-instance]","max":2,"unit":"kg"}
 ```
 
-- `previous-event` is the event before this one, in the same arm, that has
-  this form, whether or not anything was saved there. On the first such event
-  and the first instance there is no earlier value, so nothing is checked.
+- `previous-event` and `previous-instance` compare with the nearest earlier
+  event or instance that holds a value. The events are those before this one
+  in the same arm that have this form, and the instances are those that
+  exist. A missed visit, a deleted instance, a measurement left blank and a
+  missing data code are stepped over: with 70 at visit 1, nothing at visit 2
+  and 170 at visit 3, visit 3 is compared with visit 1. The note then names
+  the entry:
+
+  > ✗ This value rose by 100 kg (142.9%) from 70 kg (the nearest earlier value, at visit_1_arm_1). Allowed: a change of at most 10%.
+
+  The log entry carries it as `vs_found` (`visit_1_arm_1`, or `instance 1`),
+  and the scan's detail line ends "Compared with event 41, the nearest earlier
+  entry that holds a value." (the event by its id) or "Compared with instance
+  1, …". A value that is there but is not a number stops the walk and is
+  reported. A reference written with `[previous-event-name]` or
+  `[previous-instance]` is read the same way; with an instance as well, as in
+  `[previous-event-name][weight][last-instance]`, the walk goes over the
+  events and reads that instance at each.
+- `"previous":"adjacent"` compares only with the event or instance right
+  before, whether or not anything was saved there, and checks nothing when it
+  holds no value. `"previous":"nearest"` is the default. The option is
+  refused beside a `vs` that names no previous event or instance.
+- `first-event` and `first-instance` name the first one, whatever it holds.
+  When no earlier event or instance holds a value (the first visit, the first
+  instance) there is nothing to compare with, so nothing is checked.
 - Each entry resolves its shorthand on its own, so the tag is checked at every
   event that holds the form, arm by arm:
   - An event shorthand needs, in some arm, two or more events with the form.
@@ -4564,6 +4589,10 @@ These are refused, with a configuration error under the field:
 @UVDELTA={"vs":"previous-event","max":5,"direction":"left"}
 # refused: unknown @UVDELTA option(s): min
 @UVDELTA={"vs":"previous-event","max":5,"min":1}
+# refused: "previous" must be nearest or adjacent
+@UVDELTA={"vs":"previous-event","max":5,"previous":"literal"}
+# refused: "previous" applies to a "vs" that names the previous event or instance
+@UVDELTA={"vs":"first-event","max":5,"previous":"adjacent"}
 ```
 
 Once the data dictionary is read, the module also refuses a field that does not
@@ -6508,6 +6537,7 @@ number keeps. `blockSave` is refused.
 | `max`           | number          | *(none)*     | The largest change allowed, in the field's unit, 0 or more             |
 | `maxPct`        | number          | *(none)*     | The largest change allowed as a percent of the earlier value, more than 0; not applied to an earlier 0. At least one of `max` and `maxPct` |
 | `direction`     | string          | `both`       | `both`, `up`, `down`: the changes the limits apply to                  |
+| `previous`      | string          | `nearest`    | For a `vs` that names the previous event or instance. `nearest`: the nearest earlier one that holds a value. `adjacent`: only the one right before |
 | `unit`          | string          | *(none)*     | Label shown after the numbers in the note, up to 20 characters         |
 | `when`          | string          | *(none)*     | Check only while true                                                  |
 | `message`       | string or map   | generic line   | Replaces the line that names the change and the limit                  |

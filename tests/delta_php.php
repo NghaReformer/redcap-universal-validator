@@ -137,6 +137,24 @@ check('"both" is the default, dropped', !isset($f['error']) && !isset($f['deltaD
 $f = frag('@UVDELTA={"vs":"previous-event","max":5,"direction":" UP "}');
 check('a direction in any letter case', !isset($f['error']) && $f['deltaDirection'] === 'up' && $f['deltaGroup'] === 'previous-event up');
 
+// "previous" (DLT-1): nearest, the default, steps over entries that hold no value; adjacent reads only the one right before
+$f = frag('@UVDELTA={"vs":"previous-event","max":5}');
+check('no "previous": the nearest value, with no key for it', !isset($f['error']) && !array_key_exists('deltaAdjacent', $f));
+$f = frag('@UVDELTA={"vs":"previous-event","max":5,"previous":" Nearest "}');
+check('"previous":"nearest" is the default, dropped', !isset($f['error']) && !array_key_exists('deltaAdjacent', $f));
+$f = frag('@UVDELTA={"vs":"previous-event","max":5,"previous":"adjacent"}');
+check('"previous":"adjacent" is kept', !isset($f['error']) && ($f['deltaAdjacent'] ?? null) === true && $f['deltaGroup'] === 'previous-event both');
+foreach (['previous-instance', '[previous-event-name][weight][last-instance]', '[weight][previous-instance]', '[previous-event-name][other]'] as $vs) {
+    $f = frag('@UVDELTA={"vs":"' . $vs . '","max":5,"previous":"adjacent"}');
+    check('"previous" beside ' . $vs . ': accepted (got ' . json_encode($f['error'] ?? null) . ')', !isset($f['error']) && ($f['deltaAdjacent'] ?? null) === true);
+}
+foreach (['previous-event' => true, 'previous-instance' => true, 'first-event' => false, 'first-instance' => false, '[w_screen]' => false,
+          '[baseline_arm_1][weight]' => false, '[weight][last-instance]' => false, '[previous-event-name][w]' => true, '[w][previous-instance]' => true] as $vs => $want) {
+    check('deltaNamesPrevious ' . $vs, AnnotationRules::deltaNamesPrevious($vs) === $want);
+}
+check('checkDelta: a "previous" key that is not true', AnnotationRules::checkDelta(['type' => 'delta', 'deltaVs' => '[previous-event-name][w]', 'deltaMax' => '5',
+    'deltaAdjacent' => 'yes'], ['qualified' => true]) !== []);
+
 $f = frag('@UVDELTA={"vs":"previous-event","max":0.12345678901234567890,"maxPct":"7.50"}');
 check('limits kept exactly as typed, quoted or not', !isset($f['error']) && $f['deltaMax'] === '0.12345678901234567890' && $f['deltaMaxPct'] === '7.50');
 $f = frag('@UVDELTA={"vs":"previous-event","max":1e2}');
@@ -171,6 +189,10 @@ $refused = [
     '@UVDELTA={"vs":"previous-event","max":1e100}'                 => '"max" is longer than 64 characters',
     '@UVDELTA={"vs":"previous-event","max":5,"direction":"left"}'  => '"direction" must be both, up or down',
     '@UVDELTA={"vs":"previous-event","max":5,"direction":1}'       => '"direction" must be both, up or down',
+    '@UVDELTA={"vs":"previous-event","max":5,"previous":"literal"}' => '"previous" must be nearest or adjacent',
+    '@UVDELTA={"vs":"previous-event","max":5,"previous":true}'     => '"previous" must be nearest or adjacent',
+    '@UVDELTA={"vs":"first-event","max":5,"previous":"adjacent"}'  => '"previous" applies to a "vs" that names the previous event or instance',
+    '@UVDELTA={"vs":"[w_screen]","max":5,"previous":"adjacent"}'   => '"previous" applies to a "vs" that names the previous event or instance',
     '@UVDELTA={"vs":"previous-event","max":5,"unit":"a very long unit label here"}' => '"unit" must be a short label',
     '@UVDELTA={"vs":"previous-event","max":5,"unit":7}'            => '"unit" must be a string',
     '@UVDELTA={"vs":"previous-event","max":5,"blockSave":"maybe"}' => '"blockSave" must be off, confirm or hard',

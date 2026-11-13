@@ -63,7 +63,17 @@ class AnnotationRules
     ];
 
     /** The keys a @UVDELTA tag's JSON may name, in this letter case. */
-    const DELTA_KEYS = ['vs', 'max', 'maxPct', 'direction', 'unit', 'when', 'message', 'blockSave', 'caseSensitive', 'references'];
+    const DELTA_KEYS = ['vs', 'max', 'maxPct', 'direction', 'previous', 'unit', 'when', 'message', 'blockSave', 'caseSensitive', 'references'];
+    /**
+     * What "previous" may say, each with whether it turns the walk back off
+     * (deltaAdjacent). "nearest", the default: the previous event or instance
+     * is the nearest earlier one that holds a value, so a missed visit, a
+     * deleted instance or a measurement left blank is stepped over
+     * (AddressResolver::resolveNearest, review DLT-1). "adjacent": only the
+     * event or instance right before, and nothing is checked when it holds
+     * no value.
+     */
+    const DELTA_PREVIOUS = ['nearest' => false, 'adjacent' => true];
 
     /** Most languages one text key (a "message" map) may name, "default" included. */
     const MAX_TEXT_LANGUAGES = 50;
@@ -1339,7 +1349,9 @@ class AnnotationRules
      * (UniversalValidator::annotateDeltaField). "max" limits the size of the
      * change in the field's unit and "maxPct" as a percent of the earlier
      * value; with both, a change must keep both. "direction" (both, up,
-     * down) names the changes the limits apply to. Limits are exact decimal
+     * down) names the changes the limits apply to. "previous" says whether
+     * a previous event or instance is the nearest one that holds a value
+     * (the default) or only the one right before (DELTA_PREVIOUS). Limits are exact decimal
      * strings, as @UVRANGE's are. deltaGroup (what the rule compares with,
      * and which way) lets tags that compare with different values, or limit
      * different ways, sit on one field (php/modes.json branchGroup). The
@@ -1397,6 +1409,14 @@ class AnnotationRules
             $d = strtolower(trim($cfg['direction']));
             // "both" is the default, dropped so two spellings of one rule group as one
             if ($d !== 'both') $out['deltaDirection'] = $d;
+        }
+        if (array_key_exists('previous', $cfg)) {
+            $p = is_string($cfg['previous']) ? strtolower(trim($cfg['previous'])) : null;
+            if ($p === null || !isset(self::DELTA_PREVIOUS[$p])) {
+                return ['error' => '"previous" must be ' . implode(' or ', array_keys(self::DELTA_PREVIOUS)) . '.'];
+            }
+            // "nearest" is the default, dropped as "both" is
+            if (self::DELTA_PREVIOUS[$p]) $out['deltaAdjacent'] = true;
         }
         if (($e = self::takeTexts($cfg, $out)) !== null) return ['error' => $e];
         foreach (['unit' => 'deltaUnit', 'when' => 'when', 'message' => 'message', 'blockSave' => 'blockSave'] as $k => $key) {
@@ -3507,6 +3527,14 @@ class AnnotationRules
         if (isset($frag['deltaDirection']) && !in_array($frag['deltaDirection'], ['up', 'down'], true)) {
             $errors[] = '"direction" must be both, up or down.';
         }
+        if (array_key_exists('deltaAdjacent', $frag)) {
+            if ($frag['deltaAdjacent'] !== true) {
+                $errors[] = '"previous" must be ' . implode(' or ', array_keys(self::DELTA_PREVIOUS)) . '.';
+            } elseif (isset($frag['deltaVs']) && is_string($frag['deltaVs']) && !self::deltaNamesPrevious($frag['deltaVs'])) {
+                $errors[] = '"previous" applies to a "vs" that names the previous event or instance (previous-event, '
+                    . 'previous-instance, [previous-event-name] or [previous-instance]) — remove it here.';
+            }
+        }
         if (array_key_exists('deltaUnit', $frag)) {
             $u = $frag['deltaUnit'];
             if (!is_string($u) || $u === '' || preg_match('/[\x00-\x1f\x7f]/', $u)
@@ -3515,6 +3543,18 @@ class AnnotationRules
             }
         }
         return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Whether a "vs" (a shorthand or a reference) names the previous event
+     * or the previous instance: the two a rule may walk back from to the
+     * nearest value.
+     */
+    public static function deltaNamesPrevious($vs)
+    {
+        $ref = isset(self::DELTA_SHORTHANDS[$vs]) ? sprintf(self::DELTA_SHORTHANDS[$vs], 'f') : $vs;
+        $op = ModeRegistry::operandRef($ref, ['qualified' => true]);
+        return $op !== null && $op[0] === 'qref' && ($op[3] === 'previous-event-name' || $op[4] === 'previous-instance');
     }
 
     /**

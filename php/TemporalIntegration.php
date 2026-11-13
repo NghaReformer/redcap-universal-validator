@@ -276,6 +276,8 @@ trait TemporalIntegration
         if($held===null||$held['shape']!==$shape||$held['budget']!==$this->temporalBudget||$held['browser']!==(bool)$browser||$held['node']!==$node){
             $resolver=new AddressResolver($shape,$node,10000,$this->temporalBudget);
             if($browser)$resolver->chargePageBytes();else $resolver->shareAcrossContexts();
+            // A Missing Data Code was not entered: a walk back to the nearest value steps over it (DLT-1).
+            if($this->temporalPid!==null)$resolver->notEntered($this->missingDataCodes($this->temporalPid));
             $this->temporalUniqueIndex=[];
             $held=$this->temporalResolver=['shape'=>$shape,'budget'=>$this->temporalBudget,'browser'=>(bool)$browser,'node'=>$node,'resolver'=>$resolver];
         }
@@ -333,7 +335,7 @@ trait TemporalIntegration
                 $p=$this->temporalPrepared($r,$shape,$node,$ctx,true,$mayRead);$out[$i]=$p['rule'];
                 if($p['problems']){$out[$i]['deferred']=true;$out[$i]['deferredWhy']=['Extended validation unavailable: '.implode(', ',$p['problems']).'.'];
                     // Every folded key the browser could act on: condition trees, record tuples, operands.
-                    $folded=['whenAst','uniqueRecordAsts','references'];foreach(ModeRegistry::refKeys('cond','test') as $rk)$folded[]=$rk['ast'];foreach(ModeRegistry::operandKeys() as $rk)$folded[]=$rk['op'];
+                    $folded=['whenAst','uniqueRecordAsts','references'];foreach(ModeRegistry::refKeys('cond','test') as $rk)$folded[]=$rk['ast'];foreach(ModeRegistry::operandKeys() as $rk){$folded[]=$rk['op'];if(isset($rk['nearest']['found']))$folded[]=$rk['nearest']['found'];}
                     foreach($folded as $k)unset($out[$i][$k]);
                     if(isset($out[$i]['branches']))foreach($out[$i]['branches'] as &$b){$b['deferred']=true;if(!empty($out[$i]['deferredChecked']))$b['deferredChecked']=true;foreach($folded as $k)unset($b[$k]);}unset($b);
                 }

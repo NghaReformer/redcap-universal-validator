@@ -1262,7 +1262,10 @@ section and
 **Can a weight be flagged when it changed too much since the last visit?**
 Yes. The `@UVDELTA` tag limits how far a number may move from an earlier value.
 `@UVDELTA={"vs":"previous-event","maxPct":10,"unit":"kg"}` flags a weight more
-than 10% above or below the same field at the previous event, and
+than 10% above or below the same field at the previous event that holds a
+value (a missed visit or a blank is stepped over, and the note then names the
+visit it compared with; `"previous":"adjacent"` compares only with the visit
+right before), and
 `@UVDELTA={"vs":"[weight_screening]","max":5,"unit":"kg"}` one more than 5 kg
 from the screening weight. `previous-instance`, `first-event` and
 `first-instance` work the same way, and `"direction":"up"` or `"down"` limits

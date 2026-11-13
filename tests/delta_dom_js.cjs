@@ -285,6 +285,41 @@ function W(extra) {
   check('... never blocks', save(env) === 'saved');
 }
 {
+  // DLT-1: the value came from further back than the event right before (a missed visit): the note names the entry.
+  const w = numEl('weight', '80');
+  const env = boot([w], { rules: [W({ deltaVs: '[previous-event-name][weight]', deltaVsOp: ['lit', '70'],
+    deltaVsLabel: 'the previous event', deltaVsFound: { event: 'visit1_arm_1' }, extendedAdvisory: true, blockSave: 'off',
+    snapshotFields: ['saved event/instance values'] })] });
+  const msg = dMsg(env, 'weight');
+  check('a value found across a missed visit: the note says which visit (got ' + msg.innerHTML + ')',
+    /rose by 10 kg \(14\.3%\) from 70 kg \(the nearest earlier value, at visit1_arm_1\)\./.test(msg.innerHTML)
+    && !/\(the previous event\)/.test(msg.innerHTML));
+  check('... and never blocks', save(env) === 'saved');
+}
+{
+  const w = numEl('weight', '80');
+  const env = boot([w], { rules: [W({ deltaVs: '[weight][previous-instance]', deltaVsOp: ['lit', '70'],
+    deltaVsLabel: 'the previous instance', deltaVsFound: { instance: 1 }, extendedAdvisory: true, blockSave: 'off',
+    snapshotFields: ['saved event/instance values'] })] });
+  check('a value found across a deleted instance: the note says which instance (got ' + dMsg(env, 'weight').innerHTML + ')',
+    /from 70 kg \(the nearest earlier value, in instance 1\)\./.test(dMsg(env, 'weight').innerHTML));
+}
+{
+  const w = numEl('weight', '80');
+  const env = boot([w], { rules: [W({ deltaVsOp: ['lit', '70'], deltaVsLabel: 'the previous event', deltaVsFound: { event: '<b>v1</b>' },
+    extendedAdvisory: true, blockSave: 'off' })] });
+  check('the event name is escaped (got ' + dMsg(env, 'weight').innerHTML + ')',
+    /at &lt;b&gt;v1&lt;\/b&gt;\)/.test(dMsg(env, 'weight').innerHTML) && !/<b>v1/.test(dMsg(env, 'weight').innerHTML));
+}
+{
+  // a found key that is not what the server sends is ignored: the rule's own label stands
+  for (const bad of ['visit1_arm_1', { event: '' }, { instance: 0 }, { instance: '2' }, null, []]) {
+    const env = boot([numEl('weight', '80')], { rules: [W({ deltaVsOp: ['lit', '70'], deltaVsLabel: 'the previous event', deltaVsFound: bad,
+      extendedAdvisory: true, blockSave: 'off' })] });
+    check('deltaVsFound ' + JSON.stringify(bad) + ': the label stands', /from 70 kg \(the previous event\)\./.test(dMsg(env, 'weight').innerHTML));
+  }
+}
+{
   // A snapshot never blocks, even when blockSave says hard (a plain-path fold of a value on another form).
   const w = numEl('weight', '80');
   const env = boot([w], { rules: [W({ deltaVsOp: ['lit', '70'], snapshotFields: ['w0'] })] });

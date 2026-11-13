@@ -223,6 +223,23 @@ const SBP2 = PAGES.labels.ud_sbp2;
   check('D3 8.0: exactly 20%, no note', note(env, 'ud_rep') === '');
 }
 
+// ---- Section G: the nearest earlier value (DLT-1) ---------------------------------------
+{
+  const env = boot(PAGES.sheet_g2, PAGES.sheet_g2_values);
+  check('G2 the page opens with what C4 saved (ud_wt 80), and no note: 80 is 5.3% above baseline\'s 76', env.els.ud_wt.value === '80' && note(env, 'ud_wt') === '', note(env, 'ud_wt'));
+  set(env, 'ud_wt', '90');
+  check('G2 a missed value at visit 1: compared with baseline, and the note says so',
+    note(env, 'ud_wt') === '✗ This value rose by 14 kg (18.4%) from 76 kg (the nearest earlier value, at baseline_arm_1). Allowed: a change of at most 10%.' + SNAP, note(env, 'ud_wt'));
+  check('G3 the record saves', save(env) === 'saved', save(env));
+}
+{
+  const env = boot(PAGES.sheet_g4, PAGES.sheet_g4_values);
+  set(env, 'ud_rep', '5.0');
+  check('G4 instance 3 after a cleared instance 2: compared with instance 1, and the note says so',
+    note(env, 'ud_rep') === '✗ This value fell by 5 (50%) from 10.0 (the nearest earlier value, in instance 1). Allowed: a fall of at most 20%.' + SNAP, note(env, 'ud_rep'));
+  check('G4 the record saves', save(env) === 'saved', save(env));
+}
+
 // ---- Section F: configuration errors are shown under each field, never a block --------
 function cfgErr(env, f) {
   const kids = env.holders[f].children;
