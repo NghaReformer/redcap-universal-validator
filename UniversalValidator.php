@@ -157,16 +157,24 @@ class UniversalValidator extends AbstractExternalModule
      * The findings the next page tells the person who saved about, as
      * rule type => reason => what the page says after the field's name. A
      * live lookup never keeps a save back (it fails open when it has no
-     * answer), so for these the audit after the save can be the first to
+     * answer), and a page locks a write-once field with what was saved when
+     * it was built, so for these the audit after the save can be the first to
      * know, and the module log alone would leave the person entering the
      * data unaware. A type or reason not listed here is logged as before and
      * shown nowhere.
+
      */
     const AFTER_SAVE_TEXT = [
         'unique' => ['duplicate-value' => 'this value is already recorded in another record.'],
         'exists' => [
             'not-found' => 'this value was not found where this field looks it up.',
             'filtered'  => 'this value was found, but not in an entry this field accepts.',
+        ],
+        // A page opened before the value was locked still shows the field
+        // open, and its save goes over the locked value (WON-1).
+        'writeonce' => [
+            'changed' => 'this field is locked, and the value now saved is not the one it was locked with. Ask someone who may change it to put the locked value back.',
+            'cleared' => 'this field is locked, and its value has been cleared. Ask someone who may change it to put the locked value back.',
         ],
     ];
     /** Most findings kept for the next page, seconds they are kept, and the longest label shown. */
@@ -697,6 +705,9 @@ class UniversalValidator extends AbstractExternalModule
     private function auditRule(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, $whenAst = null, array $resolution = [], array $meta = [])
     {
         $meta['instance'] = $repeat_instance;
+        // How this save's log names records and people: an evaluator that
+        // keeps an entry of its own for the save (findingsWriteonce) asks.
+        $meta['logMode'] = $logMode;
         // The save audit also works out the values a rule returns to fields
         // (the scan, which calls ruleFindings itself, does not): they are
         // queued and written once the audit is done (applyReturns), unless
@@ -4186,10 +4197,34 @@ class UniversalValidator extends AbstractExternalModule
      * of the field on this record, event and instance in REDCap's log
      * (ValueHistory). The log is the only source, so a value written by the
      * API or an import is judged like one typed on a form, once the audit or
-     * the scan reads it. The module never writes the locked value back. A log
-     * that cannot be read in full, a save it does not say plainly, a value it
-     * never shows saved, or user roles that cannot be read when a change needs
-     * them, is a rule problem ("not checked"), never a pass.
+     * the scan reads it. A log that cannot be read in full, a save it does not
+     * say plainly, a value it never shows saved, or user roles that cannot be
+     * read when a change needs them, is a rule problem ("not checked"), never
+     * a pass.
+     *
+     * THE LOCK IS DECIDED AGAIN AT EVERY SAVE (WON-1). The page locks a field
+     * with what was saved when the page was built, so a page opened before
+     * the first save (a second tab, a second user) still shows the field open
+     * and its save goes over the locked value. redcap_save_record runs after
+     * REDCap wrote the data and cannot refuse it, so this audit finds the
+     * change at once: the entry names who saved the locked value and who
+     * saved over it (locked_by, changed_by; a keyed hash where the log keeps
+     * no record id), the person is told on the next page (AFTER_SAVE_TEXT),
+     * and the scan reports it from the same log. The module never writes the
+     * locked value back: the lock is worked out from the text of REDCap's
+     * log, where a Notes value typed to look like another field's line can
+     * stand for a first save that was never made (ValueHistory::parseRow),
+     * and writing such a value over what a person entered would lose data.
+     *
+     * A CHANGE IS JUDGED BY THE ROLES ITS MAKER HELD WHEN THE AUDIT FIRST SAW
+     * IT (WON-6). The save audit keeps, for each save that departs from the
+     * lock under a rule that names roles, whether its maker held one
+     * (writeonceRoleNote), and every later audit and scan answers from that
+     * entry (writeonceRoleKept). So a correction approved while its maker was
+     * a data manager stays approved when they leave the role, and a change
+     * made without a role stays a finding when its maker is given one later.
+     * A save no audit has judged yet, or a project whose log keeps no
+     * entries (log-values "off"), goes by the roles of today, as before.
      */
     private function findingsWriteonce(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
@@ -4198,11 +4233,24 @@ class UniversalValidator extends AbstractExternalModule
         $codes = isset($meta['missingCodes']) && is_array($meta['missingCodes']) ? $meta['missingCodes'] : $this->missingDataCodes($project_id);
         $isMissing = function ($v) use ($codes) { return self::isMissingCode($v, $codes); };
         $roles = isset($rule['writeonceRoles']) && is_array($rule['writeonceRoles']) ? $rule['writeonceRoles'] : [];
-        $holds = function ($user) use ($roles, $project_id) { return $this->userHoldsRole($project_id, $user, $roles); };
+        // the save audit says how its log names records and people; the scan gives no mode and keeps nothing
+        $logMode = isset($meta['logMode']) && is_string($meta['logMode']) ? $meta['logMode'] : null;
         $history = null;
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
+            $holds = function ($user, $save = null) use ($roles, $project_id, $record, $event_id, $instance, $field, $logMode) {
+                if (!$roles) return false;
+                $ts = is_array($save) && isset($save['ts']) ? (string) $save['ts'] : '';
+                $kept = $ts === '' ? null : $this->writeonceRoleKept($project_id, $record, $event_id, $instance, $field, $ts, $user);
+                if ($kept !== null) return $kept;
+                $held = $this->userHoldsRole($project_id, $user, $roles);
+                // kept only where the entries can be read back: an entry no later audit finds would be written at every save
+                if ($held !== null && $ts !== '' && $logMode !== null && $this->writeonceRolesKept($project_id, $record) !== false) {
+                    $this->writeonceRoleNote($logMode, $project_id, $record, $event_id, $instance, $field, $ts, $user, $held);
+                }
+                return $held;
+            };
             $state = isset($resolution[$field]) ? $resolution[$field] : 'ok';
             if ($state !== 'ok') {
                 $out['unconfigurable'][] = ['fields' => [$field], 'why' => 'the saved value ' . self::resolutionProblem($state, $field)];
@@ -4251,10 +4299,128 @@ class UniversalValidator extends AbstractExternalModule
             // when the value was locked (minutes are enough to find the save in REDCap's log) and when it was changed
             if (is_string($r['lockedAt'])) $finding['lockedAt'] = substr($r['lockedAt'], 0, 16);
             if (is_string($r['changedAt'])) $finding['changedAt'] = substr($r['changedAt'], 0, 16);
+            // who saved the locked value and who saved over it, for the audit entry (WON-1)
+            if ($logMode !== null) {
+                foreach (['lockedBy', 'changedBy'] as $who) {
+                    $name = isset($r[$who]) && is_string($r[$who]) && $r[$who] !== '' ? $this->writeonceWho($logMode, $project_id, $r[$who]) : null;
+                    if ($name !== null) $finding[$who] = $name;
+                }
+            }
             $out['invalid'][] = $finding;
         }
         return $out;
     }
+
+    /** The module log entry that keeps whether the maker of one save held a role of the rule (WON-6). */
+    const WRITEONCE_ROLE_MESSAGE = 'uvalidate-writeonce-role';
+
+    /**
+     * How an audit entry names a REDCap user: the user name where the log
+     * keeps record ids (raw, hashed), its keyed hash where it keeps none
+     * (none), and null when no key can be read for the hash.
+     */
+    private function writeonceWho($logMode, $pid, $user)
+    {
+        $user = strtolower(trim((string) $user));
+        if ($user === '') return null;
+        return $logMode === 'none' ? $this->hashedIdentifier($pid, $user) : $user;
+    }
+
+    /**
+     * The fingerprints of the role entries kept for one record
+     * (WRITEONCE_ROLE_MESSAGE), read once per request and record: fingerprint
+     * => true, or false when they cannot be read. The project is named in the
+     * query, so a scan run by the cron job reads them too. Kept with the
+     * other things read from the module log (loggedBefore).
+     */
+    private function writeonceRolesKept($pid, $record)
+    {
+        $mode = $this->logMode($pid);
+        if ($mode === 'off') return false;
+        $where = $mode === 'none' ? 'record_hmac' : 'record';
+        $scope = $mode === 'none' ? $this->hashedIdentifier($pid, (string) $record) : (string) $record;
+        if ($scope === null || $scope === '') return false;
+        $k = self::WRITEONCE_ROLE_MESSAGE . "\0" . $where . "\0" . $scope;
+        if (array_key_exists($k, $this->loggedBefore)) return $this->loggedBefore[$k] === false ? false : $this->loggedBefore[$k]['fps'];
+        $this->loggedBefore[$k] = false;
+        if (!is_callable([$this, 'queryLogs'])) return false;
+        try {
+            $res = $this->queryLogs('select fingerprint where message = ? and project_id = ? and ' . $where . ' = ?',
+                [self::WRITEONCE_ROLE_MESSAGE, (int) $pid, $scope]);
+            if (!is_object($res) || !is_callable([$res, 'fetch_assoc'])) return false;
+            $fps = [];
+            while ($row = $res->fetch_assoc()) {
+                if (isset($row['fingerprint']) && is_string($row['fingerprint']) && $row['fingerprint'] !== '') $fps[$row['fingerprint']] = true;
+            }
+            $this->loggedBefore[$k] = ['fps' => $fps, 'newest' => []];
+            return $fps;
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::writeonceRolesKept');
+            return false;
+        }
+    }
+
+    /** The fingerprint of "the maker of this save did ($held) or did not hold a role", or null without a key. */
+    private function writeonceRoleFingerprint($pid, $record, $event_id, $instance, $field, $ts, $user, $held)
+    {
+        return $this->logFingerprint($pid, [self::WRITEONCE_ROLE_MESSAGE, (string) $record, (string) $field, (string) (int) $event_id,
+            (string) max(1, (int) $instance), (string) $ts, strtolower(trim((string) $user)), $held ? '1' : '0']);
+    }
+
+    /**
+     * What the save audit kept for one save that departs from the lock: true
+     * (its maker held a role of the rule then), false (held none), or null
+     * when nothing was kept or the entries cannot be read. An entry of each
+     * kind for one save (the rule's roles were edited between two audits)
+     * reads as none kept.
+     */
+    private function writeonceRoleKept($pid, $record, $event_id, $instance, $field, $ts, $user)
+    {
+        $fps = $this->writeonceRolesKept($pid, $record);
+        if (!$fps) return null;
+        $yes = $this->writeonceRoleFingerprint($pid, $record, $event_id, $instance, $field, $ts, $user, true);
+        $no = $this->writeonceRoleFingerprint($pid, $record, $event_id, $instance, $field, $ts, $user, false);
+        if ($yes === null || $no === null) return null;
+        if (isset($fps[$yes]) === isset($fps[$no])) return null;
+        return isset($fps[$yes]);
+    }
+
+    /**
+     * Keep whether the maker of one save that departs from the lock held a
+     * role of the rule (WRITEONCE_ROLE_MESSAGE): the field, event and
+     * instance, the log time of the save, who made it (writeonceWho) and
+     * "held" 1 or 0, under the record as the log mode names it. Nothing is
+     * kept when the log is off or no key can be read; the roles of today
+     * then decide, as before.
+     */
+    private function writeonceRoleNote($logMode, $pid, $record, $event_id, $instance, $field, $ts, $user, $held)
+    {
+        if ($logMode === 'off') return;
+        try {
+            $fp = $this->writeonceRoleFingerprint($pid, $record, $event_id, $instance, $field, $ts, $user, $held);
+            if ($fp === null) return;
+            $fps = $this->writeonceRolesKept($pid, $record);
+            if (is_array($fps) && isset($fps[$fp])) return;
+            $entry = ['field' => (string) $field, 'event_id' => (string) $event_id, 'instance' => (string) max(1, (int) $instance),
+                      'saved_ts' => (string) $ts, 'held' => $held ? '1' : '0', 'fingerprint' => $fp];
+            $who = $this->writeonceWho($logMode, $pid, $user);
+            if ($who !== null) $entry['saved_by'] = $who;
+            if ($logMode === 'none') {
+                $h = $this->hashedIdentifier($pid, (string) $record);
+                if ($h === null) return;
+                $entry['record_hmac'] = $h;
+            } else {
+                $entry['record'] = (string) $record;
+            }
+            $this->log(self::WRITEONCE_ROLE_MESSAGE, $entry);
+            list($where, $scope) = self::logScope($logMode, $entry);
+            $k = self::WRITEONCE_ROLE_MESSAGE . "\0" . $where . "\0" . $scope;
+            if (isset($this->loggedBefore[$k]) && $this->loggedBefore[$k] !== false) $this->loggedBefore[$k]['fps'][$fp] = true;
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::writeonceRoleNote');
+        }
+    }
+
 
     /**
      * @UVWRITEONCE "page" hook: a field is locked on the page when its saved

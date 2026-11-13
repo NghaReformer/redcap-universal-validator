@@ -443,8 +443,128 @@ $db->rows = [
 $h = ValueHistory::forProject($db, 149, ['dob'], $utc, $utc);
 check('noevent: a row with no event that names a kept field on instance 2 cannot be placed', $h->saves('R1', 380, 1, 'dob')['why'] === 'noevent');
 
+// A row with no event voids the fields it names, not the record's whole history (WON-3).
+$db = new FakeHistoryLog();
+$db->rows = [
+    $row(1, 'R1', 380, '20261001090000', "dob = '2000-01-01',\nwt = '70'", 'ann', 'INSERT'),
+    $row(2, 'R1', null, '20261002090000', "wt = '71'", 'bob'),
+];
+$h = ValueHistory::forProject($db, 149, ['dob', 'wt'], $utc, $utc);
+check('noevent: the field a row with no event names is unknown', $h->saves('R1', 380, 1, 'wt') === ['state' => 'unknown', 'saves' => [], 'why' => 'noevent'], $h->saves('R1', 380, 1, 'wt'));
+check('noevent: ... and a field it does not name is read', $values($h->saves('R1', 380, 1, 'dob')) === [['20261001090000', 'ann', '2000-01-01']], $h->saves('R1', 380, 1, 'dob'));
+
+// A DELETE of part of this event (WON-3): a blank save, by the row's user, of what the row says
+// it removed. One odd row costs the fields and the instance it touches, not the whole history.
+$part = function ($descr, $dv, $sqlLog = null, array $fields = ['dob'], $event = 380) use ($row, $utc) {
+    $db = new FakeHistoryLog();
+    $del = $row(2, 'R1', $event, '20261002090000', $dv, 'cat', 'DELETE', 'redcap_data', 149, $descr);
+    if ($sqlLog !== null) $del[10] = $sqlLog;
+    $db->rows = [
+        $row(1, 'R1', 380, '20261001090000', "record_id = 'R1',\ndob = '2000-01-01'", 'ann', 'INSERT', 'redcap_data', 149, 'Create record'),
+        $del,
+        $row(3, 'R1', 380, '20261003090000', "dob = '1999-09-09'", 'dan'),
+        $row(4, 'R1', 380, '20261003100000', "[instance = 2],\ndob = '1988-08-08'", 'dan'),
+    ];
+    return ValueHistory::forProject($db, 149, $fields, $utc, $utc, ['recordIdField' => 'record_id']);
+};
+$FORM = 'Delete all record data for single form';
+$BOTH = [['20261001090000', 'ann', '2000-01-01'], ['20261003090000', 'dan', '1999-09-09']];
+$CLEARED = [['20261001090000', 'ann', '2000-01-01'], ['20261002090000', 'cat', ''], ['20261003090000', 'dan', '1999-09-09']];
+$UNPLACED = ['state' => 'unknown', 'saves' => [], 'why' => 'delete'];
+$h = $part($FORM, '[instance = 2]');
+check('part delete: an instance of a form deleted leaves the other instances read', $values($h->saves('R1', 380, 1, 'dob')) === $BOTH, $h->saves('R1', 380, 1, 'dob'));
+check('part delete: ... and that instance, whose fields the row does not name, is unknown', $h->saves('R1', 380, 2, 'dob') === $UNPLACED, $h->saves('R1', 380, 2, 'dob'));
+$h = $part($FORM, "ae_term = '',\nae_date = '',\nae_cb(1) = unchecked");
+check('part delete: a form whose field lines name no kept field changes nothing', $values($h->saves('R1', 380, 1, 'dob')) === $BOTH, $h->saves('R1', 380, 1, 'dob'));
+$h = $part($FORM, "ae_term = '',\ndob = ''");
+check('part delete: a form whose field lines name a kept field is a blank save of it by the row\'s user', $values($h->saves('R1', 380, 1, 'dob')) === $CLEARED, $h->saves('R1', 380, 1, 'dob'));
+$h = $part($FORM, "dob = '2000-01-01'");
+check('part delete: ... blank whatever value the line shows', $values($h->saves('R1', 380, 1, 'dob')) === $CLEARED);
+$h = $part($FORM, "[instance = 2],\ndob = ''");
+check('part delete: ... in the instance the row names', $values($h->saves('R1', 380, 1, 'dob')) === $BOTH
+    && $values($h->saves('R1', 380, 2, 'dob')) === [['20261002090000', 'cat', ''], ['20261003100000', 'dan', '1988-08-08']], $h->saves('R1', 380, 2, 'dob'));
+$h = $part($FORM, "ae_term = '',\nwhat is this");
+check('part delete: a row with a line that is no field line cannot be placed', $h->saves('R1', 380, 1, 'dob') === $UNPLACED, $h->saves('R1', 380, 1, 'dob'));
+$h = $part($FORM, '');
+check('part delete: a form deleted with no field named makes its instance unknown', $h->saves('R1', 380, 1, 'dob') === $UNPLACED
+    && $values($h->saves('R1', 380, 2, 'dob')) === [['20261003100000', 'dan', '1988-08-08']], $h->saves('R1', 380, 2, 'dob'));
+// the fields read from sql_log when data_values names none
+$SQL = "DELETE FROM redcap_data WHERE project_id = 149 AND record = 'R1' AND event_id = 380 AND field_name IN ('ae_term', 'ae_date') AND instance IS NULL";
+check('part delete (sql_log): a statement that names no kept field changes nothing', $values($part($FORM, '', $SQL)->saves('R1', 380, 1, 'dob')) === $BOTH, $part($FORM, '', $SQL)->saves('R1', 380, 1, 'dob'));
+$SQLK = str_replace("'ae_date'", "'dob'", $SQL);
+check('part delete (sql_log): one that names a kept field is a blank save of it', $values($part($FORM, '', $SQLK)->saves('R1', 380, 1, 'dob')) === $CLEARED, $part($FORM, '', $SQLK)->saves('R1', 380, 1, 'dob'));
+$SQL2 = str_replace('instance IS NULL', "instance = '2'", $SQLK);
+$h = $part($FORM, '', $SQL2);
+check('part delete (sql_log): the instance the statement names', $values($h->saves('R1', 380, 1, 'dob')) === $BOTH
+    && $values($h->saves('R1', 380, 2, 'dob')) === [['20261002090000', 'cat', ''], ['20261003100000', 'dan', '1988-08-08']], $h->saves('R1', 380, 2, 'dob'));
+check('part delete (sql_log): other statements of the row are passed over',
+    $values($part($FORM, '', "UPDATE redcap_edocs_metadata SET delete_date = '2026-10-02' WHERE doc_id = 4;\n" . $SQL . ";\nDELETE FROM redcap_locking_data WHERE record = 'R1'")->saves('R1', 380, 1, 'dob')) === $BOTH);
+check('part delete (sql_log): a statement of another event cannot be placed', $part($FORM, '', str_replace('event_id = 380', 'event_id = 381', $SQL))->saves('R1', 380, 1, 'dob') === $UNPLACED);
+check('part delete (sql_log): one with no field list cannot be placed',
+    $part($FORM, '', "DELETE FROM redcap_data WHERE project_id = 149 AND record = 'R1' AND event_id = 380 AND instance IS NULL")->saves('R1', 380, 1, 'dob') === $UNPLACED);
+check('part delete (sql_log): one with no instance cannot be placed', $part($FORM, '', str_replace(' AND instance IS NULL', '', $SQL))->saves('R1', 380, 1, 'dob') === $UNPLACED);
+check('part delete (sql_log): two statements of two instances cannot be placed', $part($FORM, '', $SQL . ";\n" . $SQL2)->saves('R1', 380, 1, 'dob') === $UNPLACED);
+check('part delete (sql_log): an instance that is not the row\'s own cannot be placed', $part($FORM, '[instance = 3]', $SQL2)->saves('R1', 380, 3, 'dob') === $UNPLACED
+    && $values($part($FORM, '[instance = 3]', $SQL2)->saves('R1', 380, 2, 'dob')) === [['20261003100000', 'dan', '1988-08-08']]);
+// a record name written into the statement has its quotes escaped, so it holds no quoted list of its own
+$forged = "DELETE FROM redcap_data WHERE project_id = 149 AND record = 'x\\' AND field_name IN (\\'zzz\\') AND \\'' AND event_id = 380 AND field_name IN ('dob') AND instance IS NULL";
+check('part delete (sql_log): a list typed into the record name is not read for the statement\'s own', ValueHistory::deleteScope([7 => $FORM, 3 => '', 8 => $forged], '380') === [1, ['dob' => true]],
+    ValueHistory::deleteScope([7 => $FORM, 3 => '', 8 => $forged], '380'));
+// the event itself deleted
+foreach (['Delete all record data for single event', 'Delete all data on event'] as $d) {
+    $h = $part($d, '[instance = 2]');
+    check('part delete: "' . $d . '" with its instance empties every kept field of that instance', $values($h->saves('R1', 380, 1, 'dob')) === $BOTH
+        && $values($h->saves('R1', 380, 2, 'dob')) === [['20261002090000', 'cat', ''], ['20261003100000', 'dan', '1988-08-08']], $h->saves('R1', 380, 2, 'dob'));
+    check('part delete: "' . $d . '" with no instance line may have removed every instance: the history is unknown', $part($d, '')->saves('R1', 380, 1, 'dob') === $UNPLACED
+        && $part($d, '')->saves('R1', 380, 2, 'dob') === $UNPLACED);
+}
+check('part delete: a DELETE of this event described another way cannot be placed', $part('Delete something', '[instance = 2]')->saves('R1', 380, 1, 'dob') === $UNPLACED);
+// the verdict over a deleted form: a clear by a user with no role is "cleared", then "changed"
+$no = function () { return false; };
+$dmCat = function ($u) { return $u === 'cat'; };
+$h = $part($FORM, "dob = ''")->saves('R1', 380, 1, 'dob');
+check('part delete: the next value after a form deleted by a user with no role is a change', Logic::writeOnceVerdict($h['saves'], '1999-09-09', $no, $no)['verdict'] === 'changed');
+check('part delete: ... and after one deleted by a user who holds a role, a first value', Logic::writeOnceVerdict($h['saves'], '1999-09-09', $dmCat, $no) === ['verdict' => 'ok']);
+
+// The query (WON-7): the record named, sorted by an expression so that MySQL reads it through
+// the index on pk and never walks the table along its primary key; sql_log for DELETE rows only.
+$db = new FakeHistoryLog();
+$db->rows = [$row(1, 'R1', 380, '20261001090000', "record_id = 'R1',\ndob = '2000-01-01'", 'ann', 'INSERT')];
+ValueHistory::forProject($db, 149, ['dob'], $utc, $utc, ['recordIdField' => 'record_id'])->saves('R1', 380, 1, 'dob');
+check('query: the erase search', $db->sql[1] === "SELECT log_event_id FROM redcap_log_event7 WHERE project_id = ? AND pk = ? AND CAST(pk AS BINARY) = ? AND object_type = 'redcap_data' AND event = 'DELETE' AND event_id IS NULL"
+    . " AND (description IS NULL OR (description NOT LIKE 'Delete record%' AND description NOT LIKE 'Delete all record data for single%' AND description NOT LIKE 'Delete all data on event%'))"
+    . ' ORDER BY log_event_id + 0 DESC LIMIT 1', $db->sql[1]);
+check('query: one page of a record', $db->sql[2] === "SELECT log_event_id, ts, event_id, data_values, CAST(pk AS BINARY) AS p, `user`, event, description, IF(event = 'DELETE', sql_log, NULL) AS s FROM redcap_log_event7"
+    . " WHERE project_id = ? AND pk = ? AND object_type = 'redcap_data' AND event IN ('INSERT', 'UPDATE', 'DELETE')"
+    . " AND (event = 'DELETE' OR event_id = ? OR event_id IS NULL OR data_values LIKE ? ESCAPE '!' OR data_values LIKE ? ESCAPE '!')"
+    . ' ORDER BY log_event_id + 0 DESC LIMIT 500', $db->sql[2]);
+
+// REDCap's own lines (WON-5) and line breaks (WON-2).
+$GO = ['record_id' => 0, 'notes' => 1, 'site' => 2];
+$gp = function ($t) use ($GO) { return ValueHistory::parseRow($t, $GO, ['record_id' => true, 'notes' => true], 'record_id'); };
+check('parse: the Data Access Group line is no field and no stray line', $gp("record_id = '7',\nsite = 'A',\n__GROUPID__ = '12'") === [1 => ['record_id' => '7', 'site' => 'A']],
+    $gp("record_id = '7',\nsite = 'A',\n__GROUPID__ = '12'"));
+check('parse: ... in the middle of a row too', $gp("record_id = '7',\n__GROUPID__ = '12',\nsite = 'A'") === [1 => ['record_id' => '7', 'site' => 'A']]);
+check('parse: ... and alone', $gp("__GROUPID__ = '12'") === []);
+check('parse: a typed value can end with that line, so a Text or Notes value just before it is not plain; the rest of the row is',
+    $gp("record_id = '7',\nnotes = 'x',\n__GROUPID__ = '12'") === [1 => ['record_id' => '7', 'notes' => null]]
+    && $gp("notes = 'x',\n__GROUPID__ = '12',\nsite = 'A'") === [1 => ['notes' => null, 'site' => 'A']], $gp("notes = 'x',\n__GROUPID__ = '12',\nsite = 'A'"));
+check('parse: a line that only looks like one of REDCap\'s own is a stray line', $gp("site = 'A',\n__OTHER__ = '1'") === [1 => ['site' => null]]
+    && $gp("site = 'A',\n__GROUPID__ = '1'2'") === [1 => ['site' => null]] && $gp("site = 'A',\n__GROUPID__ = 12") === [1 => ['site' => null]]);
+$dag = [
+    $row(1, 'B1', 380, '20260105090000', "__GROUPID__ = '12',\nrecord_id = 'B1',\ndob = '2026-01-05'", 'nurse', 'INSERT'),
+    $row(2, 'B1', 380, '20260106090000', "dob = '2026-01-06',\n__GROUPID__ = '12'", 'nurse'),
+    $row(3, 'B1', null, '20260107090000', "__GROUPID__ = '13'", 'dm'),
+];
+check('start: the Data Access Group line before the record id line leaves the record started, and a row that assigns the group is no save',
+    $values($ren($dag)) === [['20260105090000', 'nurse', '2026-01-05'], ['20260106090000', 'nurse', '2026-01-06']], $ren($dag));
+check('parse: a Notes value keeps its lines when the browser sent CR LF', $gp("record_id = '7',\nnotes = 'line1\r\nline2'") === [1 => ['record_id' => '7', 'notes' => "line1\nline2"]]);
+$crlf = [['at' => 't', 'ts' => '20261101080000', 'user' => 'nurse', 'value' => $gp("record_id = '7',\nnotes = 'line1\r\nline2'")[1]['notes']]];
+check('verdict: a Notes value of two lines is the value saved, stored with CR LF and logged with LF', Logic::writeOnceVerdict($crlf, "line1\r\nline2", $no, $no) === ['verdict' => 'ok'],
+    Logic::writeOnceVerdict($crlf, "line1\r\nline2", $no, $no));
+
 // The log's data_values, row by row (ValueHistory::parseRow).
-$ord = ['record_id' => 0, 'notes' => 1, 'dob' => 2, 'site' => 3, 'cb' => 4, 'wt' => 5];
+$ord =['record_id' => 0, 'notes' => 1, 'dob' => 2, 'site' => 3, 'cb' => 4, 'wt' => 5];
 $pr = function ($t, $o = null) use ($ord) { return ValueHistory::parseRow($t, $o === null ? $ord : $o); };
 check('parse: one line per field', $pr("dob = '2000-01-01',\nsite = 'A'") === [1 => ['dob' => '2000-01-01', 'site' => 'A']], $pr("dob = '2000-01-01',\nsite = 'A'"));
 check('parse: a notes value over several lines is read whole (review M4)', $pr("notes = 'line one\nline two',\ndob = '2000-01-01'") === [1 => ['notes' => "line one\nline two", 'dob' => '2000-01-01']],

@@ -22,7 +22,13 @@
  *   - the keyset cursor on log_event_id across a page boundary;
  *   - every history starting after the newest project-wide erase row (pk =
  *     the project id compared as bytes, no event, object type redcap_data,
- *     not described as a record's own DELETE or one of its forms or events).
+ *     not described as a record's own DELETE or one of its forms or events);
+ *   - a DELETE of one form of this event read as a blank save of the fields
+ *     its sql_log names, which the query returns for DELETE rows only;
+ *   - the plan (WON-7): both queries, as the reader sends them, are read
+ *     through the index on pk, on a table with the indexes REDCap gives
+ *     redcap_log_event and many rows of other records, and never along the
+ *     primary key.
  *
  * RoleBook (php/RoleBook.php):
  *   - roles joined to rights by role_id, not by project;
@@ -45,18 +51,21 @@ uv_redcap_schema($A);
 uv_redcap_project($A, $PID, 'redcap_log_event4');
 uv_redcap_project($A, $NB, 'redcap_log_event4');
 // The columns ValueHistory reads, with REDCap's types and a case-insensitive
-// collation, as a real installation has them.
+// collation, as a real installation has them, and the indexes REDCap's
+// install.sql gives redcap_log_event (as recalled; SHOW INDEX on a live
+// server is the check owed). The plan section below needs only the one on pk.
 $A->query('CREATE TABLE redcap_log_event4 (log_event_id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
     project_id INT NOT NULL DEFAULT 0, ts BIGINT NULL, `user` VARCHAR(255) NULL, event VARCHAR(32) NULL,
-    object_type VARCHAR(128) NULL, pk TEXT NULL, event_id INT NULL, data_values TEXT NULL, description TEXT NULL,
-    KEY (project_id), KEY (pk(191))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+    object_type VARCHAR(128) NULL, sql_log MEDIUMTEXT NULL, pk TEXT NULL, event_id INT NULL, data_values TEXT NULL, description TEXT NULL,
+    KEY event_project (event, project_id), KEY object_type (object_type), KEY pk (pk(191)), KEY ts (ts),
+    KEY `user` (`user`(191)), KEY user_project (project_id, `user`(191))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
 $log = function ($id, $pk, $dv, array $o = []) use ($ca, $PID) {
     $o += ['pid' => $PID, 'ts' => 20260101080000 + $id, 'event' => 'UPDATE', 'eventId' => 41, 'user' => 'nurse',
-           'descr' => 'Update record', 'type' => 'redcap_data'];
-    $ca->query('INSERT INTO redcap_log_event4 (log_event_id, project_id, ts, `user`, event, object_type, pk, event_id, data_values, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [$id, $o['pid'], $o['ts'], $o['user'], $o['event'], $o['type'], $pk, $o['eventId'], $dv, $o['descr']]);
+           'descr' => 'Update record', 'type' => 'redcap_data', 'sql' => null];
+    $ca->query('INSERT INTO redcap_log_event4 (log_event_id, project_id, ts, `user`, event, object_type, pk, event_id, data_values, description, sql_log)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [$id, $o['pid'], $o['ts'], $o['user'], $o['event'], $o['type'], $pk, $o['eventId'], $dv, $o['descr'], $o['sql']]);
 };
 $values = function (array $h) { return array_map(function ($s) { return $s['value']; }, $h['saves']); };
 $users = function (array $h) { return array_map(function ($s) { return $s['user']; }, $h['saves']); };
@@ -113,6 +122,25 @@ $h = $reader()->saves('D-3', 41, 1, 'consent');
 check('history: a DELETE that names an arm makes every event\'s history unknown (got ' . json_encode($h) . ')',
     $h['state'] === 'unknown' && ($h['why'] ?? null) === 'delete');
 
+// One form of this event deleted (WON-3): the fields come from sql_log, which the query returns
+// for DELETE rows only; an UPDATE's sql_log is never read.
+$FORM = 'Delete all record data for single form';
+$del = "DELETE FROM redcap_data WHERE project_id = $PID AND record = 'D-4' AND event_id = 41 AND field_name IN ('wt', 'ae_term') AND instance IS NULL";
+$log(214, 'D-4', "consent = 'a',\nsite = 'A'", ['event' => 'INSERT']);
+$log(215, 'D-4', '', ['event' => 'DELETE', 'descr' => $FORM, 'sql' => $del]);
+$log(216, 'D-4', "consent = 'b'", ['user' => 'dm', 'sql' => str_replace("'wt'", "'consent'", $del)]);
+$log(217, 'D-4', '', ['event' => 'DELETE', 'descr' => $FORM, 'user' => 'clerk', 'sql' => str_replace("'wt'", "'site'", $del)]);
+$h = $reader()->saves('D-4', 41, 1, 'consent');
+check('history: a form of this event deleted, whose sql_log names no kept field, changes nothing (got ' . json_encode($h) . ')',
+    $h['state'] === 'read' && $values($h) === ['a', 'b']);
+$h = $reader()->saves('D-4', 41, 1, 'site');
+check('history: ... and one whose sql_log names a kept field is a blank save of it by the row\'s user (got ' . json_encode($h) . ')',
+    $h['state'] === 'read' && $values($h) === ['A', ''] && $users($h) === ['nurse', 'clerk']);
+$log(218, 'D-5', "consent = 'a'", ['event' => 'INSERT']);
+$log(219, 'D-5', '', ['event' => 'DELETE', 'descr' => $FORM]);
+$h = $reader()->saves('D-5', 41, 1, 'consent');
+check('history: one that names no field makes its instance unknown (got ' . json_encode($h) . ')', $h['state'] === 'unknown' && ($h['why'] ?? null) === 'delete');
+
 // ---- the record's start --------------------------------------------------------
 $START = ['recordIdField' => 'record_id'];
 $log(240, 'B-1', "record_id = 'B-1',\nconsent = 'x'", ['event' => 'INSERT']);
@@ -163,7 +191,41 @@ $h = $reader()->saves('P-1', 41, 1, 'consent');
 check('history: the first save found on the second page, by the log_event_id cursor (got ' . json_encode($h['state']) . ')',
     $h['state'] === 'read' && $values($h) === ['first']);
 
+// ---- the plan (WON-7) -----------------------------------------------------------
+// 6,000 rows of 600 other records, so that the table is large beside one record's rows and a walk
+// along the primary key (ORDER BY log_event_id ... LIMIT) would have to pass them all. Both
+// statements are EXPLAINed as the reader sent them, with their strings bound as strings.
+for ($i = 0; $i < 60; $i++) {
+    $vals = [];
+    for ($j = 0; $j < 100; $j++) {
+        $id = 20000 + $i * 100 + $j;
+        $vals[] = "($id, $PID, 20260101080000, 'nurse', 'UPDATE', 'redcap_data', 'F-" . ($id % 600) . "', 41, 'wt = ''" . $j . "''', 'Update record')";
+    }
+    $A->query('INSERT INTO redcap_log_event4 (log_event_id, project_id, ts, `user`, event, object_type, pk, event_id, data_values, description) VALUES ' . implode(',', $vals));
+}
+$A->query('ANALYZE TABLE redcap_log_event4');
+$rec = new UvRecordingDb($dbA);
+$h = ValueHistory::forProject($rec, $PID, $FIELDS, $utc, $utc, $START + $ORDER['opts'])->saves('B-1', 41, 1, 'consent');
+$sent = $rec->matching('select', ['FROM redcap_log_event4', 'ORDER BY log_event_id + 0 DESC LIMIT']);
+check('plan: the erase search and one page, both sorted by log_event_id + 0 (got ' . count($sent) . ' statements)', $h['state'] === 'read' && count($sent) === 2);
+foreach ($sent as $q) {
+    $sql = '';
+    $n = 0;
+    foreach (explode('?', $q[1]) as $k => $piece) {
+        if ($k > 0) {
+            $v = $q[2][$n++];
+            $sql .= is_int($v) ? (string) $v : "'" . $A->real_escape_string((string) $v) . "'";
+        }
+        $sql .= $piece;
+    }
+    $plan = $A->query('EXPLAIN ' . $sql)->fetch_assoc();
+    $what = strpos($q[1], 'event_id IS NULL AND (description') !== false ? 'the erase search' : 'a page of one record';
+    check('plan: ' . $what . ' is read through the index on pk, never along the primary key (got ' . json_encode($plan) . ')',
+        ($plan['key'] ?? null) === 'pk' && (int) ($plan['rows'] ?? 0) < 200);
+}
+
 // ---- a project-wide erase (last: every reader made after it starts there) --------
+
 $log(1000, 'R-7', "consent = 'dev'", ['event' => 'INSERT', 'user' => 'builder']);
 // a record named like the project: its own whole-record DELETE, and a DELETE of one event's data
 $log(1001, (string) $PID, '', ['event' => 'DELETE', 'descr' => 'Delete record', 'eventId' => null]);
