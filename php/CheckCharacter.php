@@ -345,15 +345,27 @@ class CheckCharacter
         // quantifiers are caught too. Keep BYTE-IDENTICAL to QRID_riskyPattern (js).
         for (;;) {
             if (preg_match('/[+*][ \t\n\r\f]*[*+{]/', $s)) return true;                                        // a++  a*+  a*{2} ...
+            if (preg_match('/\x01\{0,[0-9]+\}[ \t\n\r\f]*[*+{]/', $s)) return true;                            // (a|aa)+  (a?){2,20}
             if (preg_match('/\([^()]*(?:[*+]|\{[0-9]+,[0-9]*\})[^()]*\)[ \t\n\r\f]*[*+{?]/', $s)) return true; // (…a+…)+  (…{1,20}…){1,20}
             if (preg_match('/\[[^\]]*\][ \t\n\r\f]*[*+][ \t\n\r\f]*[*+{]/', $s)) return true;                  // [0-9]+* style
-            // Collapse every innermost group: a body that can match more than one
-            // way (alternation, optional, variable-length content) becomes a
-            // variable-length token X*; a fixed body becomes the single token A.
-            // A repetition of a variable token is then caught by the rules above
-            // on the next pass — (a|aa)+ -> X*+ -> rule 1.
+            // Collapse every innermost group to the token G (RISKY_GROUP), an
+            // atom that may match any character, since what the group matched
+            // is no longer known to the stages below. The quantifier written
+            // after G says how its length varies: none for a fixed body, "*"
+            // for a body with an unbounded quantifier, and {0,k-1} for a body
+            // of k possible lengths (alternation, optionals, bounded
+            // quantifiers). A repetition of the last two is caught by the
+            // rules above on the next pass: (a|aa)+ -> G{0,1}+. The tokens
+            // used to be the letters A and X*, which the stages below read as
+            // those letters: (\d) between two \d* looked like a separator no
+            // digit can match, and \d*(\d)\d*(\d)\d*(\d)\d*(\d)\d*Z took 6.8 s
+            // on 200 digits in the browser (VAL-2).
             $t = preg_replace_callback('/\(([^()]*)\)/', function ($m) {
-                return (preg_match('/[|?*+]/', $m[1]) || preg_match('/\{[0-9]+,[0-9]*\}/', $m[1])) ? 'X*' : 'A';
+                if (preg_match('/[*+]|\{[0-9]+,\}/', $m[1])) return self::RISKY_GROUP . '*';
+                if (preg_match('/[|?]|\{[0-9]+,[0-9]+\}/', $m[1])) {
+                    return self::RISKY_GROUP . '{0,' . (self::groupChoices($m[1]) - 1) . '}';
+                }
+                return self::RISKY_GROUP;
             }, $s);
             if ($t === $s) break;
             $s = $t;
@@ -383,6 +395,59 @@ class CheckCharacter
 
     /** Members of the \d \w \s classes, for riskyEscapes. */
     const RISKY_ESCAPE_CLASS = ['d' => '0-9', 'w' => '0-9A-Z_a-z', 's' => " \t\n\r\f"];
+    /** The one character \t \n \r \f \v name, for riskyEscapes. */
+    const RISKY_ESCAPE_CHAR = ['t' => "\t", 'n' => "\n", 'r' => "\r", 'f' => "\f", 'v' => "\x0B"];
+    /** A collapsed group, in the stages of riskyPattern. */
+    const RISKY_GROUP = "\x01";
+
+    /**
+     * What the escape whose backslash is at $src[$i] matches:
+     * ['len' => its length, 'kind' => ..., 'text' => ...]. kind is "class"
+     * (text = class members), "char" (text = the one character), "any" (any
+     * character) or "none" (nothing: dropped). Twin of QRID_riskyEscapeAt (js).
+     */
+    private static function riskyEscapeAt($src, $i)
+    {
+        $e = $src[$i + 1];
+        if (isset(self::RISKY_ESCAPE_CLASS[$e])) return ['len' => 2, 'kind' => 'class', 'text' => self::RISKY_ESCAPE_CLASS[$e]];
+        if ($e === 'D' || $e === 'W' || $e === 'S') return ['len' => 2, 'kind' => 'any', 'text' => ''];
+        if (isset(self::RISKY_ESCAPE_CHAR[$e])) return ['len' => 2, 'kind' => 'char', 'text' => self::RISKY_ESCAPE_CHAR[$e]];
+        if ($e === 'x' || $e === 'u') {
+            $want = ($e === 'x') ? 2 : 4;
+            $hex = (string) substr($src, $i + 2, $want);
+            if (strlen($hex) !== $want || !ctype_xdigit($hex)) return ['len' => 2, 'kind' => 'any', 'text' => ''];
+            $code = hexdec($hex);
+            if ($code < 0x21 || $code > 0x7E) return ['len' => 2 + $want, 'kind' => 'any', 'text' => ''];
+            return ['len' => 2 + $want, 'kind' => 'char', 'text' => chr($code)];
+        }
+        if ($e === 'c') return ['len' => ($i + 2 < strlen($src)) ? 3 : 2, 'kind' => 'any', 'text' => ''];
+        if ($e >= '0' && $e <= '9') {
+            $len = 2;
+            $n = strlen($src);
+            while ($i + $len < $n && $src[$i + $len] >= '0' && $src[$i + $len] <= '9') $len++;
+            return ['len' => $len, 'kind' => 'any', 'text' => ''];
+        }
+        if (($e >= 'A' && $e <= 'Z') || ($e >= 'a' && $e <= 'z')) return ['len' => 2, 'kind' => 'none', 'text' => ''];
+        return ['len' => 2, 'kind' => 'char', 'text' => $e];
+    }
+
+    /**
+     * How many lengths a collapsed group's body can take, at most: the
+     * product of its atoms' choices times its number of branches, capped just
+     * over the budget. An over-count only refuses more.
+     * Twin of QRID_groupChoices (js).
+     */
+    private static function groupChoices($body)
+    {
+        $k = 1;
+        foreach (self::tokenizePattern($body) as $t) {
+            if ($k > self::MAX_BACKTRACK_PRODUCT) break;
+            $k *= $t['choices'];
+        }
+        if ($k <= self::MAX_BACKTRACK_PRODUCT) $k *= substr_count(preg_replace('/\[[^\]]*\]/', '', $body), '|') + 1;
+        if ($k > self::MAX_BACKTRACK_PRODUCT) $k = self::MAX_BACKTRACK_PRODUCT + 1;
+        return $k < 2 ? 2 : $k;
+    }
 
     /**
      * Rewrite each escape as an atom that matches at least what it matches, so
@@ -391,10 +456,17 @@ class CheckCharacter
      * and let a quantifier after \d or \. attach to the atom before it
      * ([0-9]+\.[0-9]+ read as [0-9]+[0-9]+ and was refused). Outside a class:
      * \d \w \s become their ASCII classes, \D \W \S and an escaped metacharacter
-     * become "." (any character), any other escaped symbol is that symbol, and a
-     * letter or digit escape (\b \n \x \u \1 \k ...) is dropped. Inside a class
-     * the members are added at the end of the body ("-" last, so it forms no
-     * range), and \D \W \S or an escaped "]" make the class match everything.
+     * become "." (any character), any other escaped symbol is that symbol, and
+     * \b \B and the other letter escapes are dropped. An escape that names one
+     * character is read as that character (VAL-2): \x42 and B are "B"
+     * (they were dropped and their digits read as the literals 4 and 2, so
+     * \x42*B*\x42*B*\x42*9 passed and took 7.3 s on 200 letters in the
+     * browser), \t \n \r \f \v are a class of that one character, and \cX, \0,
+     * an octal character or a reference \1 to \9 is any character. Inside a
+     * class the members are added at the end of the body ("-" last, so it
+     * forms no range), a decoded letter or digit stays in place (so
+     * [\x41-\x5A] is still a range), and \D \W \S, an escaped "]" or an "any
+     * character" escape make the class match everything.
      * Twin of QRID_riskyEscapes (js).
      */
     private static function riskyEscapes($src)
@@ -404,23 +476,34 @@ class CheckCharacter
         while ($i < $n) {
             $c = $src[$i];
             if ($c === '\\' && $i + 1 < $n) {
-                $e = $src[$i + 1];
-                $cls = self::RISKY_ESCAPE_CLASS[$e] ?? null;
-                $word = strpos('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', $e) !== false;
-                $i += 2;
+                $E = self::riskyEscapeAt($src, $i);
+                $ch = $E['text'];
+                $i += $E['len'];
                 if ($inCls) {
-                    if ($cls !== null) $extra .= $cls;
-                    elseif ($e === 'D' || $e === 'W' || $e === 'S' || $e === ']') $wide = true;
-                    elseif ($e === '-') $dash = true;
-                    elseif (!$word) $extra .= $e;
+                    if ($E['kind'] === 'class') $extra .= $ch;
+                    elseif ($E['kind'] === 'any') $wide = true;
+                    elseif ($E['kind'] === 'char') {
+                        if (ctype_alnum($ch)) $body .= $ch;
+                        elseif ($ch === ']') $wide = true;
+                        elseif ($ch === '-') $dash = true;
+                        else $extra .= $ch;
+                    }
                 } else {
-                    if ($cls !== null) $out .= '[' . $cls . ']';
-                    elseif ($e === 'D' || $e === 'W' || $e === 'S' || strpos('^$.*+?()[]{}|\\', $e) !== false) $out .= '.';
-                    elseif (!$word) $out .= $e;
+                    if ($E['kind'] === 'class') $out .= '[' . $ch . ']';
+                    elseif ($E['kind'] === 'any') $out .= '.';
+                    elseif ($E['kind'] === 'char') {
+                        if (strpos('^$.*+?()[]{}|\\', $ch) !== false) $out .= '.';
+                        elseif ($ch < ' ') $out .= '[' . $ch . ']';
+                        else $out .= $ch;
+                    }
                 }
                 continue;
             }
             $i++;
+            if ($c === self::RISKY_GROUP) {        // the group token itself, written raw: any character
+                if ($inCls) $wide = true; else $out .= '.';
+                continue;
+            }
             if ($inCls) {
                 if ($c === ']') { $out .= '[' . ($wide ? '^' : '') . $body . $extra . ($dash ? '-' : '') . ']'; $inCls = false; }
                 else $body .= $c;
@@ -493,15 +576,26 @@ class CheckCharacter
         // fungible with the surrounding class, so it cannot pin a split — a lone
         // [0-9] between {1,20} digit runs must not reset the product); it bridges on
         // with choices 1. Track the class FORWARD so a bridging chain is whole.
+        // An UNBOUNDED quantifier is a factor of the run too (VAL-2). It used
+        // to end the run, so [A-Z]*[A-Z]{1,30}[A-Z]{1,30}[A-Z]{1,30}[A-Z]{1,30}9
+        // was a product of 810,000, under the budget, with the "*" in front of
+        // it not counted: 19 s on 200 letters in the browser. Its factor is
+        // MAX_SINGLE_LEN, the most lengths it can take in a value the browser
+        // judges. Two of them with nothing bounded between (.*x.*, 262,144)
+        // still pass.
         for ($a = 0; $a < $m; $a++) {
-            if ($toks[$a]['choices'] < 2) continue;                                      // a run starts at a bounded repeat
-            $prod = $toks[$a]['choices'];
+            $fa = $toks[$a]['unbounded'] ? self::MAX_SINGLE_LEN : $toks[$a]['choices'];
+            if ($fa < 2) continue;                                                       // a run starts at a repeat
+            $prod = $fa;
             $prevCls = $toks[$a]['cls'];
             for ($b = $a + 1; $b < $m; $b++) {
-                if ($toks[$b]['unbounded']) break;                                       // unbounded -> stage two-a; ends the bounded run
-                if (!self::classesOverlap($prevCls, $toks[$b]['cls'])) break;            // a DISJOINT atom pins a split, ending the run
-                if ($toks[$b]['choices'] >= 2) {
-                    $prod *= $toks[$b]['choices'];
+                if (!self::classesOverlap($prevCls, $toks[$b]['cls'])) {
+                    if ($toks[$b]['mandatory']) break;                                   // a DISJOINT must-match atom pins a split, ending the run
+                    continue;                                                            // one that may match nothing pins nothing
+                }
+                $fb = $toks[$b]['unbounded'] ? self::MAX_SINGLE_LEN : $toks[$b]['choices'];
+                if ($fb >= 2) {
+                    $prod *= $fb;
                     if ($prod > self::MAX_BACKTRACK_PRODUCT) return true;
                 }
                 $prevCls = $toks[$b]['cls'];                                             // overlapping fixed atom bridges on (does not pin)
@@ -532,8 +626,9 @@ class CheckCharacter
                 $cls = self::expandClass(substr($s, $i + 1, $close - $i - 1));
                 $i = $close + 1;
             }
+            elseif ($c === self::RISKY_GROUP) { $cls = null; $i++; }          // a collapsed group: contents unknown
             elseif (strpos('^$*+?{}|()', $c) !== false) { $i++; continue; }   // anchors / stray metachars: not atoms
-            else { $cls = $c; $i++; }                                          // a literal char (incl. A / X collapse tokens)
+            else { $cls = $c; $i++; }                                          // a literal char
             // read the quantifier that follows this atom. `choices` = the number
             // of distinct match-lengths the atom can take (its backtracking slack):
             // 1 for a bare atom or a fixed {n}, 2 for ?, (hi-lo+1) for {lo,hi};

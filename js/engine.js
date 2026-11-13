@@ -1108,15 +1108,24 @@ function QRID_riskyPattern(src){
      CheckCharacter::riskyPattern (php); tests/risky_*.{cjs,php} assert parity. */
   for(;;){
     if(/[+*][ \t\n\r\f]*[*+{]/.test(s)) return true;                                        /* a++  a*+  a*{2} ...      */
+    if(/\x01\{0,[0-9]+\}[ \t\n\r\f]*[*+{]/.test(s)) return true;                            /* (a|aa)+  (a?){2,20}      */
     if(/\([^()]*(?:[*+]|\{[0-9]+,[0-9]*\})[^()]*\)[ \t\n\r\f]*[*+{?]/.test(s)) return true; /* (…a+…)+  (…{1,20}…){1,20} */
     if(/\[[^\]]*\][ \t\n\r\f]*[*+][ \t\n\r\f]*[*+{]/.test(s)) return true;                  /* [0-9]+* style            */
-    /* Collapse every innermost group: a group whose body can match more than
-       one way (alternation, optional, or variable-length content) becomes a
-       variable-length token X*; a fixed body becomes the single token A. A
-       repetition of a variable token is then caught by the rules above on the
-       next pass — (a|aa)+ -> X*+ -> rule 1. */
+    /* Collapse every innermost group to the token G (QRID_RISKY_GROUP), an
+       atom that may match any character, since what the group matched is no
+       longer known to the stages below. The quantifier written after G says
+       how its length varies: none for a fixed body, "*" for a body with an
+       unbounded quantifier, and {0,k-1} for a body of k possible lengths
+       (alternation, optionals, bounded quantifiers). A repetition of the last
+       two is caught by the rules above on the next pass: (a|aa)+ -> G{0,1}+.
+       The tokens used to be the letters A and X*, which the stages below read
+       as those letters: (\d) between two \d* looked like a separator no digit
+       can match, and \d*(\d)\d*(\d)\d*(\d)\d*(\d)\d*Z took 6.8 s on 200 digits
+       (VAL-2). */
     var t = s.replace(/\(([^()]*)\)/g, function(_m, body){
-      return (/[|?*+]/.test(body) || /\{[0-9]+,[0-9]*\}/.test(body)) ? "X*" : "A";
+      if(/[*+]|\{[0-9]+,\}/.test(body)) return QRID_RISKY_GROUP + "*";
+      if(/[|?]|\{[0-9]+,[0-9]+\}/.test(body)) return QRID_RISKY_GROUP + "{0," + (QRID_groupChoices(body) - 1) + "}";
+      return QRID_RISKY_GROUP;
     });
     if(t === s) break;
     s = t;
@@ -1131,32 +1140,75 @@ function QRID_riskyPattern(src){
    after \d or \. attach to the atom before it ([0-9]+\.[0-9]+ read as
    [0-9]+[0-9]+ and was refused). Outside a class: \d \w \s become their ASCII
    classes, \D \W \S and an escaped metacharacter become "." (any character),
-   any other escaped symbol is that symbol, and a letter or digit escape (\b \n
-   \x \u \1 \k ...) is dropped. Inside a class the members are added at the end
-   of the body ("-" last, so it forms no range), and \D \W \S or an escaped "]"
+   any other escaped symbol is that symbol, and \b \B and the other letter
+   escapes are dropped. An escape that names one character is read as that
+   character (VAL-2): \x42 and B are "B" (they were dropped and their
+   digits read as the literals 4 and 2, so \x42*B*\x42*B*\x42*9 passed and took
+   7.3 s on 200 letters), \t \n \r \f \v are a class of that one character,
+   and \cX, \0, an octal character or a reference \1 to \9 is any character.
+   Inside a class the members are added at the end of the body ("-" last, so it
+   forms no range), a decoded letter or digit stays in place (so [\x41-\x5A] is
+   still a range), and \D \W \S, an escaped "]" or an "any character" escape
    make the class match everything. Twin of CheckCharacter::riskyEscapes (php). */
 var QRID_RISKY_ESCAPE_CLASS = { d: "0-9", w: "0-9A-Z_a-z", s: " \t\n\r\f" };
+var QRID_RISKY_ESCAPE_CHAR = { t: "\t", n: "\n", r: "\r", f: "\f", v: "\x0B" };
+var QRID_RISKY_GROUP = "\x01";              /* a collapsed group, in the stages of QRID_riskyPattern */
+/* What the escape whose backslash is at src[i] matches: {len, kind, text}.
+   kind "class" (text = class members), "char" (text = the one character),
+   "any" (any character) or "none" (nothing: dropped).
+   Twin of CheckCharacter::riskyEscapeAt (php). */
+function QRID_riskyEscapeAt(src, i){
+  var e = src.charAt(i + 1), len = 2;
+  if(QRID_RISKY_ESCAPE_CLASS.hasOwnProperty(e)) return { len: 2, kind: "class", text: QRID_RISKY_ESCAPE_CLASS[e] };
+  if(e === "D" || e === "W" || e === "S") return { len: 2, kind: "any", text: "" };
+  if(QRID_RISKY_ESCAPE_CHAR.hasOwnProperty(e)) return { len: 2, kind: "char", text: QRID_RISKY_ESCAPE_CHAR[e] };
+  if(e === "x" || e === "u"){
+    var want = (e === "x") ? 2 : 4, hex = src.substr(i + 2, want);
+    if(hex.length !== want || !/^[0-9A-Fa-f]+$/.test(hex)) return { len: 2, kind: "any", text: "" };
+    var code = parseInt(hex, 16);
+    if(code < 0x21 || code > 0x7E) return { len: 2 + want, kind: "any", text: "" };
+    return { len: 2 + want, kind: "char", text: String.fromCharCode(code) };
+  }
+  if(e === "c") return { len: (i + 2 < src.length) ? 3 : 2, kind: "any", text: "" };
+  if(e >= "0" && e <= "9"){
+    while(i + len < src.length && src.charAt(i + len) >= "0" && src.charAt(i + len) <= "9") len++;
+    return { len: len, kind: "any", text: "" };
+  }
+  if((e >= "A" && e <= "Z") || (e >= "a" && e <= "z")) return { len: 2, kind: "none", text: "" };
+  return { len: 2, kind: "char", text: e };
+}
 function QRID_riskyEscapes(src){
   var out = "", n = src.length, i = 0, inCls = false, body = "", extra = "", dash = false, wide = false;
   while(i < n){
     var c = src.charAt(i);
     if(c === "\\" && i + 1 < n){
-      var e = src.charAt(i + 1), cls = QRID_RISKY_ESCAPE_CLASS.hasOwnProperty(e) ? QRID_RISKY_ESCAPE_CLASS[e] : null;
-      var word = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".indexOf(e) !== -1;
-      i += 2;
+      var E = QRID_riskyEscapeAt(src, i), ch = E.text;
+      i += E.len;
       if(inCls){
-        if(cls !== null) extra += cls;
-        else if(e === "D" || e === "W" || e === "S" || e === "]") wide = true;
-        else if(e === "-") dash = true;
-        else if(!word) extra += e;
+        if(E.kind === "class") extra += ch;
+        else if(E.kind === "any") wide = true;
+        else if(E.kind === "char"){
+          if(/^[0-9A-Za-z]$/.test(ch)) body += ch;
+          else if(ch === "]") wide = true;
+          else if(ch === "-") dash = true;
+          else extra += ch;
+        }
       } else {
-        if(cls !== null) out += "[" + cls + "]";
-        else if(e === "D" || e === "W" || e === "S" || "^$.*+?()[]{}|\\".indexOf(e) !== -1) out += ".";
-        else if(!word) out += e;
+        if(E.kind === "class") out += "[" + ch + "]";
+        else if(E.kind === "any") out += ".";
+        else if(E.kind === "char"){
+          if("^$.*+?()[]{}|\\".indexOf(ch) !== -1) out += ".";
+          else if(ch < " ") out += "[" + ch + "]";
+          else out += ch;
+        }
       }
       continue;
     }
     i++;
+    if(c === QRID_RISKY_GROUP){               /* the group token itself, written raw: any character */
+      if(inCls) wide = true; else out += ".";
+      continue;
+    }
     if(inCls){
       if(c === "]"){ out += "[" + (wide ? "^" : "") + body + extra + (dash ? "-" : "") + "]"; inCls = false; }
       else body += c;
@@ -1217,17 +1269,37 @@ function QRID_polyOverlap(s){
      surrounding class, so it cannot pin a split — e.g. '…{1,20}[0-9]{1,20}…' with a
      lone [0-9] between must NOT reset the product); it bridges on with choices 1.
      Track the class FORWARD so a bridging chain (A, [AB], B) is measured whole. */
+  /* An UNBOUNDED quantifier is a factor of the run too (VAL-2). It used to end
+     the run, so [A-Z]*[A-Z]{1,30}[A-Z]{1,30}[A-Z]{1,30}[A-Z]{1,30}9 was a product
+     of 810,000, under the budget, with the "*" in front of it not counted:
+     19 s on 200 letters. Its factor is QRID_MAX_SINGLE_LEN, the most lengths it
+     can take in a value this engine judges. Two of them with nothing bounded
+     between (.*x.*, 262,144) still pass. */
   for(var a=0;a<toks.length;a++){
-    if(toks[a].choices < 2) continue;                                  /* a run starts at a bounded repeat */
-    var prod = toks[a].choices, prevCls = toks[a].cls;
+    var fa = toks[a].unbounded ? QRID_MAX_SINGLE_LEN : toks[a].choices;
+    if(fa < 2) continue;                                               /* a run starts at a repeat */
+    var prod = fa, prevCls = toks[a].cls;
     for(var b=a+1;b<toks.length;b++){
-      if(toks[b].unbounded) break;                                     /* unbounded -> stage two-a; ends the bounded run */
-      if(!QRID_classesOverlap(prevCls, toks[b].cls)) break;            /* a DISJOINT atom pins a split, ending the run */
-      if(toks[b].choices >= 2){ prod *= toks[b].choices; if(prod > QRID_MAX_BACKTRACK_PRODUCT) return true; }
+      if(!QRID_classesOverlap(prevCls, toks[b].cls)){
+        if(toks[b].mandatory) break;                                   /* a DISJOINT must-match atom pins a split, ending the run */
+        continue;                                                      /* one that may match nothing pins nothing */
+      }
+      var fb = toks[b].unbounded ? QRID_MAX_SINGLE_LEN : toks[b].choices;
+      if(fb >= 2){ prod *= fb; if(prod > QRID_MAX_BACKTRACK_PRODUCT) return true; }
       prevCls = toks[b].cls;                                           /* overlapping fixed atom bridges on (does not pin) */
     }
   }
   return false;
+}
+/* How many lengths a collapsed group's body can take, at most: the product
+   of its atoms' choices times its number of branches, capped just over the
+   budget. An over-count only refuses more. Twin of CheckCharacter::groupChoices (php). */
+function QRID_groupChoices(body){
+  var toks = QRID_tokenizePattern(body), k = 1;
+  for(var i = 0; i < toks.length && k <= QRID_MAX_BACKTRACK_PRODUCT; i++) k *= toks[i].choices;
+  if(k <= QRID_MAX_BACKTRACK_PRODUCT) k *= body.replace(/\[[^\]]*\]/g, "").split("|").length;
+  if(k > QRID_MAX_BACKTRACK_PRODUCT) k = QRID_MAX_BACKTRACK_PRODUCT + 1;
+  return k < 2 ? 2 : k;
 }
 var QRID_MAX_BACKTRACK_PRODUCT = 1000000;   /* bounded-chain budget; twin of CheckCharacter::MAX_BACKTRACK_PRODUCT (php) */
 /* Split a normalized pattern into atoms with their character set + quantifier
@@ -1245,8 +1317,9 @@ function QRID_tokenizePattern(s){
       cls = QRID_expandClass(s.slice(i + 1, close));
       i = close + 1;
     }
+    else if(c === QRID_RISKY_GROUP){ cls = null; i++; }         /* a collapsed group: contents unknown */
     else if("^$*+?{}|()".indexOf(c) !== -1){ i++; continue; }   /* anchors / stray metachars: not atoms */
-    else { cls = c; i++; }                                       /* a literal char (incl. A / X collapse tokens) */
+    else { cls = c; i++; }                                       /* a literal char */
     /* choices = the number of distinct match-lengths this atom can take (its
        backtracking slack): 1 for a bare atom or a fixed {n}, 2 for ?, (hi-lo+1)
        for {lo,hi}; an unbounded quantifier is handled by stage two-a. */

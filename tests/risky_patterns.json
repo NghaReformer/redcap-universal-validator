@@ -47,7 +47,18 @@
     "[A-Z\\-]+-[A-Z\\-]+-[A-Z\\-]+X",
     "[A-Z\\]]+\\][A-Z\\]]+\\][A-Z\\]]+X",
     "\\.*\\.*",
-    "\\d+\\d+"
+    "\\d+\\d+",
+    "\\d*(\\d)\\d*(\\d)\\d*(\\d)\\d*(\\d)\\d*Z",
+    "[0-9]*(?:[0-9])[0-9]*(?:[0-9])[0-9]*(?:[0-9])[0-9]*X",
+    "[0-9]*([0-9]*)9",
+    "\\x42*B*\\x42*B*\\x42*9",
+    "B*\\u0042*9",
+    "[B-Z]*[\\x42-\\x5A]*[B-Z]*[\\x42-\\x5A]*[B-Z]*9",
+    "[A-Z]*[A-Z]{1,30}[A-Z]{1,30}[A-Z]{1,30}[A-Z]{1,30}9",
+    "[A-Z]+[A-Z]{0,99}[A-Z]{0,99}[A-Z]{0,99}[A-Z]+9",
+    "[0-9]{1,40}A?[0-9]{1,40}A?[0-9]{1,40}A?[0-9]{1,40}x",
+    "(FC|SK)+[0-9]{4}",
+    "(?=(a+))+"
   ],
   "safe": [
     "FC[1-9]-[0-9]{4}",
@@ -79,7 +90,15 @@
     "[A-Z]{2}\\-[0-9]+\\/[0-9]+",
     "[\\dA-F]+-[\\dA-F]+-[\\dA-F]+",
     "(?<site>[A-Z]{2})(?<num>[0-9]{4})",
-    "(?<d>[0-9]){4}"
+    "(?<d>[0-9]){4}",
+    "(FC|SK)[0-9]+",
+    "(?:FC|SK)-?[0-9]+[A-Z]",
+    "\\d*(\\d)\\d*Z",
+    "\\x42[0-9]+",
+    "[\\x41-\\x5A]+[0-9]+",
+    "[A-Z]*[A-Z]{1,30}9",
+    "[A-Z]+\\t[0-9]+",
+    "[0-9]{1,40}A[0-9]{1,40}A[0-9]{1,40}A[0-9]{1,40}x"
   ],
   "dialect_note": "Patterns the two regex dialects read differently. `dialect_reject` must be refused by BOTH QRID_gatePattern (js) and CheckCharacter::gatePattern (php) - for any stated reason, but by both, because a pattern one runtime admits and the other refuses splits enforcement: either the browser stops checking the field while the post-save audit keeps filing findings, or the two engines both compile it and then disagree about every value. `dialect_accept` must be admitted by both. Round 3, M-1 and M-2. \"{,n}\" is literal to JavaScript and to PCRE2 before 10.43 but {0,n} from 10.43 (PHP 8.4), so it is refused too. VAL-5 adds verbs, \\k'name', \\k{name}, \\o{...}, \\8, \\9 and class ranges at a shorthand escape; VAL-11 admits named groups.",
   "dialect_reject": [
