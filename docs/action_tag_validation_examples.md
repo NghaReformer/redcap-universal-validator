@@ -1933,7 +1933,8 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   the form that holds a `match` field, by someone with read-only rights to the
   form the rule fills, leaves the copied fields, and the module log gets a
   rule problem when the values would have changed. On a locked form, a locked
-  record, or a form the user may only read, the page fills nothing; when the
+  record (locked in the arm shown), a completed survey response not opened
+  for editing, or a form the user may only read, the page fills nothing; when the
   entry found now holds other values than the ones shown, an amber line says
   so.
 - **Where the values come from.** The entry where `in` and every `match`

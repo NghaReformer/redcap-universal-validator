@@ -84,7 +84,20 @@ namespace ExternalModules {
                 return in_array(implode('|', $params), \REDCap::$locked, true) ? [[1]] : [];
             }
             if (strpos($sql, 'FROM redcap_locking_records') !== false) {
-                return in_array((string) $params[1], \REDCap::$lockedRecords, true) ? [[1]] : [];
+                // A lock is kept per arm (EXI-11): "record@event" is a record
+                // locked in the arm of that event only, which a statement
+                // that names no event would match for every arm.
+                $byArm = strpos($sql, 'm.event_id = ?') !== false;
+                foreach (\REDCap::$lockedRecords as $l) {
+                    $at = explode('@', (string) $l) + [1 => null];
+                    if ($at[0] !== (string) $params[1]) continue;
+                    if ($at[1] === null || !$byArm || (int) $at[1] === (int) $params[2]) return [[1]];
+                }
+                return [];
+            }
+            // Completed survey responses: "pid|form|event|record|instance".
+            if (strpos($sql, 'FROM redcap_surveys s') !== false && strpos($sql, 'completion_time IS NOT NULL') !== false) {
+                return in_array(implode('|', $params), \REDCap::$completed, true) ? [[1]] : [];
             }
             if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) return [[$this->lastInsertId]];
             if (strpos($sql, 'SELECT ROW_COUNT()') !== false) return [[1]];
@@ -129,6 +142,7 @@ namespace {
         public static $groupIds = ['north' => 7, 'south' => 8];
         public static $locked = [];          // "pid|record|event|form|instance" of locked forms
         public static $lockedRecords = [];
+        public static $completed = [];       // completed survey responses
         public static function reset() { self::$calls = []; self::$saves = []; self::$rowsOut = 0; $GLOBALS['__TABLE_READS'] = []; $GLOBALS['__AMONG_READS'] = []; }
         private static function dagOf(array $node) {
             foreach ($node as $k => $v) {
@@ -272,6 +286,8 @@ namespace {
         \REDCap::$confineTo = null;
         \REDCap::$locked = [];
         \REDCap::$lockedRecords = [];
+        \REDCap::$completed = [];
+        unset($_GET['editresp']);
         \REDCap::reset();
         if ($GLOBALS['INDEX']) uv_use_fake_index($m);
         return $m;
@@ -539,6 +555,25 @@ namespace {
     \REDCap::$locked = [];
     \REDCap::$lockedRecords = ['9'];
     check('EXS-2 a locked record: formReadOnly', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    // EXI-11: a whole-record lock is kept per arm, and a completed survey response is read only too.
+    \REDCap::$lockedRecords = ['9@999'];
+    check('EXI-11 a record of that name locked in another arm leaves this one open', !array_key_exists('formReadOnly', pageConfig($m, '9', 'result')));
+    \REDCap::$lockedRecords = ['9@351'];
+    check('EXI-11 ...and one locked in this arm is read only', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    \REDCap::$lockedRecords = [];
+    \REDCap::$completed = ['149|result|351|9|1'];
+    check('EXI-11 a completed survey response opened in data entry: formReadOnly', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    check('EXI-11 ...that of another record is not', !array_key_exists('formReadOnly', pageConfig($m, '1', 'result')));
+    $_GET['editresp'] = '1';
+    check('EXI-11 ...nor editable for a person without the "Edit survey responses" right, whatever the address says',
+        (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    $m = mod('editor', $DA, $DATA_A, ['editor' => ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '3'], 'group_id' => null, 'expiration' => '']]);
+    \REDCap::$completed = ['149|result|351|9|1'];
+    check('EXI-11 ...a person with that right sees it read only at first', (pageConfig($m, '9', 'result')['formReadOnly'] ?? null) === true);
+    $_GET['editresp'] = '1';
+    check('EXI-11 ...and editable once they open it for editing', !array_key_exists('formReadOnly', pageConfig($m, '9', 'result')));
+    unset($_GET['editresp']);
+    \REDCap::$completed = [];
     $m = mod('ro', $DB, $DATA_B, ['ro' => ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '2'], 'group_id' => null, 'expiration' => '']]);
     $DBX = $DB; unset($DBX['r_ret']);
     $m = mod('ro', $DBX, $DATA_B, ['ro' => ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '2'], 'group_id' => null, 'expiration' => '']]);

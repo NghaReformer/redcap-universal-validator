@@ -5863,8 +5863,9 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * Whether this person sees $instrument of $record read only (EXS-2): their
-     * rights to the form are "read only", or the form (this event and
-     * instance) or the whole record is locked. REDCap then disables every
+     * rights to the form are "read only", the form (this event and
+     * instance) or the whole record (in this event's arm) is locked, or the
+     * form is a completed survey response not opened for editing. REDCap then disables every
      * field, and a page that filled the returned fields would show values the
      * record does not hold. A lock that cannot be read counts as none: the
      * page fills as it did before.
@@ -5883,12 +5884,36 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             Faults::swallow($e, 'UniversalValidator::formReadOnly');
         }
+        // A whole-record lock is kept per arm (EXI-11): a record of the same
+        // name locked in another arm leaves this one open, so the lock is
+        // read for the arm of the event shown.
         try {
-            $r = $db->select('SELECT 1 FROM redcap_locking_records WHERE project_id = ? AND record = ? LIMIT 1',
-                [(int) $pid, (string) $record]);
+            $r = $db->select('SELECT 1 FROM redcap_locking_records l JOIN redcap_events_metadata m ON m.arm_id = l.arm_id'
+                . ' WHERE l.project_id = ? AND l.record = ? AND m.event_id = ? LIMIT 1',
+                [(int) $pid, (string) $record, (int) $event_id]);
             if (is_array($r) && $r) return true;
         } catch (\Throwable $e) {
             Faults::swallow($e, 'UniversalValidator::formReadOnly');
+        }
+        // A completed survey response (EXI-11): REDCap shows it read only on
+        // the data-entry form until a person with the "Edit survey
+        // responses" right opens it for editing, which reloads the page with
+        // editresp in its address. Wrongly taken as read only, the page
+        // fills nothing and the save still writes the values.
+        $right = (is_array($rights) && isset($rights[$instrument])) ? (string) $rights[$instrument] : null;
+        $editing = !empty($_GET['editresp']) && ($right === null || $right === '3');
+        if (!$editing) {
+            try {
+                $r = $db->select('SELECT 1 FROM redcap_surveys s'
+                    . ' JOIN redcap_surveys_participants p ON p.survey_id = s.survey_id'
+                    . ' JOIN redcap_surveys_response r ON r.participant_id = p.participant_id'
+                    . ' WHERE s.project_id = ? AND s.form_name = ? AND p.event_id = ? AND r.record = ? AND r.instance = ?'
+                    . ' AND r.completion_time IS NOT NULL LIMIT 1',
+                    [(int) $pid, $instrument, (int) $event_id, (string) $record, (int) ($instance ?: 1)]);
+                if (is_array($r) && $r) return true;
+            } catch (\Throwable $e) {
+                Faults::swallow($e, 'UniversalValidator::formReadOnly');
+            }
         }
         return false;
     }
