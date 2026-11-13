@@ -607,6 +607,23 @@ One condition may mix `and`, `or` and `not` with parentheses:
 On a survey shown one section per page, REDCap draws only the current page's
 fields, so a condition over a field of another page reads the answer saved when
 the page was drawn: `[consent]='1'` on page 2 reads the consent given on page 1.
+A rule that reads another page's answer never holds the save on the survey,
+whatever its `blockSave` says:
+
+- a condition that only reads the other page (`"when":"[consent]='1'"`) is settled
+  when the page is drawn, the rule shows its message, and the respondent can still
+  go on;
+- a comparison between this page's answer and the other page's
+  (`@UVASSERT="[email]=[email_confirm]"` with the two addresses on different pages) is
+  not checked on the page at all, since the earlier answer is never sent to a survey
+  page.
+
+The audit after each page is saved still checks the value and logs a failure, and
+a survey save logs a `uvalidate-unconfigurable` entry, once for each rule, that names the rule
+and the other page's field. To check and hold the save on the page, put the fields
+in one section. The data entry form shows the whole instrument and is not affected.
+If the module cannot tell which page of such a survey is shown, no rule with a
+condition is checked on that page.
 
 `not` binds tightest, then `and`, then `or`, as in REDCap:
 `[a]='1' or [b]='1' and [c]='1'` means `[a]='1' or ([b]='1' and [c]='1')`. Add
@@ -647,7 +664,9 @@ two lines. Earlier releases stopped an unquoted condition at the first space.
   verdict (and any *Compulsory* block) appears or clears at once. Fields on
   **other instruments** use their **saved** values (a brand-new record has none
   yet, so those references read as empty). On a survey shown one section per
-  page, a field answered on another page uses its saved answer in the same way.
+  page, a field answered on another page uses its saved answer in the same way,
+  and a rule that reads it does not hold the save on that page (see the condition
+  language above).
 - **A reference that cannot be resolved is refused, not read as blank** (1.6.0):
   a field on a different repeating instrument, a field not collected in this
   event, or a read that failed. The rule stops checking and reports why — see the

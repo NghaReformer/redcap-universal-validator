@@ -442,6 +442,15 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
 
+        // A survey save of an instrument shown one section per page: a rule
+        // that reads another page's field does not block there. Said once for
+        // each such rule, where the study team reads rule problems (AST-2).
+        if ($this->surveySave && $onForm !== null) {
+            foreach ($this->surveyCrossPageRules($rules, $project_id, $instrument) as $ruleIndex => $note) {
+                $this->logUnconfigurable($ruleIndex, $note['fields'], $note['why'], $instrument, $event_id, $repeat_instance);
+            }
+        }
+
         // With no saved instrument every rule is in scope, and a required rule
         // would report a missing value on every form nobody has opened yet.
         // The scan asks a required rule only where its form was started
@@ -6246,9 +6255,19 @@ class UniversalValidator extends AbstractExternalModule
         // A survey shown one section per page renders only this page's fields,
         // so a field answered on another page is off-page like a field of
         // another form, and is settled here from the saved response (REQ-4).
+        // When the survey has several pages and the one being drawn cannot be
+        // told, the fields on the page are unknown, as with an unknown form:
+        // nothing is live and every rule with a condition is deferred (AST-6).
+        $unknownPage = false;
         if (!$unknownForm && $context === 'survey') {
             $page = $this->surveyPageFields($pid, $instrument);
-            if ($page !== null) $live = array_intersect_key($live, $page);
+            if ($page !== null) {
+                $live = array_intersect_key($live, $page);
+            } elseif ($this->surveyPageUnknown($pid, $instrument)) {
+                $unknownPage = true;
+                $unknownForm = true;
+                $live = [];
+            }
         }
 
         $values = [];
@@ -6543,9 +6562,12 @@ class UniversalValidator extends AbstractExternalModule
         if ($unknownForm) {
             foreach ($rules as $i => $r) {
                 if (!empty($r['deferred']) && empty($rules[$i]['deferredWhy'])) {
-                    $rules[$i]['deferredWhy'] = ['could not read the data dictionary for this project, so the '
-                        . 'fields on this form are unknown — the rule is not checked here rather than '
-                        . 'checked against values that may not be on the page.'];
+                    $rules[$i]['deferredWhy'] = [$unknownPage
+                        ? 'could not tell which page of the survey is shown, so the fields on it are unknown: the rule is '
+                            . 'not checked here rather than checked against values that may not be on the page.'
+                        : 'could not read the data dictionary for this project, so the '
+                            . 'fields on this form are unknown — the rule is not checked here rather than '
+                            . 'checked against values that may not be on the page.'];
                 }
             }
         }
@@ -10385,9 +10407,20 @@ class UniversalValidator extends AbstractExternalModule
     {
         $page = (isset($_GET['__page__']) && is_scalar($_GET['__page__'])) ? (string) $_GET['__page__'] : '';
         if (!$instrument || !preg_match('/^[1-9][0-9]{0,4}$/D', $page)) return null;
-        if (!$this->surveyBySection($pid, $instrument)) return null;
+        $pages = $this->surveyPages($pid, $instrument);
+        return isset($pages[(int) $page]) ? $pages[(int) $page] : null;
+    }
+
+    /**
+     * The pages of a survey shown one section per page, as page number =>
+     * field => true; [] when $instrument is not such a survey, has one page,
+     * or the dictionary cannot be read.
+     */
+    private function surveyPages($pid, $instrument)
+    {
+        if (!$instrument || !$this->surveyBySection($pid, $instrument)) return [];
         $dd = $this->dataDictionary($pid);
-        if (!$dd) return null;
+        if (!$dd) return [];
         $pk = (string) array_key_first($dd);
         $pages = [];
         $n = 1;
@@ -10398,7 +10431,65 @@ class UniversalValidator extends AbstractExternalModule
             $pages[$n][(string) $name] = true;
             $seen++;
         }
-        return (count($pages) > 1 && isset($pages[(int) $page])) ? $pages[(int) $page] : null;
+        return count($pages) > 1 ? $pages : [];
+    }
+
+    /**
+     * Whether $instrument is a survey of several pages and the page REDCap is
+     * drawing cannot be told: $_GET['__page__'] is absent, not a number, or
+     * names no page. The fields on the page are then unknown. Reading that as
+     * "the whole instrument is on the page" shipped a live reference to a
+     * field of another page, which the browser read as blank: a matching
+     * second e-mail address was then held by a hard block (AST-6).
+     */
+    private function surveyPageUnknown($pid, $instrument)
+    {
+        return $this->surveyPages($pid, $instrument) && $this->surveyPageFields($pid, $instrument) === null;
+    }
+
+    /**
+     * What a survey shown one section per page does to the rules that read a
+     * field of another page than the field they check, as rule index =>
+     * ['fields' => the rule's fields on $instrument, 'why' => text] (AST-2).
+     * The survey page settles such a comparison from the saved response or
+     * leaves the rule unchecked, and no block holds there (foldRuleConditions).
+     * The data entry form shows the whole instrument, so nothing on it tells
+     * the designer; the save audit logs this once for each rule.
+     */
+    private function surveyCrossPageRules(array $rules, $pid, $instrument)
+    {
+        $pageOf = [];
+        foreach ($this->surveyPages($pid, $instrument) as $n => $fields) {
+            foreach ($fields as $f => $_) $pageOf[$f] = $n;
+        }
+        $out = [];
+        if (!$pageOf) return $out;
+        foreach ($rules as $i => $r) {
+            if (!empty($r['configError']) || !isset($r['fields']) || !is_array($r['fields'])) continue;
+            $own = [];
+            foreach ($r['fields'] as $f) if (is_string($f) && isset($pageOf[$f])) $own[$f] = $pageOf[$f];
+            if (!$own) continue;
+            $read = [];
+            foreach (ModeRegistry::conditionTexts($r) as $w) {
+                $p = Logic::parse($w);
+                if (empty($p['ok'])) continue;
+                foreach (Logic::referencedFields($p['ast']) as $ref) $read[$ref[0]] = true;
+            }
+            foreach (ModeRegistry::operandTexts($r) as $text) {
+                $op = ModeRegistry::operandRef($text);
+                if ($op !== null) $read[(string) $op[1]] = true;
+            }
+            $other = [];
+            foreach ($read as $f => $_) {
+                if (isset($pageOf[$f]) && array_diff($own, [$pageOf[$f]])) $other[] = '[' . $f . ']';
+            }
+            if (!$other) continue;
+            $out[$i] = ['fields' => array_keys($own), 'why' => 'on the survey, shown one section per page, this rule reads '
+                . implode(', ', $other) . ' on another page than the field it checks. The survey page then shows no verdict, or shows one '
+                . 'that does not hold the save, whatever "blockSave" says; the audit after a save still checks the value. '
+                . 'Put the fields in one section to check and hold the save on the page.'];
+        }
+        return $out;
     }
 
     /** Whether $instrument is a survey set to show one section per page. */

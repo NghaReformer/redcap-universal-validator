@@ -281,7 +281,14 @@ Semantics worth knowing before relying on it:
   is off-page in the same way: REDCap renders only the current page's fields, so
   a comparison over that field is settled on the server from the saved response
   when the page is drawn. A comparison that mixes it with a field of the current
-  page is deferred, as any off-page value on a survey is.
+  page is deferred, as any off-page value on a survey is. Either way the rule
+  does not hold the save on the survey page, whatever its `blockSave` says: a
+  `"when"` over page 1 shows the message on page 2 without a block, and
+  `[email]=[email_confirm]` with the addresses on two pages is not checked until
+  the page is saved. A survey save logs, once for each rule, a `uvalidate-unconfigurable`
+  entry naming the rule and the other page's field. Put the fields in one section
+  to check and block on the page. When the page being shown cannot be told, no
+  rule with a condition is checked on it.
 - **A reference the module cannot resolve is refused, not guessed** (1.6.0).
   Until then an unreadable reference looked exactly like a genuine blank, and the
   rule was checked against a `''` that had never been read. Three cases are now
@@ -434,7 +441,8 @@ enforced with the same message/confirm/block modes as everything else:
   the write, so the audit logs the violation to the module log once it has
   happened, and the Validation scan can find it later. Deferring buys privacy at
   the cost of both live feedback and the block — someone has to read the log or
-  run the scan.
+  run the scan. A survey shown one section per page defers a comparison between
+  answers of two pages in the same way.
 - **A survey page's source carries no rule detail.** The link is public, so the
   page config of a survey states no condition text, no field a value was read
   from and no reason a rule is not checked: a comparison settled on the server
