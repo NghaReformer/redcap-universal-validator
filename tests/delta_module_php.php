@@ -428,6 +428,18 @@ namespace {
         !isset($by['weight']) && !isset($by['bmi']) && !isset($by['msg_w']) && !problems($m, 'weight'));
     check('a Missing Data Code as the value: nothing checked', !isset($by['w_same']) && !problems($m, 'w_same'));
     check('other fields still checked', ($by['height']['reason'] ?? null) === 'down');
+    // DLT-5: a code that is a number is the code wherever it stands, under "hard" too. The
+    // README says so; this pins it. 999 from 70 would be a rise, and 76.5 from 999 a fall.
+    \Project::$codes = "-99, Not done\n999, Unknown";
+    $num = $DATA;
+    $num['2'][351]['weight'] = '999';
+    $num['2'][351]['h_screen'] = '-99';
+    $m = mod($DICT, $num, $FULL);
+    $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 1);
+    $by = deltaBy($m);
+    check('a numeric Missing Data Code as the value (999): not judged, no rule problem (DLT-5)', !isset($by['weight']) && !problems($m, 'weight'));
+    check('a numeric Missing Data Code as the earlier value (-99): not judged', !isset($by['height']) && !isset($by['pain']));
+    check('... a number beside it that is no code is judged', ($by['w_same']['reason'] ?? null) === 'up');
     \Project::$codes = '';
 
     // Saving the form that holds the vs re-checks the rule that reads it.

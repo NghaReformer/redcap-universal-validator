@@ -4306,7 +4306,14 @@ under the field names the change, its percent, the earlier value and the limit:
 > ✗ This value rose by 5.01 kg (7.2%) from 70 kg ([weight_screening]). Allowed: a change of at most 5 kg.
 
 The note appears when the user leaves the field. A blank value, a blank earlier
-value and a missing data code on either side check nothing.
+value and a missing data code on either side check nothing. A missing data
+code that is a number (`-99`, `999`) is read as the code wherever it stands, so
+a measurement equal to it is not judged, under `hard` too: choose codes no
+measurement can take.
+
+The limit is on the change between two entries, however long apart they are;
+there is no limit per day or per week. `vs` names another field or another
+entry, never the value this same field held before the save.
 
 ### Level 2 — a percent, a direction, or both limits
 

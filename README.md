@@ -1163,7 +1163,15 @@ and flags a change larger than its limit:
   `"max": 0` for "no change").
 - **Nothing to compare with.** A blank value, a blank earlier value and a
   missing data code on either side check nothing. On the first visit or the
-  first instance there is no earlier value.
+  first instance there is no earlier value. A missing data code that is a
+  number (`-99`, `999`) is read as the code wherever it stands: a measurement
+  equal to it is not judged, as the value or as the earlier value, under
+  `hard` too. Choose codes no measurement can take.
+- **What it does not compare.** The limit is on the change between two
+  entries, however long apart they are: there is no limit per day or per
+  week. `vs` names another field or another entry, never the value this same
+  field held before the save, so a correction typed over a saved value is not
+  compared with what it replaced.
 - **Not a number.** On a Text field with number or integer validation REDCap
   itself refuses `700kg`, so this tag says nothing about it. On a Text field
   with no validation nothing else does, so the tag flags a value that is not
