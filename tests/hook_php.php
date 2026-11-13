@@ -1796,6 +1796,25 @@ namespace {
     $cDictBad['selfref'] = ['field_type' => 'checkbox', 'form_name' => 'cf',
         'select_choices_or_calculations' => '0, None | 1, A | 2, B',
         'field_annotation' => '@UVCHOICES={"when":"[selfref(0)]=\'1\'","hide":["1","2"]}'];
+    // REDCap's @HIDECHOICE takes codes away for good: a rule that hides the
+    // rest, or shows only those, leaves nothing to pick either (CHO-10 of the
+    // 2026-11-13 review)
+    $cDictBad['hidemix'] = ['field_type' => 'radio', 'form_name' => 'cf',
+        'select_choices_or_calculations' => '1, A | 2, B | 3, C',
+        'field_annotation' => '@HIDECHOICE=\'3\' @UVCHOICES={"when":"[freetext]=\'1\'","hide":["1","2"]}'];
+    $cDictBad['showgone'] = ['field_type' => 'dropdown', 'form_name' => 'cf',
+        'select_choices_or_calculations' => '1, A | 2, B | 3, C',
+        'field_annotation' => '@UVCHOICES={"when":"[freetext]=\'1\'","show":["2","3"]} @HIDECHOICE="2, 3"'];
+    $cDictBad['hideleft'] = ['field_type' => 'radio', 'form_name' => 'cf',
+        'select_choices_or_calculations' => '1, A | 2, B | 3, C',
+        'field_annotation' => '@HIDECHOICE=\'3\' @UVCHOICES={"when":"[freetext]=\'1\'","hide":["1"]}'];
+    // a field of many codes: the message names the first of them, not all
+    // (CHO-7 of the 2026-11-13 review)
+    $manyCodes = [];
+    for ($ci = 1; $ci <= 3000; $ci++) $manyCodes[] = 'k' . $ci . ', L' . $ci;
+    $cDictBad['manycodes'] = ['field_type' => 'dropdown', 'form_name' => 'cf',
+        'select_choices_or_calculations' => implode(' | ', $manyCodes),
+        'field_annotation' => '@UVCHOICES={"show":["nope"]}'];
     $m = newModule([], $cDictBad, [2 => [351 => ['record_id' => '2',
         'freetext' => '1', 'site2' => '999', 'mx' => '1']]], 149);
     ob_start();
@@ -1820,6 +1839,15 @@ namespace {
     check('a "hide" of every code -> configError (got ' . json_encode($cfgErrs['hideall'] ?? null) . ')', isset($cfgErrs['hideall'])
         && strpos($cfgErrs['hideall'], '"hide" lists every choice of this field (1, 2)') !== false);
     check('...a "when" on the field itself is taken (got ' . json_encode($cfgErrs['selfref'] ?? null) . ')', !isset($cfgErrs['selfref']));
+    check('a "hide" of every code @HIDECHOICE leaves -> configError (got ' . json_encode($cfgErrs['hidemix'] ?? null) . ')', isset($cfgErrs['hidemix'])
+        && strpos($cfgErrs['hidemix'], '"hide" lists every choice of this field that @HIDECHOICE leaves (@HIDECHOICE hides 3)') !== false);
+    check('a "show" of codes @HIDECHOICE takes away -> configError (got ' . json_encode($cfgErrs['showgone'] ?? null) . ')', isset($cfgErrs['showgone'])
+        && strpos($cfgErrs['showgone'], '"show" lists only choices that @HIDECHOICE takes away (@HIDECHOICE hides 2, 3)') !== false);
+    check('...a choice left beside @HIDECHOICE is taken (got ' . json_encode($cfgErrs['hideleft'] ?? null) . ')', !isset($cfgErrs['hideleft']));
+    check('unknown code on a field of 3,000 codes: the error names 20 and counts the rest (got '
+        . strlen((string) ($cfgErrs['manycodes'] ?? '')) . ' bytes)', isset($cfgErrs['manycodes'])
+        && strpos($cfgErrs['manycodes'], 'k20 and 2980 more.') !== false
+        && strpos($cfgErrs['manycodes'], 'k21,') === false && strlen($cfgErrs['manycodes']) < 400);
     $m->logCalls = [];
     $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
     check('config-error choices rules produce no detections',

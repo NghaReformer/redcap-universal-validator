@@ -8818,19 +8818,73 @@ class UniversalValidator extends AbstractExternalModule
         $missing = array_values(array_diff($authored, $all));
         if ($missing) {
             return ['error' => 'choice code(s) '
-                . implode(', ', array_map('json_encode', $missing))
-                . ' do not exist on this field — its codes are: ' . implode(', ', $all) . '.',
+                . self::choiceCodeList(array_map('json_encode', $missing))
+                . ' do not exist on this field — its codes are: ' . self::choiceCodeList($all) . '.',
                 '_tag' => AnnotationRules::TAG_CHOICES];
         }
         // A "hide" of every code leaves nothing to pick, and with @UVREQUIRED
         // a save that can never pass (CHO-14).
         if (isset($frag['choicesHide']) && !array_diff($all, $frag['choicesHide'])) {
-            return ['error' => '"hide" lists every choice of this field (' . implode(', ', $all) . '), so it could never be '
+            return ['error' => '"hide" lists every choice of this field (' . self::choiceCodeList($all) . '), so it could never be '
                 . 'answered — to take the question away, hide the field with branching logic.',
                 '_tag' => AnnotationRules::TAG_CHOICES];
         }
+        // The same dead end reached with REDCap's own @HIDECHOICE on the
+        // field: the codes it takes away are never offered, so a rule that
+        // hides all the others, or shows only those, leaves nothing to pick
+        // (CHO-10 of the 2026-11-13 review).
+        $static = $this->hideChoiceCodes($name, $pid);
+        if ($static) {
+            $hidden = isset($frag['choicesHide']) ? $frag['choicesHide']
+                : array_values(array_diff($all, isset($frag['choicesShow']) ? $frag['choicesShow'] : $all));
+            if (!array_diff($all, $hidden, $static)) {
+                return ['error' => (isset($frag['choicesHide'])
+                        ? '"hide" lists every choice of this field that @HIDECHOICE leaves ('
+                        : '"show" lists only choices that @HIDECHOICE takes away (')
+                    . '@HIDECHOICE hides ' . self::choiceCodeList(array_values(array_intersect($all, $static)))
+                    . '), so it could never be answered — to take the question away, hide the field with branching logic.',
+                    '_tag' => AnnotationRules::TAG_CHOICES];
+            }
+        }
         $frag['choicesAll'] = $all;
         return $frag;
+    }
+
+    /**
+     * Choice codes for a set-up message: the first $max, then how many more.
+     * A field may have thousands of codes, and the message travels in the
+     * page's configuration on every form that carries the field (CHO-7 of
+     * the 2026-11-13 review).
+     */
+    private static function choiceCodeList(array $codes, $max = 20)
+    {
+        $codes = array_values($codes);
+        $n = count($codes);
+        if ($n <= $max) return implode(', ', $codes);
+        return implode(', ', array_slice($codes, 0, $max)) . ' and ' . ($n - $max) . ' more';
+    }
+
+    /**
+     * The choice codes REDCap's @HIDECHOICE action tag takes away from a
+     * field, as strings; [] when the field has none. REDCap reads the value
+     * in quotes after the tag, a comma-separated list of codes.
+     */
+    private function hideChoiceCodes($name, $pid)
+    {
+        $dd = $pid ? $this->dataDictionary($pid) : null;
+        $ann = (is_array($dd) && isset($dd[$name]['field_annotation'])) ? (string) $dd[$name]['field_annotation'] : '';
+        if ($ann === '' || stripos($ann, '@HIDECHOICE') === false) return [];
+        if (!preg_match('/@HIDECHOICE\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s@]+))/i', $ann, $m)) return [];
+        $raw = '';
+        for ($g = 1; $g <= 3; $g++) {
+            if (isset($m[$g]) && $m[$g] !== '') $raw = $m[$g];
+        }
+        $out = [];
+        foreach (explode(',', $raw) as $c) {
+            $c = trim($c);
+            if ($c !== '') $out[] = $c;
+        }
+        return $out;
     }
 
     /**
