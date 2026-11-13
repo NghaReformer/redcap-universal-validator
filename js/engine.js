@@ -3017,8 +3017,9 @@ var QRID_GROWTH_OUTPUTS = {
    measurement (corrects "measurement") or to the length or height (corrects
    "axis"), as the reference's "position" says. 0 when it corrects the other
    one, has nothing for this position (or position is null), or a "from" or
-   "below" age excludes axis position x (null: not known). Server twin:
-   GrowthReference::positionAdd. */
+   "below" age excludes axis position x (null: not known). x is the position
+   the table reads (QRID_growthReadX), not the age as typed (RNG-2). Server
+   twin: GrowthReference::positionAdd. */
 function QRID_growthPositionAdd(ref, position, x, corrects){
   var p = ref && ref.position;
   if(!p || position === null || !Object.prototype.hasOwnProperty.call(p, position) || p.corrects !== corrects) return 0;
@@ -6062,8 +6063,9 @@ function QRID_chartXUnit(ref, lo, hi){
 }
 /* The axis value the reference reads for x: the row at or nearest x for a
    "floor" or "round" lookup (where its curves are exact), x itself for
-   "linear". This visit's point is drawn there, on the step the check reads.
-   Twin of QRID_growthLms's choice of row. */
+   "linear". This visit's point is drawn there, on the step the check reads,
+   and a correction for how the child was measured is the one of that age.
+   Twin of QRID_growthLms's choice of row, and of GrowthReference::readAt. */
 function QRID_growthReadX(ref, x){
   var s = ref.scale, k = x * s, f = Math.floor(k);
   if(ref.lookup === "round") return (k - f >= 0.5 ? f + 1 : f) / s;
@@ -6980,7 +6982,10 @@ function QRIDRangeInit(QRID_CONFIG){
     }
     var a = QRID_growthAxis(g.ref, input);
     if(a.state !== "ok") return { state: "inert", why: a.why, sex: sex };
-    return { state: "ok", sex: sex, x: a.x, yAdd: QRID_growthPositionAdd(g.ref, position, a.x, "measurement") };
+    /* the correction of the age the table reads: at 730.5 days who-lhfa
+       reads the row of day 731 (RNG-2) */
+    return { state: "ok", sex: sex, x: a.x,
+             yAdd: QRID_growthPositionAdd(g.ref, position, QRID_growthReadX(g.ref, a.x), "measurement") };
   }
   /* The verdict of a growth rule: the measurement first (not a number, at or
      below 0), then the z-score's tier against the limits. { tier: "withheld" }
@@ -10367,7 +10372,7 @@ window.INSPIREUniversalValidator = {
     percentile: QRID_growthPercentile, percentileText: QRID_growthPercentileText, valueAtText: QRID_growthValueAtText,
     normalCdf: QRID_growthNormalCdf, normalQuantile: QRID_growthNormalQuantile,
     roundedUnits: QRID_growthRoundedUnits, computed: QRID_GROWTH_COMPUTED,
-    axisText: QRID_growthAxisText, lineZ: QRID_growthLineZ, positionAdd: QRID_growthPositionAdd
+    axisText: QRID_growthAxisText, lineZ: QRID_growthLineZ, positionAdd: QRID_growthPositionAdd, readX: QRID_growthReadX
   },
   chartLogic: {                              /* @UVRANGE "show", locked by tests/growth_chart_dom_js.cjs */
     geometry: QRID_CHART, step: QRID_chartStep, ticks: QRID_chartTicks, xUnit: QRID_chartXUnit, span: QRID_growthSpan,

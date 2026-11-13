@@ -4643,7 +4643,7 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             return ['problem' => 'the growth reference "' . $rule['rangeReference'] . '" cannot be used: ' . $e->getMessage()];
         }
-        $in = GrowthReference::inputsFor($rule, $read, $entry);
+        $in = GrowthReference::inputsFor($rule, $read, $entry, $table);
         if ($in['state'] !== 'ok') return $in;
         return ['state' => 'ok', 'entry' => $entry, 'table' => $table, 'sex' => $in['sex'], 'x' => $in['x'], 'yAdd' => $in['yAdd']];
     }

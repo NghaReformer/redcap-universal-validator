@@ -44,6 +44,15 @@ for (const c of fx.position) {
   const got = G.positionAdd(R[c.ref], c.position, c.x, c.corrects);
   check('position: ' + c.name + ' (got ' + JSON.stringify(got) + ')', got === c.want);
 }
+// RNG-2: the axis value the table reads, which a correction by age is keyed to
+check('readX: the row a lookup reads, the value itself between rows of a linear one',
+  G.readX({ lookup: 'round', scale: 1 }, 730.4) === 730 && G.readX({ lookup: 'round', scale: 1 }, 730.5) === 731
+  && G.readX({ lookup: 'floor', scale: 1 }, 100.9) === 100 && G.readX({ lookup: 'floor', scale: 2 }, 3.7) === 3.5
+  && G.readX({ lookup: 'linear', scale: 1 }, 100.9) === 100.9);
+for (const [x, position, want] of [[1.4, 'standing', 0.7], [1.5, 'standing', 0], [1.5, 'lying', -0.7], [1.4, 'lying', 0]]) {
+  const got = G.positionAdd(R['t-lenhei'], position, G.readX(R['t-lenhei'], x), 'measurement');
+  check('position at the changeover: day ' + x + ' ' + position + ' adds ' + want + ' (got ' + got + ')', got === want);
+}
 for (const c of fx.lms) {
   const got = G.lms(R[c.ref], c.sex, c.x);
   check('lms: ' + c.name + ' (got ' + JSON.stringify(got) + ')', sameLms(got, c.want));

@@ -360,7 +360,7 @@ $lt = G::table($lhfa);
 $rule = ['rangeMale' => '1', 'rangeFemale' => '2', 'rangeMeasured' => '[measured]', 'rangeLying' => 'L', 'rangeStanding' => 's',
          'rangeSex' => '[sex]', 'rangeAgeDays' => '[age_days]'];
 $zOf = function ($read, $y) use ($lhfa, $lt, $rule) {
-    $in = G::inputsFor($rule, $read, $lhfa);
+    $in = G::inputsFor($rule, $read, $lhfa, $lt);
     return $in['state'] === 'ok' ? G::zScore($lhfa, $lt, $in['sex'], $in['x'], $y + $in['yAdd'])['z'] : $in['why'];
 };
 check('who-lhfa: a girl of 600 days measured standing scores 73.0 cm as 73.7 (z -2.91)',
@@ -374,12 +374,46 @@ check('who-lhfa: lying under 731 days and standing from 731 days are not correct
     $zOf(['rangeSex' => '1', 'rangeAgeDays' => '700', 'rangeMeasured' => 'L'], 75.4) === G::zScore($lhfa, $lt, 'male', 700.0, 75.4)['z']
     && $zOf(['rangeSex' => '1', 'rangeAgeDays' => '731', 'rangeMeasured' => 'S'], 84.0) === G::zScore($lhfa, $lt, 'male', 731.0, 84.0)['z']);
 check('who-lhfa: 730 days standing is still corrected, 731 lying already is',
-    G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '730', 'rangeMeasured' => 's'], $lhfa)['yAdd'] === 0.7
-    && G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '731', 'rangeMeasured' => 'l'], $lhfa)['yAdd'] === -0.7);
+    G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '730', 'rangeMeasured' => 's'], $lhfa, $lt)['yAdd'] === 0.7
+    && G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '731', 'rangeMeasured' => 'l'], $lhfa, $lt)['yAdd'] === -0.7);
 check('who-lhfa: a code that is neither corrects nothing, as WHO Anthro',
-    G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '600', 'rangeMeasured' => '9'], $lhfa)['yAdd'] === 0.0);
+    G::inputsFor($rule, ['rangeSex' => '1', 'rangeAgeDays' => '600', 'rangeMeasured' => '9'], $lhfa, $lt)['yAdd'] === 0.0);
 check('who-lhfa: a rule without "measured" corrects nothing',
-    G::inputsFor(array_diff_key($rule, ['rangeMeasured' => 1]), ['rangeSex' => '1', 'rangeAgeDays' => '600', 'rangeMeasured' => 's'], $lhfa)['yAdd'] === 0.0);
+    G::inputsFor(array_diff_key($rule, ['rangeMeasured' => 1]), ['rangeSex' => '1', 'rangeAgeDays' => '600', 'rangeMeasured' => 's'], $lhfa, $lt)['yAdd'] === 0.0);
+// RNG-2: the correction changes on the day the rows do. 24 months is 730.5
+// days, which reads the row of day 731 (lookup "round"): the child is scored
+// as one of 731 days, so standing is not corrected and lying is. Keyed to the
+// unrounded age, standing got +0.7 cm against the row of day 731, a z-score
+// about 0.23 too high.
+$mrule = ['rangeMale' => '1', 'rangeFemale' => '2', 'rangeMeasured' => '[measured]', 'rangeLying' => 'L', 'rangeStanding' => 's',
+          'rangeSex' => '[sex]', 'rangeAgeMonths' => '[age_months]'];
+foreach ([
+    // age input, measured, the row read, the correction of that row's age
+    [['rangeAgeDays' => '730'],     's', 730.0, 0.7],
+    [['rangeAgeDays' => '730'],     'L', 730.0, 0.0],
+    [['rangeAgeDays' => '730.4'],   's', 730.0, 0.7],
+    [['rangeAgeDays' => '730.5'],   's', 731.0, 0.0],
+    [['rangeAgeDays' => '730.5'],   'L', 731.0, -0.7],
+    [['rangeAgeDays' => '730.6'],   'L', 731.0, -0.7],
+    [['rangeAgeDays' => '731'],     's', 731.0, 0.0],
+    [['rangeAgeDays' => '731'],     'L', 731.0, -0.7],
+    [['rangeAgeMonths' => '24'],    's', 731.0, 0.0],
+    [['rangeAgeMonths' => '24'],    'L', 731.0, -0.7],
+    [['rangeAgeMonths' => '23.98'], 's', 730.0, 0.7],
+    [['rangeAgeMonths' => '23.98'], 'L', 730.0, 0.0],
+] as $c) {
+    $r = isset($c[0]['rangeAgeMonths']) ? $mrule : $rule;
+    $in = G::inputsFor($r, ['rangeSex' => '1', 'rangeMeasured' => $c[1]] + $c[0], $lhfa, $lt);
+    $z = $in['state'] === 'ok' ? G::zScore($lhfa, $lt, 'male', $in['x'], 85.0 + $in['yAdd'])['z'] : null;
+    check('who-lhfa at the changeover: ' . json_encode($c[0]) . ' measured ' . $c[1] . ' reads day ' . $c[2] . ' and adds ' . $c[3]
+        . ' (got ' . json_encode([$in['yAdd'] ?? null, $z]) . ')',
+        $in['state'] === 'ok' && G::readAt($lhfa, $lt['scale'], $in['x']) === $c[2] && $in['yAdd'] === $c[3]
+        && $z === G::zScore($lhfa, $lt, 'male', $c[2], 85.0 + $c[3])['z']);
+}
+check('readAt: the row a lookup reads, the value itself between rows of a linear one',
+    G::readAt(['lookup' => 'round'], 1, 100.4) === 100.0 && G::readAt(['lookup' => 'round'], 1, 100.5) === 101.0
+    && G::readAt(['lookup' => 'floor'], 1, 100.9) === 100.0 && G::readAt(['lookup' => 'floor'], 2, 3.7) === 3.5
+    && G::readAt(['lookup' => 'linear'], 1, 100.9) === 100.9);
 check('positionOf: letter case ignored unless caseSensitive',
     G::positionOf('l', $rule) === 'lying' && G::positionOf('S', $rule) === 'standing'
     && G::positionOf('S', $rule + ['caseSensitive' => true]) === null && G::positionOf('s', $rule + ['caseSensitive' => true]) === 'standing');
@@ -391,7 +425,7 @@ $wrule = ['rangeMale' => '1', 'rangeFemale' => '2', 'rangeMeasured' => '[m]', 'r
 $wfl = G::entry('who-wfl');
 $wfh = G::entry('who-wfh');
 $xOf = function ($e, $how, $by) use ($wrule) {
-    $in = G::inputsFor($wrule, ['rangeSex' => '1', 'rangeBy' => $by, 'rangeMeasured' => $how], $e);
+    $in = G::inputsFor($wrule, ['rangeSex' => '1', 'rangeBy' => $by, 'rangeMeasured' => $how], $e, G::table($e));
     return $in['state'] === 'ok' ? [$in['x'], $in['yAdd']] : $in['why'];
 };
 check('who-wfl: standing adds 0.7 cm to the length, lying adds nothing',

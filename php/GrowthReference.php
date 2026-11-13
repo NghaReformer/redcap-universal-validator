@@ -312,9 +312,9 @@ final class GrowthReference
      * measurement (in the reference's unit) or to the axis value (cm, on a
      * reference by length or height). On a reference by age, a side may hold
      * at most one of "from" and "below", in the axis unit: the correction
-     * applies at or above that age, or below it. who-lhfa adds 0.7 cm to a
-     * length measured standing below 731 days, and takes 0.7 cm from one
-     * measured lying from 731 days.
+     * applies at or above that age, or below it, the age being the one the
+     * table reads (readAt). who-lhfa adds 0.7 cm to a length measured standing
+     * below 731 days, and takes 0.7 cm from one measured lying from 731 days.
      */
     private static function positionProblem(array $e)
     {
@@ -497,6 +497,19 @@ final class GrowthReference
         // linear, as WHO's own code does it: low = trunc(x*scale)/scale and
         // the share of the way to the next row is (x - low) / (1/scale).
         return [$key, ($x - $key / $scale) / (1 / $scale)];
+    }
+
+    /**
+     * The axis value the table reads for $x: the row at or nearest $x for a
+     * "floor" or "round" lookup, $x itself for "linear". $scale is the
+     * table's. A correction that depends on the age (positionAdd) is keyed to
+     * this value, so it changes on the same day the rows do (RNG-2).
+     * Twin: QRID_growthReadX.
+     */
+    public static function readAt(array $entry, $scale, $x)
+    {
+        if ($entry['lookup'] === 'linear') return (float) $x;
+        return (float) (self::position($entry['lookup'], $scale, (float) $x)[0] / $scale);
     }
 
     /**
@@ -916,7 +929,10 @@ final class GrowthReference
      * 'measurement', to the length or height (cm) when it is 'axis'. 0.0 when
      * the entry's "position" corrects the other one, has no correction for
      * $position (or $position is null), or a "from" or "below" age excludes
-     * the axis position $x (null: not known). Twin: QRID_growthPositionAdd.
+     * the axis position $x (null: not known). $x is the position the table
+     * reads (readAt), not the age as typed: at 730.5 days who-lhfa reads the
+     * row of day 731, and the correction must be the one of day 731 too.
+     * Twin: QRID_growthPositionAdd.
      */
     public static function positionAdd(array $entry, $position, $x, $corrects)
     {
@@ -937,12 +953,14 @@ final class GrowthReference
      * one; dates are saved values, Y-M-D. 'yAdd' is what the measurement
      * gets added before it is scored, WHO's correction for how the child was
      * measured (0.0 without one); a correction of the length or height is in
-     * 'x' already. The reasons are the browser's (growthVerdict in
+     * 'x' already. $table is the entry's table: its "scale" says which row
+     * 'x' reads, and the correction of the measurement is the one of that
+     * row's age (RNG-2). The reasons are the browser's (growthVerdict in
      * js/engine.js). The one reading of the inputs:
      * UniversalValidator::growthInputs and tests/docs_examples_php.php both
      * call it.
      */
-    public static function inputsFor(array $rule, array $read, array $entry)
+    public static function inputsFor(array $rule, array $read, array $entry, array $table)
     {
         $sexCode = isset($read['rangeSex']) ? (string) $read['rangeSex'] : '';
         $sex = self::sexOf($sexCode, $rule);
@@ -972,7 +990,8 @@ final class GrowthReference
         }
         $a = self::axisValue($entry, $in);
         if ($a['state'] !== 'ok') return ['state' => 'inert', 'why' => $a['why']];
-        return ['state' => 'ok', 'sex' => $sex, 'x' => $a['x'], 'yAdd' => self::positionAdd($entry, $position, $a['x'], 'measurement')];
+        return ['state' => 'ok', 'sex' => $sex, 'x' => $a['x'],
+                'yAdd' => self::positionAdd($entry, $position, self::readAt($entry, $table['scale'], $a['x']), 'measurement')];
     }
 
     /**

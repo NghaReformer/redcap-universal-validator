@@ -2855,6 +2855,8 @@ What the correction changes:
 
 - `who-lhfa` corrects the measurement: 0.7 cm more for a child measured
   standing under 731 days, 0.7 cm less for one measured lying from 731 days.
+  The age is the day whose row the table reads: an age of 24 months is
+  730.5 days, which reads the row of day 731 and is corrected as day 731.
 - `who-wfl` and `who-wfh` correct the length or height in `by`:
   weight-for-length adds 0.7 cm for a child measured standing, and
   weight-for-height takes 0.7 cm off for one measured lying. The reference's

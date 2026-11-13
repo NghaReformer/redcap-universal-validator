@@ -130,7 +130,7 @@ for (const c of fx.cases) {
     if (m.state !== 'ok') got = m.state;
     else if (c.sex === null) got = growth.plausible(m.y, c.plausibleLo, c.plausibleHi, m.exact) || 'not evaluated';
     else {
-      const add = c.position ? growth.positionAdd(refs[c.reference], c.position, parseFloat(c.x), 'measurement') : 0;
+      const add = c.position ? growth.positionAdd(refs[c.reference], c.position, growth.readX(refs[c.reference], parseFloat(c.x)), 'measurement') : 0;
       const s = growth.zScore(refs[c.reference], c.sex, parseFloat(c.x), m.y + add);
       const r = s.state === 'ok' ? range.verdict(c.spec, s.z) : null;
       got = r ? (r.tier === 'ok' ? 'ok' : r.reason) + ', z ' + s.z : 'no row';

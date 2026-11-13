@@ -828,6 +828,15 @@ const MEASURED = { rangeMeasuredOp: ['ref', 'measured', null], rangeLying: '1', 
   how.value = 'S'; how.fire('change');
   check('measured standing from day 2: no correction, z 2.50', /z-score 2\.50/.test(msg.innerHTML));
   check('test() answers by the corrected z-score', env.NS.validators.len.test() === false);
+  // RNG-2: day 1.5 reads the row of day 2 (lookup "round"), so the correction is day 2's
+  age.value = '1.5'; age.fire('change');
+  check('measured standing at day 1.5, read as day 2: no correction, z 2.50 (got ' + msg.innerHTML + ')', /z-score 2\.50/.test(msg.innerHTML));
+  how.value = '1'; how.fire('change');
+  check('measured lying at day 1.5, read as day 2: 12.5 cm is scored as 11.8, usual (got ' + msg.innerHTML + ')', !shown(msg));
+  age.value = '1.4'; age.fire('change');
+  check('measured lying at day 1.4, read as day 1: no correction, z 2.50 (got ' + msg.innerHTML + ')', /z-score 2\.50/.test(msg.innerHTML));
+  how.value = 'S'; how.fire('change');
+  check('measured standing at day 1.4, read as day 1: 12.5 cm is scored as 13.2, z 3.20 (got ' + msg.innerHTML + ')', /z-score 3\.20/.test(msg.innerHTML));
 }
 {
   const w = el('len', '11.5');
