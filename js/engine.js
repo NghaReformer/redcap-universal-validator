@@ -870,6 +870,8 @@
     UV_validators[f] = out;
   }
   var UV_guard = { items: [], armed: false };
+  /* True only where this file was loaded with require() (the test suites). */
+  var QRID_UNDER_TEST = (typeof module === "object" && !!module && typeof module.exports === "object" && typeof require === "function");
   /* Fields @UVWRITEONCE holds on this page: field => true, set as each lock
      is bound. The save guard reads it when the save is pressed, so another
      mode's guard item on such a field does not hold the save, whatever order
@@ -4043,11 +4045,31 @@ var QRID_SAVE_HOLD_MS = (function(){
 var QRID_SAVE_HOLD_TICK_MS = 25;
 var QRID_SAVE_HOLD_NOTE_MS = 300;
 var QRID_SAVE_BUTTON_PREFIX = "submit-btn-save";
+/* REDCap names every action of a form "submit-btn-...": the saves, and Cancel
+   and the Delete actions (submit-btn-cancel, submit-btn-deleteform,
+   submit-btn-deleteevent), which write no value of the form. */
+var QRID_ACTION_PREFIX = "submit-btn-";
+/* The action a save was asked with, as REDCap's dataEntrySubmit reads it: the
+   string itself, or the name (else the id) of the element, a jQuery object
+   standing for its first element. "" when there is none. */
+function QRID_actionName(by){
+  if(typeof by === "string") return by;
+  if(by && by.jquery) by = by[0];
+  if(!by) return "";
+  var nm = by.getAttribute ? (by.getAttribute("name") || by.id || "") : (by.name || by.id || "");
+  return typeof nm === "string" ? nm : "";
+}
+/* Whether that action is one of REDCap's that saves no data (REQ-1). Only a
+   name REDCap gives an action and that is not a save counts: with no name, or
+   one the module does not know, the call is judged as a save. */
+function QRID_notASave(by){
+  var nm = QRID_actionName(by);
+  return nm.indexOf(QRID_ACTION_PREFIX) === 0 && nm.indexOf(QRID_SAVE_BUTTON_PREFIX) !== 0;
+}
 /* The save button an event's target is, or sits in; null for any other. */
 function QRID_saveButtonOf(t){
   while(t && t.getAttribute){
-    var nm = (t.getAttribute("name") || t.id || "");
-    if(nm.indexOf(QRID_SAVE_BUTTON_PREFIX) === 0) return t;
+    if(QRID_actionName(t).indexOf(QRID_SAVE_BUTTON_PREFIX) === 0) return t;
     t = t.parentNode;
   }
   return null;
@@ -4243,6 +4265,11 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
      response, and the rules that wait for a complete response (REQ-7,
      php/modes.json "surveySave") do not hold them. */
   function guard(e, by){
+    /* Cancel and the Delete actions reach REDCap through dataEntrySubmit too,
+       and save nothing the person entered: a broken rule does not hold them,
+       and "Save anyway?" is not asked of them (REQ-1). A save kept back for a
+       lookup is dropped, so it cannot go on after the person left the form. */
+    if(QRID_notASave(by)){ dropHold(); return true; }
     var partial = QRID_partialSave(by);
     /* the click guard runs before the programmatic submit it triggers; a
        user who already chose "Save anyway" must not be asked twice */
@@ -4414,8 +4441,7 @@ var QRID_PARTIAL_SAVE = (function(){
 /* Whether the element that asked for a save is one of those buttons. */
 function QRID_partialSave(by){
   if(!QRID_PARTIAL_SAVE.buttons.length || !by) return false;
-  var nm = (by.getAttribute ? (by.getAttribute("name") || by.id || "") : (by.name || by.id || ""));
-  return typeof nm === "string" && QRID_PARTIAL_SAVE.buttons.indexOf(nm) >= 0;
+  return QRID_PARTIAL_SAVE.buttons.indexOf(QRID_actionName(by)) >= 0;
 }
 /* REDCap's own way into a data-entry save (LIVE-1). Pressing Enter in a text
    field runs a keydown handler that blurs the field and then calls
@@ -4431,7 +4457,10 @@ function QRID_partialSave(by){
    returns false and the original never runs. REDCap defines the function in a
    script loaded before this one, on data-entry forms and surveys alike. On a
    page still loading, DOMContentLoaded and load try again for a function
-   defined later; a loaded page without it is left alone. */
+   defined later, and so does each Enter key, before REDCap's handler reads
+   the function (QRID_watchEnter). A loaded page without the function gets no
+   listener; a staff form is told, once, that the Enter key is not guarded
+   there (QRID_guardMissing, FRM-12). */
 function QRID_guardDataEntrySubmit(guard){
   function wrap(){
     var orig = window.dataEntrySubmit;
@@ -4444,7 +4473,7 @@ function QRID_guardDataEntrySubmit(guard){
            again with the same arguments, through this wrapper */
         var ev = { type: "dataEntrySubmit", preventDefault: function(){}, stopImmediatePropagation: function(){},
                    again: function(){ return window.dataEntrySubmit.apply(self, args); } };
-        if(!guard(ev, ob && ob.jquery ? ob[0] : ob)){
+        if(!guard(ev, ob)){
           QRID_cancelEnter();
           return false;
         }
@@ -4455,12 +4484,32 @@ function QRID_guardDataEntrySubmit(guard){
     window.dataEntrySubmit = guarded;
     return true;
   }
+  function settle(){ if(!wrap()) QRID_guardMissing(); }
+  UV_guard.wrapSubmit = wrap;
   QRID_watchEnter();
-  if(wrap() || document.readyState === "complete") return;
+  if(wrap()) return;
+  if(document.readyState === "complete"){ QRID_guardMissing(); return; }
   if(document.readyState === "loading" && typeof document.addEventListener === "function"){
     document.addEventListener("DOMContentLoaded", wrap);
   }
-  if(typeof window.addEventListener === "function") window.addEventListener("load", wrap);
+  if(typeof window.addEventListener === "function") window.addEventListener("load", settle);
+}
+/* A rule that can block is live and REDCap's dataEntrySubmit was not there to
+   wrap once the page had loaded: REDCap renamed it, or the page defines it
+   later. Save-button clicks and form submits are still judged, but a save
+   REDCap starts itself (the Enter key) is not. Said once: a line on a staff
+   form (QRID_configErrorNotice is muted on surveys) and one in the console.
+   Only where REDCap's own form (form#form) is on the page: without it there
+   is no REDCap save to guard. */
+var QRID_GUARD_MISSING_TEXT = "REDCap's save function (dataEntrySubmit) was not found when this page loaded, so a save " +
+  "started with the Enter key is not held by a blocking rule here. Save buttons are still checked. " +
+  "Tell the module's maintainer which REDCap version this is.";
+function QRID_guardMissing(){
+  if(UV_guard.missingSaid) return;
+  if(typeof document === "undefined" || !document.getElementById || !document.getElementById("form")) return;
+  UV_guard.missingSaid = true;
+  try { if(typeof console !== "undefined" && console.warn) console.warn("Universal Field Validator: " + QRID_GUARD_MISSING_TEXT); } catch(e){}
+  try { QRID_configErrorNotice(QRID_GUARD_MISSING_TEXT); } catch(e2){}
 }
 /* The Enter key that led to a held save (LIVE-D4, live run 2026-10-30).
    REDCap's keydown handler calls dataEntrySubmit and does not cancel the key,
@@ -4481,6 +4530,9 @@ function QRID_watchEnter(){
   UV_guard.enterEvents = [];
   function note(e){
     if(!e || !(e.key === "Enter" || e.keyCode === 13 || e.which === 13)) return;
+    /* a dataEntrySubmit defined since the page loaded is wrapped before
+       REDCap's own keydown handler looks it up (FRM-12) */
+    try { if(typeof UV_guard.wrapSubmit === "function") UV_guard.wrapSubmit(); } catch(_w){}
     var t = e.target;
     if(t && (t.tagName || "").toLowerCase() === "textarea") return;
     if(!UV_guard.enterEvents.length) setTimeout(function(){ UV_guard.enterEvents = []; }, 0);
@@ -10372,7 +10424,10 @@ window.INSPIREUniversalValidator = {
   writeOnceInit: QRIDWriteOnceInit,     /* @UVWRITEONCE — locked by tests/writeonce_dom_js.cjs */
   justifyInit: QRIDJustifyInit,         /* @UVJUSTIFY — locked by tests/justify_dom_js.cjs */
   get validators(){ return UV_validators; },
-  get guard(){ return UV_guard; },
+  /* The save guard's state is not published on a page: a script there could
+     set its pass flags or empty its items (FRM-12). The Node test suites
+     load this file as a CommonJS module and read it here. */
+  get guard(){ return QRID_UNDER_TEST ? UV_guard : undefined; },
   get lastPooled(){ return UV_lastPooled; }
 };
 /* The verified core published itself as a global for the legacy Injector
