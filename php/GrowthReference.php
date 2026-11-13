@@ -100,6 +100,8 @@ final class GrowthReference
     private static $catalogMemo = [];
     private static $tableMemo = [];
     private static $boundsMemo = [];
+    /** Stream schemes a test may name as a reference folder (streamForTests). */
+    private static $testStreams = [];
 
     /** The bundled reference folder. */
     public static function bundledDir()
@@ -140,7 +142,8 @@ final class GrowthReference
         $dirs = [['dir' => self::bundledDir(), 'what' => 'the bundled references', 'extra' => false]];
         if ($extraDir !== '') $dirs[] = ['dir' => rtrim($extraDir, '/\\'), 'what' => 'the reference folder in the module settings', 'extra' => true];
         foreach ($dirs as $d) {
-            $index = self::readIndex($d['dir']);
+            $refused = $d['extra'] ? self::folderProblem($d['dir']) : null;
+            $index = $refused !== null ? ['error' => $refused] : self::readIndex($d['dir']);
             if (isset($index['error'])) {
                 $why = $d['what'] . ': ' . $index['error'];
                 $out['problems'][] = $why;
@@ -195,6 +198,39 @@ final class GrowthReference
         $c = self::catalog($extraDir);
         if ($c['broken'] !== null) return $c['broken'];
         return (is_string($id) && isset($c['refused'][$id])) ? $c['refused'][$id] : null;
+    }
+
+    /**
+     * Why the folder an administrator named cannot be a reference folder, or
+     * null. The setting is passed to is_file() and file_get_contents(), which
+     * take PHP's stream wrappers: "ftp://host/refs" made every page that
+     * reads the catalog wait on a connection, and "phar://" opens an archive
+     * (and, on PHP 7.4, unserialises its metadata) (RNG-3). So a name PHP
+     * would open as a stream is refused before anything is opened: a scheme
+     * of two or more characters followed by "://", or "data:" (one letter is
+     * a Windows drive). So is a name that is not a folder on this server's
+     * disk. A folder that is not there keeps the words readIndex() has for it
+     * (review rvc2-3).
+     */
+    private static function folderProblem($dir)
+    {
+        if (preg_match('~^([a-z][a-z0-9+.-]+):(?://|(?<=^data:))~i', $dir, $m)) {
+            if (in_array(strtolower($m[1]), self::$testStreams, true)) return null;
+            return 'the setting must name a folder on this server, not a URL or a stream ("' . strtolower($m[1]) . ':").';
+        }
+        $real = @realpath($dir);
+        if ($real === false || !is_dir($real)) return 'the folder has no index.json.';
+        return null;
+    }
+
+    /**
+     * Tests only: let a stream wrapper registered under $scheme stand for a
+     * reference folder (a file that is there and will not open has no
+     * portable form on disk); null lets none.
+     */
+    public static function streamForTests($scheme)
+    {
+        self::$testStreams = $scheme === null ? [] : [strtolower((string) $scheme)];
     }
 
     /** Forget what was read (tests). */

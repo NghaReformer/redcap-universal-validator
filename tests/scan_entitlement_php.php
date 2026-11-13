@@ -977,6 +977,8 @@ namespace {
             $nt['unread'] === [] && strpos($nt['problems'], 'is not in its folder') !== false);
         // Only a file that is there and will not open is a read that failed.
         stream_wrapper_register('uvfiles', 'UvFilesWrapper');
+        // a stream is refused as a reference folder (RNG-3) unless a test names it
+        \INSPIRE\UniversalValidator\GrowthReference::streamForTests('uvfiles');
         \UvFilesWrapper::$files = ['uvfiles://shut/index.json' => false];
         $shut = $unreadOf(['reference-data-dir' => 'uvfiles://shut']);
         check('W10BF-4: an index.json that is there and will not open is named as unread',
@@ -990,6 +992,7 @@ namespace {
         check('W10BF-4: a table its index names that is there and will not open is named as unread',
             $unreadOf(['reference-data-dir' => 'uvfiles://tbl'])['unread'] === ['the growth reference folder']);
         stream_wrapper_unregister('uvfiles');
+        \INSPIRE\UniversalValidator\GrowthReference::streamForTests(null);
         @rmdir($empty);
         $badJson = $refDir . '_badjson';
         mkdir($badJson);

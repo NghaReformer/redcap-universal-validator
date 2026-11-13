@@ -86,6 +86,36 @@ foreach ($fx['plausible'] as $c) {
     check('plausible(' . json_encode($c['y']) . ', ' . json_encode($c['lo']) . ', ' . json_encode($c['hi']) . ', ' . json_encode($c['exact'] ?? null)
         . ') (got ' . json_encode($got) . ')', $got === $c['want']);
 }
+// RNG-3: the folder an administrator names is a folder on this server. A name
+// PHP would open as a stream is refused before anything is opened: "ftp://"
+// made every catalog read wait on a connection, "phar://" opens an archive.
+$examples = G::bundledDir() . DIRECTORY_SEPARATOR . 'examples';
+foreach (['ftp://127.0.0.1:1/refs' => 'ftp', 'phar://' . str_replace('\\', '/', $examples) . '/x.phar/refs' => 'phar',
+          'file://' . str_replace('\\', '/', $examples) => 'file', 'glob://' . str_replace('\\', '/', $examples) => 'glob',
+          'HTTP://example.org/refs' => 'http', 'data:text/plain,x' => 'data', 'compress.zlib://refs' => 'compress.zlib',
+          'php://filter/resource=refs' => 'php'] as $named => $scheme) {
+    G::reset();
+    $t0 = microtime(true);
+    $cat = G::catalog($named);
+    $ms = (microtime(true) - $t0) * 1000;
+    check('reference folder: "' . $scheme . ':" is refused unopened (got ' . json_encode($cat['broken']) . ', ' . round($ms) . ' ms)',
+        $cat['references'] === [] && $cat['unread'] === null && $ms < 500
+        && $cat['broken'] === 'the reference folder in the module settings: the setting must name a folder on this server, not a URL or a stream ("'
+            . $scheme . ':").');
+}
+G::reset();
+$cat = G::catalog($examples);
+check('reference folder: a folder on disk is read as before (got ' . json_encode($cat['broken']) . ')',
+    $cat['broken'] === null && count($cat['references']) > count(G::catalog(null)['references']));
+G::reset();
+$cat = G::catalog(__FILE__);
+check('reference folder: a file is no folder (got ' . json_encode($cat['broken']) . ')',
+    $cat['broken'] === 'the reference folder in the module settings: the folder has no index.json.' && $cat['unread'] === null);
+G::reset();
+$cat = G::catalog($examples . DIRECTORY_SEPARATOR . 'not_there');
+check('reference folder: one that is not there has no index.json, as before',
+    $cat['broken'] === 'the reference folder in the module settings: the folder has no index.json.' && $cat['unread'] === null);
+G::reset();
 // RNG-1: a measurement typed in another unit ("measureScale") and lying exactly
 // on a "plausible" limit is inside it. As doubles, 111 of these 600 weights in
 // grams landed above their own value in kg (5600 * 0.001 > 5.6).
