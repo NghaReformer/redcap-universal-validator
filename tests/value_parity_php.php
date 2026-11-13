@@ -44,7 +44,7 @@ function vcfg(array $rule)
     ];
 }
 
-/** "skip", "valid", "not-checked", "unconfigurable" or the finding's reason. */
+/** "skip", "valid", "not-checked", "unconfigurable", "over-scan-cap" or the finding's reason. */
 function serverSays(array $rule, $value)
 {
     if (CheckCharacter::browserTrim($value) === '') return 'skip';
@@ -53,7 +53,7 @@ function serverSays(array $rule, $value)
         ? CheckCharacter::validatePooledField(vcfg($rule), $value)
         : CheckCharacter::validateSingleField(vcfg($rule), $value);
     $reason = isset($res['reason']) ? $res['reason'] : '';
-    if ($reason === 'not-checked' || $reason === 'unconfigurable') return $reason;
+    if ($reason === 'not-checked' || $reason === 'unconfigurable' || $reason === 'over-scan-cap') return $reason;
     return empty($res['ok']) ? $reason : 'valid';
 }
 
@@ -63,7 +63,7 @@ function columnsAgree($browser, $server)
     if ($server === 'not-checked') return true;      // reported for a manual check, whatever the browser said
     if ($browser === 'blank') return $server === 'skip';
     if ($browser === 'valid') return $server === 'valid';
-    return $server !== 'skip' && $server !== 'valid' && $server !== 'unconfigurable';
+    return $server !== 'skip' && $server !== 'valid' && $server !== 'unconfigurable' && $server !== 'over-scan-cap';
 }
 
 function valueOf($v)

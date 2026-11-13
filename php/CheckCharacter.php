@@ -2514,6 +2514,13 @@ class CheckCharacter
         // to it, which shows nothing (VAL-3).
         $raw = self::browserTrim($raw);
         if ($raw === '') return ['ok' => true, 'reason' => 'no-op', 'count' => 0];
+        // A value over the scan cap is not a fault of the rule, so it gets its
+        // own reason and the audit can say what happened (VAL-11). Still no
+        // verdict: the browser stops at the same cap.
+        $st = self::pooledState($cfg);
+        if ($st !== null && mb_strlen($raw, 'UTF-8') > self::pooledScanCap($st)) {
+            return ['ok' => true, 'reason' => 'over-scan-cap', 'count' => 0, 'cap' => self::pooledScanCap($st)];
+        }
         $segs = self::pooledParse($cfg, $raw);
         if ($segs === null) return ['ok' => true, 'reason' => 'unconfigurable', 'count' => 0];
         $ids = 0; $junk = 0; $bad = 0; $dups = 0; $seen = [];
