@@ -34,6 +34,17 @@ final class GrowthReference
     const PAGE_TABLES = 4;
     /** Curve sets of growth charts (and curve tables) one page may carry, unless index.json says otherwise. */
     const PAGE_CHARTS = 4;
+    /**
+     * Table rows one page may carry inside its own JSON, both sexes counted,
+     * unless index.json says otherwise ("pageRows"): about four WHO tables by
+     * day to five years, some 400 KB. PAGE_TABLES counts tables whatever their
+     * size, so four tables of 4 MB from an administrator's folder, which
+     * always travel inline, put 16 MB on every view of a form (RNG-7).
+     */
+    const PAGE_ROWS = 16000;
+    /** The caps an index.json may set: name => [default, the most it may be]. */
+    const PAGE_CAPS = ['pageTables' => [self::PAGE_TABLES, 50], 'pageCharts' => [self::PAGE_CHARTS, 50],
+                       'pageRows' => [self::PAGE_ROWS, 1000000]];
     /** The largest z-score zText writes (see there). */
     const MAX_Z_TEXT = 999.99;
     /** The largest axis value a "valid" bound may name (days, months or cm). */
@@ -129,7 +140,7 @@ final class GrowthReference
      * again.
      *
      * @return array ['references' => [id => entry + ['dir' => folder]],
-     *                'pageTables' => int, 'pageCharts' => int,
+     *                'pageTables' => int, 'pageCharts' => int, 'pageRows' => int,
      *                'problems' => [string, ...], 'refused' => [id => why],
      *                'broken' => why|null, 'unread' => why|null]
      */
@@ -137,8 +148,8 @@ final class GrowthReference
     {
         $extraDir = is_string($extraDir) ? trim($extraDir) : '';
         if (isset(self::$catalogMemo[$extraDir])) return self::$catalogMemo[$extraDir];
-        $out = ['references' => [], 'pageTables' => self::PAGE_TABLES, 'pageCharts' => self::PAGE_CHARTS,
-                'problems' => [], 'refused' => [], 'broken' => null, 'unread' => null];
+        $out = ['references' => [], 'problems' => [], 'refused' => [], 'broken' => null, 'unread' => null];
+        foreach (self::PAGE_CAPS as $cap => $spec) $out[$cap] = $spec[0];
         $dirs = [['dir' => self::bundledDir(), 'what' => 'the bundled references', 'extra' => false]];
         if ($extraDir !== '') $dirs[] = ['dir' => rtrim($extraDir, '/\\'), 'what' => 'the reference folder in the module settings', 'extra' => true];
         foreach ($dirs as $d) {
@@ -154,7 +165,7 @@ final class GrowthReference
                 if (!empty($index['unread']) && $out['unread'] === null) $out['unread'] = $why;
                 continue;
             }
-            foreach (['pageTables', 'pageCharts'] as $cap) {
+            foreach (self::PAGE_CAPS as $cap => $spec) {
                 if (isset($index[$cap])) $out[$cap] = $index[$cap];
             }
             // a cap out of range keeps the default: it limits what a page
@@ -275,10 +286,10 @@ final class GrowthReference
         if (!isset($j['references']) || !is_array($j['references'])) return ['error' => 'index.json has no "references".'];
         $out = ['references' => $j['references'], 'sources' => (isset($j['sources']) && is_array($j['sources'])) ? $j['sources'] : [],
                 'capProblems' => []];
-        foreach (['pageTables' => self::PAGE_TABLES, 'pageCharts' => self::PAGE_CHARTS] as $cap => $default) {
+        foreach (self::PAGE_CAPS as $cap => $spec) {
             if (!array_key_exists($cap, $j)) continue;
-            if (!is_int($j[$cap]) || $j[$cap] < 0 || $j[$cap] > 50) {
-                $out['capProblems'][] = '"' . $cap . '" must be a whole number from 0 to 50, so the default (' . $default . ') applies.';
+            if (!is_int($j[$cap]) || $j[$cap] < 0 || $j[$cap] > $spec[1]) {
+                $out['capProblems'][] = '"' . $cap . '" must be a whole number from 0 to ' . $spec[1] . ', so the default (' . $spec[0] . ') applies.';
                 continue;
             }
             $out[$cap] = $j[$cap];
@@ -799,6 +810,24 @@ final class GrowthReference
             return $w;
         }
         return 0.5 * ((empty($sexes['male']) ? 0 : 1) + (empty($sexes['female']) ? 0 : 1));
+    }
+
+    /**
+     * How many table rows a page's copy of a reference carries inside the
+     * page's own JSON, both sexes counted, for the "pageRows" cap. None when
+     * the rows travel as their own file (rowsFile(), a bundled table the page
+     * may read whole: the browser keeps that script); else the rows
+     * pageCopy() sends for $need. Twin of the choice
+     * UniversalValidator::attachGrowthTables makes between pageIndex() and
+     * pageCopy().
+     */
+    public static function pageRows(array $need, array $entry, array $table)
+    {
+        $sexes = isset($need['sexes']) ? $need['sexes'] : ['male' => true, 'female' => true];
+        $every = !isset($need['xs']) || !is_array($need['xs']);
+        if ($every && (!empty($sexes['male']) || !empty($sexes['female'])) && self::rowsFile($entry) !== null) return 0;
+        $copy = self::pageCopy($entry, $table, $need);
+        return count($copy['male']) + count($copy['female']);
     }
 
     /**

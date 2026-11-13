@@ -5783,7 +5783,10 @@ class UniversalValidator extends AbstractExternalModule
      * saved value, a few rows when the age or length is, none for a branch
      * whose condition is settled false. The catalog's "pageTables" caps them,
      * counted by GrowthReference::pageWeight (a whole table is tens of
-     * kilobytes). A rule, or a branch, that needs more, or whose reference can
+     * kilobytes), and its "pageRows" caps the rows that travel inside the
+     * page's own JSON (GrowthReference::pageRows), so a large table from the
+     * administrator's folder cannot put megabytes on every view (RNG-7).
+     * A rule, or a branch, that needs more, or whose reference can
      * no longer be read, is deferred with the reason (deferredOnSave): the
      * page still checks the measurement itself, and the post-save audit and
      * the scan check the rest.
@@ -5792,6 +5795,7 @@ class UniversalValidator extends AbstractExternalModule
     {
         $dir = null;
         $cap = null;
+        $capRows = null;
         $need = [];     // reference id => what the page reads of it
         $entries = [];  // reference id => [entry, table]
         foreach ($config['rules'] as $i => $r) {
@@ -5817,6 +5821,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ($cap === null) {
                     $dir = $this->referenceDir();
                     $cap = GrowthReference::catalog($dir)['pageTables'];
+                    $capRows = GrowthReference::catalog($dir)['pageRows'];
                 }
                 $id = $n['rangeReference'];
                 $why = null;
@@ -5849,7 +5854,18 @@ class UniversalValidator extends AbstractExternalModule
                             . $cap . '), so this check runs when the record is saved'
                             . (empty($n['rangeReturn']) ? '' : ', and the fields it returns are filled then') . '.';
                     } else {
-                        $need[$id] = $merged;
+                        // the rows inside the page's JSON, whatever the tables count
+                        $rows = 0;
+                        foreach ([$id => $merged] + $need as $nid => $nn) {
+                            $rows += GrowthReference::pageRows($nn, $entries[$nid][0], $entries[$nid][1]);
+                        }
+                        if ($rows > $capRows) {
+                            $why = 'this form would carry ' . $rows . ' rows of growth reference tables with this one, more than the most one page may carry ('
+                                . $capRows . '), so this check runs when the record is saved'
+                                . (empty($n['rangeReturn']) ? '' : ', and the fields it returns are filled then') . '.';
+                        } else {
+                            $need[$id] = $merged;
+                        }
                     }
                 }
                 if ($why !== null) {

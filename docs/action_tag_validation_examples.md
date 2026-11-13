@@ -3744,8 +3744,9 @@ The whole `index.json` of this level, beside the three tables:
 - `pageTables`, at the top of the folder's `index.json`, sets how many tables
   one page carries (0 to 50, default 4), and `pageCharts` how many sets of
   chart curves and tables of reference values (Level 8, same range and
-  default). A value outside the range is reported to staff, and the default
-  applies; the folder's references stay in use.
+  default). `pageRows` (0 to 1000000, default 16000) caps the table rows that
+  travel inside one page. A value outside the range is reported to staff, and
+  the default applies; the folder's references stay in use.
 
 #### Tables of other shapes
 

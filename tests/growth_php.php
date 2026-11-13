@@ -694,14 +694,34 @@ $capCases = [
     'pageTables as text' => [['pageTables' => '4'], 'pageTables', 4],
     'pageCharts past 50' => [['pageCharts' => 51], 'pageCharts', 4],
     'pageCharts of null' => [['pageCharts' => null], 'pageCharts', 4],
+    'pageRows past a million' => [['pageRows' => 1000001], 'pageRows', 16000, 1000000],
+    'pageRows as a fraction' => [['pageRows' => 1.5], 'pageRows', 16000, 1000000],
 ];
 foreach ($capCases as $label => $case) {
     writeIndex($dir, ['mine' => $base], $case[0]);
     $c = G::catalog($dir);
     check('extra index: ' . $label . ' keeps the default and every reference (got ' . json_encode($c['problems']) . ')',
-        $c['problems'] === ['the reference folder in the module settings: "' . $case[1] . '" must be a whole number from 0 to 50, so the default ('
+        $c['problems'] === ['the reference folder in the module settings: "' . $case[1] . '" must be a whole number from 0 to '
+            . (isset($case[3]) ? $case[3] : 50) . ', so the default ('
             . $case[2] . ') applies.'] && $c[$case[1]] === $case[2] && $c['broken'] === null && count($c['references']) === 13);
 }
+// RNG-7: "pageRows" caps the rows inside a page's JSON, whatever the tables count
+writeIndex($dir, ['mine' => $base], ['pageRows' => 250]);
+check('extra index: pageRows is taken, and the bundled index leaves the default',
+    G::catalog($dir)['pageRows'] === 250 && G::catalog(null)['pageRows'] === G::PAGE_ROWS);
+$wfa = G::entry('who-wfa');
+$wfaT = G::table($wfa);
+$both = ['male' => true, 'female' => true];
+check('pageRows: a bundled table read whole travels as its own file and counts no row; a few ages count the rows sent (got '
+    . json_encode([G::pageRows(['sexes' => $both, 'xs' => null], $wfa, $wfaT), G::pageRows(['sexes' => $both, 'xs' => [365.0]], $wfa, $wfaT)]) . ')',
+    G::pageRows(['sexes' => $both, 'xs' => null], $wfa, $wfaT) === (G::rowsFile($wfa) === null ? 3654 : 0)
+    && G::pageRows(['sexes' => $both, 'xs' => [365.0]], $wfa, $wfaT) === 6
+    && G::pageRows(['sexes' => ['male' => true, 'female' => false], 'xs' => [365.0]], $wfa, $wfaT) === 3);
+$mineE = G::entry('mine', $dir);
+$mineT = G::table($mineE);
+check('pageRows: a table of the administrator\'s folder counts every row it sends inline',
+    G::pageRows(['sexes' => $both, 'xs' => null], $mineE, $mineT) === count($mineT['male']) + count($mineT['female'])
+    && G::pageRows(['sexes' => ['male' => true, 'female' => false], 'xs' => null], $mineE, $mineT) === count($mineT['male']));
 // "chartUnit": how a growth chart counts an age axis
 writeIndex($dir, ['mine' => $base + ['chartUnit' => 'weeks'], 'auto' => $base + ['chartUnit' => 'auto']]);
 $c = G::catalog($dir);

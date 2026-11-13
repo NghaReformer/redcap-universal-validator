@@ -157,7 +157,10 @@ page. A bundled table the page may read whole does not travel inside the page:
 the page loads its rows as a script under `js/growth/`, which the browser
 keeps, so a second form or visit costs no more. The tables of your own folder
 always travel inside the page, as that folder may lie where the web server
-does not serve files. A rule whose sex, date or axis field is on a form the viewer cannot see
+does not serve files. `pageRows` (0 to 1000000, default 16000) caps the rows that
+travel inside one page, both sexes counted, whatever the number of tables: a
+WHO table by day to five years has 3654. A rule whose table would take the
+page past it is checked after saving instead, as one past `pageTables` is. A rule whose sex, date or axis field is on a form the viewer cannot see
 (or a survey does not show) gets no table and does not count: the page cannot
 work out its z-score, so it only checks that the measurement is a number
 above 0.
