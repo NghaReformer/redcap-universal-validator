@@ -1709,7 +1709,8 @@ class UniversalValidator extends AbstractExternalModule
                 // it names, and keeps the reads below when it cannot answer.
                 // With "where" a survey keeps them always: the reads an answer
                 // takes must not tell "saved, but filtered" from "absent".
-                if (empty($opts['foreign']) && (!$budgeted || $spec['where'] === null)) {
+                // Another project's table is read the same way (EXI-5).
+                if (!$budgeted || $spec['where'] === null) {
                     $t = $this->existsRecordFromTable($pid, $spec, $value, $read, $ids, $scope, $dag, $self, $prefer, $opts, $filtered,
                         $budgeted ? 'index' : 'any', $beyond);
                     if ($t !== null) return $t;
@@ -1761,7 +1762,13 @@ class UniversalValidator extends AbstractExternalModule
             // budget, and reads the table in place of the full read below.
             // A survey asks the lookup index first, outside the budget: it
             // reads only the records it names.
-            $table = empty($opts['foreign']) && !($budgeted && $spec['where'] !== null);
+            //
+            // A lookup in another project reads its data table the same way
+            // (EXI-5): the module reads the table itself, so the read is not
+            // subject to what REDCap applies to a getData of that project
+            // from this one, and a miss there needs no export of every
+            // record. Who may ask was settled before (crossLookup).
+            $table = !($budgeted && $spec['where'] !== null);
             if ($table) {
                 $t = $this->existsFromTable($pid, $spec, $params, $scope, $dag, $prefer, $value, $opts, $budgeted ? 'index' : 'any');
                 if ($t !== null) return $t;
@@ -1922,6 +1929,8 @@ class UniversalValidator extends AbstractExternalModule
         if ($beyond) return $beyondWhy;
         $unseen = array_values(array_filter($more, function ($r) use ($got) { return !array_key_exists($r, $got); }));
         if ($unseen && $scope !== 'dag') return $this->existsUnseenAnswer($spec['where'] === null && !$spec['returns'], $opts);
+        // Another project, under "scope":"dag": the reads below decide (existsFromTable).
+        if ($unseen && !empty($opts['foreign'])) return null;
         return self::existsFilteredMiss($notFound, $filtered);
     }
 
@@ -11927,6 +11936,11 @@ class UniversalValidator extends AbstractExternalModule
         // Saved in another group, where "match" and "where" are not judged (EXI-3).
         if ($beyond) return ['state' => 'unknown', 'record' => null, 'dag' => null, 'why' => self::EXISTS_BEYOND_GROUP_WHY];
         if ($unseen && $scope !== 'dag') return $this->existsUnseenAnswer($plain, $opts);
+        // Another project, confined to the caller's group there: a record
+        // not handed back may be one of that group that this project's
+        // restrictions kept from the read. The export decides, with the
+        // evidence it needs (existsMiss).
+        if ($unseen && !empty($opts['foreign'])) return null;
         return self::existsFilteredMiss($notFound, $filtered);
     }
 

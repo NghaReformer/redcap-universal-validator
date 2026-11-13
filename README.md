@@ -828,7 +828,9 @@ the specimen ID on the collection form.
   index cannot answer, the module reads the searched field's rows of every
   record from the data table; where that cannot be read either, the searched
   fields of every record through REDCap, as before. A lookup in another
-  project (`"project"`) and a survey lookup with `where` skip the index
+  project (`"project"`) reads that project's index and data table the same
+  way, once the project has agreed to answer; a survey lookup with `where`
+  skips the index
   (see [Lookups on large projects](#lookups-on-large-projects-the-value-index)).
 - **`in` on this form.** When the searched field is on the tagged field's own
   form, the page sends what that field holds now, and the record being edited
