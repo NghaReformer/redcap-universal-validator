@@ -3318,6 +3318,8 @@ function QRID_growthPercentileText(cum, places){
    significant digits (a decimal tie such as a median of 9.165 stays a tie),
    then half away from zero to d decimals, both done here on the first 40
    digits of toExponential(39), which PHP's sprintf("%.39e") gives the same.
+   The same text for the same double: Math.pow, exp and log can differ from
+   PHP's by one unit in the last place (RNG-10, see the server twin).
    Twin of GrowthReference::roundedUnits. */
 function QRID_growthRoundedUnits(v, d){
   if(typeof v !== "number" || !isFinite(v) || v < 0) return null;
@@ -4308,9 +4310,11 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
        then. Only items whose active rule can block, or fills fields from the
        answer (@UVEXISTS "return"), set __qridPending. A save that already
        waited does not wait again: a lookup still out is given up. */
-    var pend = passing ? [] : live.filter(function(el){
+    var pend = live.filter(function(el){
       return el.__qridPending && bad.indexOf(el) < 0 && !(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0);
     });
+    /* inside the pass the save was already decided once: it does not wait again */
+    if(passing) pend = [];
     if(pend.length){
       if(!UV_guard.resuming && QRID_SAVE_HOLD_MS > 0){
         e.preventDefault();

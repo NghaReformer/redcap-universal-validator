@@ -127,6 +127,23 @@ $whoReadme = (string) file_get_contents(G::bundledDir() . '/who/README.md');
 check('who/README.md: says the lying or standing correction is applied with "measured"',
     strpos($whoReadme, 'The module does not apply two adjustments') === false && strpos($whoReadme, '`"measured"`') !== false
     && isset(G::entry('who-lhfa')['position'], G::entry('who-wfl')['position'], G::entry('who-wfh')['position']));
+// RNG-12: the largest double below a "below" bound, found without pack's
+// 64-bit "q" (absent on a 32-bit PHP). Nothing lies between it and the bound.
+$jb = new \ReflectionMethod(G::class, 'justBelow');
+$jb->setAccessible(true);
+$wrong = [];
+foreach ([1.0, 2.0, 10.0, 0.1, 63.0, 256.0, 1826.25, 1000000.0, 4.0E-320, -1.0, -2.0, -0.1, -1826.25, -1000000.0] as $f) {
+    $got = $jb->invoke(null, $f);
+    $mid = $got + ($f - $got) / 2;
+    $ok = is_float($got) && $got < $f && ($mid === $got || $mid === $f);
+    if ($ok && PHP_INT_SIZE >= 8) {
+        $bits = unpack('q', pack('d', $f))[1] + ($f > 0 ? -1 : 1);
+        $ok = unpack('d', pack('q', $bits))[1] === $got;
+    }
+    if (!$ok) $wrong[] = $f;
+}
+check('justBelow: the next double down, byte by byte (wrong: ' . json_encode($wrong) . ')',
+    $wrong === [] && $jb->invoke(null, 0.0) === -4.9406564584124654E-324);
 // RNG-3: the folder an administrator names is a folder on this server. A name
 // PHP would open as a stream is refused before anything is opened: "ftp://"
 // made every catalog read wait on a connection, "phar://" opens an archive.

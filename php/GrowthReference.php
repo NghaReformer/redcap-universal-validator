@@ -545,11 +545,21 @@ final class GrowthReference
     private static function justBelow($f)
     {
         if ($f == 0) return -4.9406564584124654E-324;
-        // the bits of a double, as a signed 64-bit integer, count in the
-        // direction of its magnitude: one step down is -1 above 0, +1 below
-        $bits = unpack('q', pack('d', $f))[1];
-        $bits += $f > 0 ? -1 : 1;
-        return unpack('d', pack('q', $bits))[1];
+        // The eight bytes of a double, least significant first, read as one
+        // whole number count in the direction of its magnitude: one step down
+        // is one less above 0 and one more below. Stepped byte by byte: pack's
+        // 64-bit "q" does not exist on a 32-bit PHP (RNG-12).
+        $b = array_values(unpack('C8', pack('e', $f)));
+        $step = $f > 0 ? -1 : 1;
+        for ($i = 0; $i < 8; $i++) {
+            $v = $b[$i] + $step;
+            if ($v >= 0 && $v <= 255) {
+                $b[$i] = $v;
+                break;
+            }
+            $b[$i] = $v < 0 ? 255 : 0;   // borrow from, or carry into, the next byte
+        }
+        return unpack('e', call_user_func_array('pack', array_merge(['C8'], $b)))[1];
     }
 
     /**
@@ -1387,7 +1397,19 @@ final class GrowthReference
      * (9.17). Both roundings are done here on the value's first 40 decimal
      * digits (sprintf("%.39e"); toExponential(39) gives the same digits), so
      * neither depends on how a library breaks a tie, and the two runtimes
-     * write the same text for the same double. Twin: QRID_growthRoundedUnits.
+     * write the same text for the same double.
+     *
+     * The same double is not promised (RNG-10). pow(), exp() and log() are
+     * not correctly rounded, and PHP's C library and a browser's differ by
+     * one unit in the last place for some arguments (the 2026-11-13 review
+     * counted 77 of 200,000 for pow, 18,591 for exp and 20,000 for log). A
+     * value that such a step moves across a rounding tie would be written one
+     * unit of the last decimal apart. The 15-digit rounding absorbs a
+     * difference in the sixteenth digit except at a tie, 30,000 fuzzed
+     * outputs agreed in that review, and tests/growth_php.php and
+     * tests/growth_js.cjs hold 5,000 z-scores and 3,000 outputs to one
+     * pinned hash each; agreement beyond those is expected, not proven.
+     * Twin: QRID_growthRoundedUnits.
      */
     public static function roundedUnits($v, $d)
     {
