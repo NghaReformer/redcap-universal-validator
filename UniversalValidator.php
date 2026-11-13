@@ -11416,6 +11416,18 @@ class UniversalValidator extends AbstractExternalModule
     const THROTTLE_PROJECT_ANON = 600;
     const THROTTLE_PROJECT_SESSIONED = 6000;
     /**
+     * Sessionless checks one address may make on a project per minute
+     * (LiveLookups::surveyAddressLimited, UNQ-4): half the project's
+     * sessionless cap, so no single address can spend it.
+     */
+    const THROTTLE_ADDRESS = 300;
+    /**
+     * Rate buckets from this number up count by address: (minute mod 1024)
+     * * 2^21 + 21 bits of a hash of the address. The tiers below count from
+     * minute * RATE_TIERS, which stays under it for some seven centuries.
+     */
+    const ADDRESS_BUCKETS = 2147483648;
+    /**
      * Seconds a session must have been checking before its checks count in the
      * sessioned bucket (UNQ-8). A fresh session costs nothing to make: a
      * caller who drops the cookie on every request got the 6,000 cap and

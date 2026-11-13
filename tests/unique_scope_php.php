@@ -237,8 +237,10 @@ namespace {
             }
             return $out;
         }
+        public static $dictionaryReads = 0;
         public static function getDataDictionary($pid, $f = 'array') {
             if (!$pid) throw new \RuntimeException('needs pid');
+            self::$dictionaryReads++;
             return self::$dictionary;
         }
         public static function getEventNames($unique = false, $assoc = false, $id = null) {
@@ -377,7 +379,7 @@ namespace {
                 && \REDCap::$calls['filtered'] === 0);
             check('large field: ...and logs the field as not checked, never as passed or as a duplicate (got ' . $unc . ')',
                 logged($m, 'invalid-id-saved') === [] && strpos($unc, 'field not checked') !== false
-                && strpos($unc, 'value index is not built yet') !== false);
+                && strpos($unc, 'its value index could not answer') !== false);
             // With the index turned off there is no other way to answer: the
             // bound holds all the same.
             $m = mk($DAG);
@@ -822,6 +824,53 @@ namespace {
             $r === ['unknown' => true, 'record' => null] && $GLOBALS['__TABLE_READS'] === []
             && \REDCap::$calls === ['full' => 0, 'filtered' => 0, 'record' => 0]);
         unset($GLOBALS['__FIELD_ROWS']);
+
+        // ---- 8) the survey throttle (UNQ-4, UNQ-8 of 2026-11-13) ----------------------
+        $RB = '\ExternalModules\AbstractExternalModule';
+        $minute = (int) floor(time() / 60);
+        $anonSlot = '149|' . ($minute * UniversalValidator::RATE_TIERS);
+        $addrSlot = function ($ip) use ($minute) {
+            return '149|' . (UniversalValidator::ADDRESS_BUCKETS + (($minute % 1024) << 21) + (crc32($ip) & 0x1FFFFF));
+        };
+        $limitRows = function ($m) { return logged($m, 'uv-throttle-limit-reached'); };
+        // UNQ-8: a request that is refused is counted, and costs no rule work.
+        $RB::$rateBuckets = [];
+        $m = mk($SV, null);
+        $GLOBALS['__TEST_USER'] = null;
+        $r = $m->redcap_module_ajax('unique-check', ['field' => 'record_id', 'values' => ['record_id' => '1']],
+            149, null, 'reg', 351, 1, 'HASH', null, null, '', '', null, null);
+        check('throttle: a refused sessionless request is counted (got ' . json_encode($r) . ')',
+            ($r['error'] ?? null) === 'not enabled on surveys' && ($RB::$rateBuckets[$anonSlot] ?? 0) === 1);
+        $RB::$rateBuckets = [$anonSlot => UniversalValidator::THROTTLE_PROJECT_ANON];
+        \REDCap::$dictionaryReads = 0;
+        $m = mk($SV, null);
+        $r = $sask($m, 't2');
+        check('throttle: over the cap, the request is refused before the rules are read (got ' . json_encode($r) . ')',
+            strpos((string) ($r['error'] ?? ''), 'too many checks') === 0 && \REDCap::$dictionaryReads === 0);
+        // UNQ-4: the request that takes the counter past the cap logs it, once.
+        check('throttle: reaching the project cap is logged, with the tier and the limit (got ' . json_encode($limitRows($m)) . ')',
+            count($limitRows($m)) === 1 && $limitRows($m)[0]['tier'] === 'sessionless'
+            && $limitRows($m)[0]['limit'] === UniversalValidator::THROTTLE_PROJECT_ANON && (int) $limitRows($m)[0]['project_id'] === 149);
+        $sask($m, 't3');
+        check('throttle: ...by that one request, not by each one after it', count($limitRows($m)) === 1);
+        // UNQ-4: one address cannot spend the project's budget.
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+        $RB::$rateBuckets = [$addrSlot('203.0.113.9') => UniversalValidator::THROTTLE_ADDRESS];
+        $m = mk($SV, null);
+        $r = $sask($m, 't2');
+        check('throttle: an address over its own cap is refused (got ' . json_encode($r) . ')',
+            strpos((string) ($r['error'] ?? ''), 'too many checks') === 0);
+        check('throttle: ...without spending the project\'s budget', !isset($RB::$rateBuckets[$anonSlot]));
+        check('throttle: ...and logged once, with no address in the row (got ' . json_encode($limitRows($m)) . ')',
+            count($limitRows($m)) === 1 && $limitRows($m)[0]['tier'] === 'address'
+            && strpos(json_encode($m->logCalls), '203.0.113') === false);
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.7';
+        $r = $sask($m, 't2');
+        check('throttle: another address is answered meanwhile (got ' . json_encode($r) . ')',
+            $r === ['used' => true, 'record' => null] && ($RB::$rateBuckets[$anonSlot] ?? 0) === 1
+            && ($RB::$rateBuckets[$addrSlot('198.51.100.7')] ?? 0) === 1);
+        check('throttle: the address cap is below the project cap', UniversalValidator::THROTTLE_ADDRESS < UniversalValidator::THROTTLE_PROJECT_ANON);
+        unset($_SERVER['REMOTE_ADDR']);
     }
     if ($INDEX) {
         // The index answers outside the budget: it reads the records it names.
