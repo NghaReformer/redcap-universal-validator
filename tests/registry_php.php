@@ -115,8 +115,9 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     // what the page hook adds: the roles could not be read, a dropdown's saved code,
     // the saved values could not be read
     'writeonceRoles', 'writeonceSince', 'writeonceRolesUnread', 'writeonceSaved', 'writeonceValuesUnread',
-    // @UVJUSTIFY: the field that holds the reason
-    'justifyReason',
+    // @UVJUSTIFY: the field that holds the reason; what the page hook adds: the
+    // fields whose saved reason is older than their saved value (JUS-1)
+    'justifyReason', 'justifyStale',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -176,8 +177,9 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // @UVWRITEONCE, from the page hook: the roles could not be read, a dropdown's saved code,
     // the saved values could not be read
     'writeonceRolesUnread', 'writeonceSaved', 'writeonceValuesUnread',
-    // @UVJUSTIFY: the field that holds the reason
-    'justifyReason',
+    // @UVJUSTIFY: the field that holds the reason; from the page hook: the
+    // fields whose saved reason is older than their saved value (JUS-1)
+    'justifyReason', 'justifyStale',
 ]);
 // Which modes a reason (@UVJUSTIFY) stands for (php/modes.json "justify"). A
 // duplicate is about two records, a lock does not give a role, and a reason

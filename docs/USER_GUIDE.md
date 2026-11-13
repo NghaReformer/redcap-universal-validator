@@ -1325,7 +1325,10 @@ Annotation-only; see the README section and
 **Can a value that breaks a rule be saved when it is right?**
 Yes. Add `@UVJUSTIFY={"reason":"[weight_reason]"}` beside the rule, naming a
 field on the same form where the reason is written (Text, Notes, dropdown,
-radio or SQL). While the rule holds the save and the reason field is empty, a
+radio or SQL). This is not REDCap's "Require a reason when making changes"
+setting, which asks on every change of a saved record and keeps the reason
+in REDCap's logging; `@UVJUSTIFY` asks only while a rule is broken and
+keeps the reason in a field of the form. While the rule holds the save and the reason field is empty, a
 note under the field asks for a reason and the save message adds "or give a
 reason in" with the reason field's label. Once the reason is written, the
 field's `@UVALIDATE`, `@UVASSERT`, `@UVREQUIRED`, `@UVCHOICES`, `@UVWINDOW`,
@@ -1338,15 +1341,21 @@ note on the page; it only labels the finding in the audit and the scan. A blank 
 as `@UVREQUIRED` reads it, so a no-break space, a zero-width space or a soft
 hyphen alone is blank too), a missing data code and a reason field the person cannot see (its
 row hidden by branching logic, or the row it is embedded in hidden) count as
-no reason. The module refuses a reason field the person does not fill in: the
+no reason, on the page, in the audit and in the scan. One visible character
+is a reason; to ask for more, use a dropdown of allowed reasons or give the
+reason field a rule of its own. The module refuses a reason field the person does not fill in: the
 record ID field, a field REDCap fills in itself (`@CALCTEXT`, `@DEFAULT`,
-`@NOW` and the like), a field with `@READONLY`, `@HIDDEN`, `@HIDDEN-FORM` or
-`@HIDDEN-SURVEY`, a field with
-its own `@UVJUSTIFY`, a field with `@UVWRITEONCE`, and a field another rule's
-`"return"` writes into. A
-reason stands until someone clears it, so a later, different broken value of
-the field saves under the same reason; clear the reason field when the value
-changes for another reason. The audit
+`@NOW`, MyCap's `@MC-PARTICIPANT-*` and `@MC-TASK-*`, and the like), a field with `@READONLY`, `@HIDDEN`, `@HIDDEN-FORM` or
+`@HIDDEN-SURVEY`, a field with `@RICHTEXT` or an ontology search, a field with
+its own `@UVJUSTIFY`, a field with `@UVWRITEONCE`, a field another rule's
+`"return"` writes into, and, on a survey shown one section per page, a reason
+field in another section than the field. The name of one of REDCap's tags
+inside another tag's value refuses the field too, since REDCap may still
+read it there. A
+reason stands for the value it was saved with: a later, different broken
+value of the field is held again until the reason field is changed, and the
+audit and the scan call a reason older than its value (by REDCap's log) no
+reason, also after an import. The audit
 logs such a finding as `uvalidate-justified`, naming the reason field but not
 the reason, and the Validation scan counts it apart from the open findings, so
 a scan whose findings all have a reason counts no open violations.

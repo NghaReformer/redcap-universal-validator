@@ -565,6 +565,114 @@
             "uj_wt2": "302.5",
             "uj_wt2_why": "1",
             "uj_wt_why": "Scale checked twice"
+        },
+        "K1": {
+            "uj_anchor": "2026-10-01",
+            "uj_arm": "2",
+            "uj_code": "UJ-001",
+            "uj_code_why": "Code from the paper form",
+            "uj_dia": "90",
+            "uj_dia_why": "1",
+            "uj_dose": "1",
+            "uj_dose_why": "Dose by weight",
+            "uj_hr": "250",
+            "uj_hr_show": "1",
+            "uj_hr_why": "Athlete, resting rate checked",
+            "uj_id": "79927398710",
+            "uj_id_why": "Number printed on the tube",
+            "uj_lock": "310.0",
+            "uj_lock_why": "Weighed in a cast",
+            "uj_mother": "XE-9",
+            "uj_mother_why": "Mother enrolled at another site",
+            "uj_off": "85",
+            "uj_off_why": "Known lung disease",
+            "uj_pool": "79927398713 79927398710",
+            "uj_pool_why": "Second tube relabelled\nat the lab",
+            "uj_req_why": "1",
+            "uj_ro": "300.0",
+            "uj_ro_why": "Device recalibrated",
+            "uj_rr": "70",
+            "uj_sys": "80",
+            "uj_temp": "43.0",
+            "uj_temp_why": "Fever confirmed with a second thermometer",
+            "uj_visit": "2026-10-20",
+            "uj_visit_why": "Clinic closed for a week",
+            "uj_wt": "300.0",
+            "uj_wt2": "302.5",
+            "uj_wt2_why": "1",
+            "uj_wt_why": "Scale checked twice"
+        },
+        "K2": {
+            "uj_anchor": "2026-10-01",
+            "uj_arm": "2",
+            "uj_code": "UJ-001",
+            "uj_code_why": "Code from the paper form",
+            "uj_dia": "90",
+            "uj_dia_why": "1",
+            "uj_dose": "1",
+            "uj_dose_why": "Dose by weight",
+            "uj_hr": "250",
+            "uj_hr_show": "1",
+            "uj_hr_why": "Athlete, resting rate checked",
+            "uj_id": "79927398710",
+            "uj_id_why": "Number printed on the tube",
+            "uj_lock": "310.0",
+            "uj_lock_why": "Weighed in a cast",
+            "uj_mother": "XE-9",
+            "uj_mother_why": "Mother enrolled at another site",
+            "uj_off": "85",
+            "uj_off_why": "Known lung disease",
+            "uj_pool": "79927398713 79927398710",
+            "uj_pool_why": "Second tube relabelled\nat the lab",
+            "uj_req_why": "1",
+            "uj_ro": "300.0",
+            "uj_ro_why": "Device recalibrated",
+            "uj_rr": "70",
+            "uj_sys": "80",
+            "uj_temp": "43.0",
+            "uj_temp_why": "Fever confirmed with a second thermometer",
+            "uj_visit": "2026-10-20",
+            "uj_visit_why": "Clinic closed for a week",
+            "uj_wt": "320.0",
+            "uj_wt2": "302.5",
+            "uj_wt2_why": "1",
+            "uj_wt_why": "Scale checked a third time"
+        },
+        "K3": {
+            "uj_anchor": "2026-10-01",
+            "uj_arm": "2",
+            "uj_code": "UJ-001",
+            "uj_code_why": "Code from the paper form",
+            "uj_dia": "90",
+            "uj_dia_why": "1",
+            "uj_dose": "1",
+            "uj_dose_why": "Dose by weight",
+            "uj_hr": "250",
+            "uj_hr_show": "1",
+            "uj_hr_why": "Athlete, resting rate checked",
+            "uj_id": "79927398710",
+            "uj_id_why": "Number printed on the tube",
+            "uj_lock": "310.0",
+            "uj_lock_why": "Weighed in a cast",
+            "uj_mother": "XE-9",
+            "uj_mother_why": "Mother enrolled at another site",
+            "uj_off": "85",
+            "uj_off_why": "Known lung disease",
+            "uj_pool": "79927398713 79927398710",
+            "uj_pool_why": "Second tube relabelled\nat the lab",
+            "uj_req_why": "1",
+            "uj_ro": "300.0",
+            "uj_ro_why": "Device recalibrated",
+            "uj_rr": "70",
+            "uj_sys": "80",
+            "uj_temp": "43.0",
+            "uj_temp_why": "Fever confirmed with a second thermometer",
+            "uj_visit": "2026-10-20",
+            "uj_visit_why": "Clinic closed for a week",
+            "uj_wt": "320.0",
+            "uj_wt2": "302.5",
+            "uj_wt2_why": "1",
+            "uj_wt_why": "Scale replaced"
         }
     },
     "ajax": {
@@ -950,7 +1058,8 @@
                 "justifyReason": "uj_far_why",
                 "fields": [
                     "uj_far"
-                ]
+                ],
+                "configError": "@UVJUSTIFY on \"uj_far\": \"reason\" names \"[uj_far_why]\", which is on page 4 of the survey \"uv_justify_test\", not on page 3 with this field — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section."
             },
             {
                 "type": "range",
@@ -1050,7 +1159,8 @@
         "uj_bad_type": "@UVJUSTIFY on \"uj_bad_type\": \"reason\" names \"[uj_signs]\", a \"checkbox\" field — the reason is written in a Text or Notes field, or picked in a dropdown, radio or SQL field.",
         "uj_bad_self": "@UVJUSTIFY on \"uj_bad_self\": \"reason\" names this field itself — name the field where the reason is written, e.g. \"[uj_bad_self_reason]\".",
         "uj_bad_none": "@UVJUSTIFY on \"uj_bad_none\": no rule a reason can stand for checks this field — give it a rule of @UVALIDATE, @UVASSERT, @UVREQUIRED, @UVCHOICES, @UVWINDOW, @UVEXISTS, @UVRANGE or @UVDELTA (a reason does not stand for @UVUNIQUE or @UVWRITEONCE).",
-        "uj_bad_twice": "field \"uj_bad_twice\" is given @UVJUSTIFY 2 times — this tag takes no \"when\" condition, so keep one."
+        "uj_bad_twice": "field \"uj_bad_twice\" is given @UVJUSTIFY 2 times — this tag takes no \"when\" condition, so keep one.",
+        "uj_far": "@UVJUSTIFY on \"uj_far\": \"reason\" names \"[uj_far_why]\", which is on page 4 of the survey \"uv_justify_test\", not on page 3 with this field — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section."
     },
     "xe2": {
         "algorithm": "iso7064_mod37_36",
@@ -1413,7 +1523,466 @@
                 "justifyReason": "uj_far_why",
                 "fields": [
                     "uj_far"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_far\": \"reason\" names \"[uj_far_why]\", which is on page 4 of the survey \"uv_justify_test\", not on page 3 with this field — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section."
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "0",
+                "rangeHardHi": "10",
+                "rangeHardText": "0 to 10",
+                "fields": [
+                    "uj_bad_bare",
+                    "uj_bad_form",
+                    "uj_bad_type",
+                    "uj_bad_self",
+                    "uj_bad_twice"
                 ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uj_bad_bare"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_bad_bare\": @UVJUSTIFY needs the field that holds the reason, e.g. @UVJUSTIFY={\"reason\":\"[weight_reason]\"}."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uj_bad_form"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_bad_form\": \"reason\" names \"[record_id]\", which is on the form \"xe_enrol\", not on \"uv_justify_test\" with this field — the reason is given on the form where the value is entered."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uj_bad_type"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_bad_type\": \"reason\" names \"[uj_signs]\", a \"checkbox\" field — the reason is written in a Text or Notes field, or picked in a dropdown, radio or SQL field."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uj_bad_self"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_bad_self\": \"reason\" names this field itself — name the field where the reason is written, e.g. \"[uj_bad_self_reason]\"."
+            },
+            {
+                "type": "justify",
+                "fields": [
+                    "uj_bad_twice"
+                ],
+                "configError": "field \"uj_bad_twice\" is given @UVJUSTIFY 2 times — this tag takes no \"when\" condition, so keep one."
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_wt_why",
+                "fields": [
+                    "uj_bad_none"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_bad_none\": no rule a reason can stand for checks this field — give it a rule of @UVALIDATE, @UVASSERT, @UVREQUIRED, @UVCHOICES, @UVWINDOW, @UVEXISTS, @UVRANGE or @UVDELTA (a reason does not stand for @UVUNIQUE or @UVWRITEONCE)."
+            }
+        ],
+        "clock": {
+            "today": "2026-10-26",
+            "now": "2026-10-26 12:00:00",
+            "utc": 1793016000000,
+            "offset": 0,
+            "next": null,
+            "offsetAfter": null
+        },
+        "missingCodes": [
+            "UNK"
+        ],
+        "numberMarks": {
+            "uj_wt": "point",
+            "uj_sys": "point",
+            "uj_dia": "point",
+            "uj_wt2": "point",
+            "uj_temp": "point",
+            "uj_off": "point",
+            "uj_hr": "point",
+            "uj_ro": "point",
+            "uj_emb": "point",
+            "uj_rr": "point",
+            "uj_lock": "point",
+            "uj_far": "point",
+            "uj_bad_bare": "point",
+            "uj_bad_form": "point",
+            "uj_bad_type": "point",
+            "uj_bad_self": "point",
+            "uj_bad_none": "point",
+            "uj_bad_twice": "point"
+        },
+        "configShape": 1,
+        "jsmoName": "EM.T.UV"
+    },
+    "form2": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "required",
+                "blockSave": "hard",
+                "fields": [
+                    "uj_req"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_req_why",
+                "fields": [
+                    "uj_req"
+                ]
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "30",
+                "rangeHardHi": "250",
+                "rangeHardBlock": "hard",
+                "rangeUnit": "kg",
+                "rangeHardText": "30 to 250 kg",
+                "fields": [
+                    "uj_wt",
+                    "uj_ro",
+                    "uj_emb",
+                    "uj_lock"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_wt_why",
+                "fields": [
+                    "uj_wt"
+                ]
+            },
+            {
+                "algorithm": "luhn",
+                "blockSave": "hard",
+                "type": "single",
+                "fields": [
+                    "uj_id"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_id_why",
+                "fields": [
+                    "uj_id"
+                ]
+            },
+            {
+                "type": "pooled",
+                "algorithm": "luhn",
+                "blockSave": "hard",
+                "idPattern": "[0-9]{11}",
+                "fields": [
+                    "uj_pool"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_pool_why",
+                "fields": [
+                    "uj_pool"
+                ]
+            },
+            {
+                "type": "constraint",
+                "assert": "[uj_dia]<[uj_sys]",
+                "message": "The diastolic pressure must be below the systolic.",
+                "blockSave": "hard",
+                "fields": [
+                    "uj_dia"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<",
+                    [
+                        "ref",
+                        "uj_dia",
+                        null
+                    ],
+                    [
+                        "ref",
+                        "uj_sys",
+                        null
+                    ]
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_dia_why",
+                "fields": [
+                    "uj_dia"
+                ]
+            },
+            {
+                "type": "choices",
+                "choicesHide": [
+                    "1"
+                ],
+                "when": "[uj_arm]='2'",
+                "blockSave": "hard",
+                "choicesAll": [
+                    "1",
+                    "2",
+                    "3"
+                ],
+                "fields": [
+                    "uj_dose"
+                ],
+                "whenAst": [
+                    "cmp",
+                    "=",
+                    [
+                        "ref",
+                        "uj_arm",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "2"
+                    ]
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_dose_why",
+                "fields": [
+                    "uj_dose"
+                ]
+            },
+            {
+                "type": "window",
+                "windowFrom": "[uj_anchor]",
+                "windowLo": 0,
+                "windowHi": 14,
+                "windowUnit": "days",
+                "blockSave": "hard",
+                "dateType": "date",
+                "dateFormat": "ymd",
+                "fromType": "date",
+                "fromFormat": "ymd",
+                "fields": [
+                    "uj_visit"
+                ],
+                "windowFromOp": [
+                    "ref",
+                    "uj_anchor",
+                    null
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_visit_why",
+                "i18n": {
+                    "message": {
+                        "fr": "Dites pourquoi cette date de visite est juste."
+                    }
+                },
+                "message": "Say why this visit date is right.",
+                "fields": [
+                    "uj_visit"
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[uj_wt]",
+                "deltaMax": "1",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[uj_wt] both",
+                "deltaText": "a change of at most 1 kg",
+                "deltaVsLabel": "[uj_wt]",
+                "fields": [
+                    "uj_wt2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "uj_wt",
+                    null
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_wt2_why",
+                "fields": [
+                    "uj_wt2"
+                ]
+            },
+            {
+                "type": "exists",
+                "blockSave": "hard",
+                "fields": [
+                    "uj_mother"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_mother_why",
+                "fields": [
+                    "uj_mother"
+                ]
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "34",
+                "rangeHardHi": "42",
+                "rangeHardBlock": "confirm",
+                "rangeUnit": "C",
+                "rangeHardText": "34 to 42 C",
+                "fields": [
+                    "uj_temp"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_temp_why",
+                "fields": [
+                    "uj_temp"
+                ]
+            },
+            {
+                "type": "constraint",
+                "assert": "[uj_off]>=90",
+                "message": "Below 90%: check the probe.",
+                "blockSave": "off",
+                "fields": [
+                    "uj_off"
+                ],
+                "assertAst": [
+                    "cmp",
+                    ">=",
+                    [
+                        "ref",
+                        "uj_off",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "90"
+                    ]
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_off_why",
+                "fields": [
+                    "uj_off"
+                ]
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "30",
+                "rangeHardHi": "220",
+                "rangeHardBlock": "hard",
+                "rangeHardText": "30 to 220",
+                "fields": [
+                    "uj_hr"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_hr_why",
+                "fields": [
+                    "uj_hr"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_ro_why",
+                "fields": [
+                    "uj_ro"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_emb_why",
+                "fields": [
+                    "uj_emb"
+                ]
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "5",
+                "rangeHardHi": "60",
+                "rangeHardBlock": "hard",
+                "rangeHardText": "5 to 60",
+                "fields": [
+                    "uj_rr"
+                ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uj_rr"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_rr\": \"reason\" names \"[uj_sql_why]\", which is not a field of this project."
+            },
+            {
+                "algorithm": "none",
+                "blockSave": "hard",
+                "idPattern": "UJ-[0-9]{3}",
+                "type": "single",
+                "fields": [
+                    "uj_code"
+                ]
+            },
+            {
+                "type": "unique",
+                "blockSave": "hard",
+                "fields": [
+                    "uj_code"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_code_why",
+                "fields": [
+                    "uj_code"
+                ],
+                "justifyStale": [
+                    "uj_code"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_lock_why",
+                "fields": [
+                    "uj_lock"
+                ]
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "0",
+                "rangeHardHi": "24",
+                "rangeHardBlock": "hard",
+                "rangeHardText": "0 to 24",
+                "fields": [
+                    "uj_far"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_far_why",
+                "fields": [
+                    "uj_far"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_far\": \"reason\" names \"[uj_far_why]\", which is on page 4 of the survey \"uv_justify_test\", not on page 3 with this field — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section."
             },
             {
                 "type": "range",
@@ -1843,6 +2412,9 @@
                 "justifyReason": "uj_code_why",
                 "fields": [
                     "uj_code"
+                ],
+                "justifyStale": [
+                    "uj_code"
                 ]
             },
             {
@@ -1873,7 +2445,8 @@
                 "justifyReason": "uj_far_why",
                 "fields": [
                     "uj_far"
-                ]
+                ],
+                "configError": "@UVJUSTIFY on \"uj_far\": \"reason\" names \"[uj_far_why]\", which is on page 4 of the survey \"uv_justify_test\", not on page 3 with this field — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section."
             },
             {
                 "type": "range",
@@ -2303,6 +2876,9 @@
                 "justifyReason": "uj_code_why",
                 "fields": [
                     "uj_code"
+                ],
+                "justifyStale": [
+                    "uj_code"
                 ]
             },
             {
@@ -2333,7 +2909,8 @@
                 "justifyReason": "uj_far_why",
                 "fields": [
                     "uj_far"
-                ]
+                ],
+                "configError": "@UVJUSTIFY on \"uj_far\": \"reason\" names \"[uj_far_why]\", which is on page 4 of the survey \"uv_justify_test\", not on page 3 with this field — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section."
             },
             {
                 "type": "range",
@@ -2782,10 +3359,10 @@
             },
             {
                 "type": "justify",
-                "justifyReason": "uj_far_why",
                 "fields": [
                     "uj_far"
-                ]
+                ],
+                "configError": "this check is not set up correctly; the study team can see the details on the data entry form."
             },
             {
                 "type": "range",
@@ -2893,7 +3470,8 @@
         "uj_bad_type": "this check is not set up correctly; the study team can see the details on the data entry form.",
         "uj_bad_self": "this check is not set up correctly; the study team can see the details on the data entry form.",
         "uj_bad_none": "this check is not set up correctly; the study team can see the details on the data entry form.",
-        "uj_bad_twice": "this check is not set up correctly; the study team can see the details on the data entry form."
+        "uj_bad_twice": "this check is not set up correctly; the study team can see the details on the data entry form.",
+        "uj_far": "this check is not set up correctly; the study team can see the details on the data entry form."
     },
     "H1_problem_wt": "The value is above the highest plausible value for this field. Allowed 30 to 250 kg. It was saved with a reason, given in [uj_wt_why].",
     "sql": {
@@ -3233,6 +3811,9 @@
                 "justifyReason": "uj_code_why",
                 "fields": [
                     "uj_code"
+                ],
+                "justifyStale": [
+                    "uj_code"
                 ]
             },
             {
@@ -3263,7 +3844,475 @@
                 "justifyReason": "uj_far_why",
                 "fields": [
                     "uj_far"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_far\": \"reason\" names \"[uj_far_why]\", which is on page 4 of the survey \"uv_justify_test\", not on page 3 with this field — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section."
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "0",
+                "rangeHardHi": "10",
+                "rangeHardText": "0 to 10",
+                "fields": [
+                    "uj_bad_bare",
+                    "uj_bad_form",
+                    "uj_bad_type",
+                    "uj_bad_self",
+                    "uj_bad_twice"
                 ]
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uj_bad_bare"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_bad_bare\": @UVJUSTIFY needs the field that holds the reason, e.g. @UVJUSTIFY={\"reason\":\"[weight_reason]\"}."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uj_bad_form"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_bad_form\": \"reason\" names \"[record_id]\", which is on the form \"xe_enrol\", not on \"uv_justify_test\" with this field — the reason is given on the form where the value is entered."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uj_bad_type"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_bad_type\": \"reason\" names \"[uj_signs]\", a \"checkbox\" field — the reason is written in a Text or Notes field, or picked in a dropdown, radio or SQL field."
+            },
+            {
+                "type": "single",
+                "fields": [
+                    "uj_bad_self"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_bad_self\": \"reason\" names this field itself — name the field where the reason is written, e.g. \"[uj_bad_self_reason]\"."
+            },
+            {
+                "type": "justify",
+                "fields": [
+                    "uj_bad_twice"
+                ],
+                "configError": "field \"uj_bad_twice\" is given @UVJUSTIFY 2 times — this tag takes no \"when\" condition, so keep one."
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_wt_why",
+                "fields": [
+                    "uj_bad_none"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_bad_none\": no rule a reason can stand for checks this field — give it a rule of @UVALIDATE, @UVASSERT, @UVREQUIRED, @UVCHOICES, @UVWINDOW, @UVEXISTS, @UVRANGE or @UVDELTA (a reason does not stand for @UVUNIQUE or @UVWRITEONCE)."
+            }
+        ],
+        "clock": {
+            "today": "2026-10-26",
+            "now": "2026-10-26 12:00:00",
+            "utc": 1793016000000,
+            "offset": 0,
+            "next": null,
+            "offsetAfter": null
+        },
+        "missingCodes": [
+            "UNK"
+        ],
+        "numberMarks": {
+            "uj_wt": "point",
+            "uj_sys": "point",
+            "uj_dia": "point",
+            "uj_wt2": "point",
+            "uj_temp": "point",
+            "uj_off": "point",
+            "uj_hr": "point",
+            "uj_ro": "point",
+            "uj_emb": "point",
+            "uj_rr": "point",
+            "uj_lock": "point",
+            "uj_far": "point",
+            "uj_bad_bare": "point",
+            "uj_bad_form": "point",
+            "uj_bad_type": "point",
+            "uj_bad_self": "point",
+            "uj_bad_none": "point",
+            "uj_bad_twice": "point"
+        },
+        "configShape": 1,
+        "jsmoName": "EM.T.UV"
+    },
+    "stale": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off",
+        "singleFields": [],
+        "pooledFields": [],
+        "context": "form",
+        "rules": [
+            {
+                "type": "required",
+                "blockSave": "hard",
+                "fields": [
+                    "uj_req"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_req_why",
+                "fields": [
+                    "uj_req"
+                ]
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "30",
+                "rangeHardHi": "250",
+                "rangeHardBlock": "hard",
+                "rangeUnit": "kg",
+                "rangeHardText": "30 to 250 kg",
+                "fields": [
+                    "uj_wt",
+                    "uj_ro",
+                    "uj_emb",
+                    "uj_lock"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_wt_why",
+                "fields": [
+                    "uj_wt"
+                ],
+                "justifyStale": [
+                    "uj_wt"
+                ]
+            },
+            {
+                "algorithm": "luhn",
+                "blockSave": "hard",
+                "type": "single",
+                "fields": [
+                    "uj_id"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_id_why",
+                "fields": [
+                    "uj_id"
+                ]
+            },
+            {
+                "type": "pooled",
+                "algorithm": "luhn",
+                "blockSave": "hard",
+                "idPattern": "[0-9]{11}",
+                "fields": [
+                    "uj_pool"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_pool_why",
+                "fields": [
+                    "uj_pool"
+                ]
+            },
+            {
+                "type": "constraint",
+                "assert": "[uj_dia]<[uj_sys]",
+                "message": "The diastolic pressure must be below the systolic.",
+                "blockSave": "hard",
+                "fields": [
+                    "uj_dia"
+                ],
+                "assertAst": [
+                    "cmp",
+                    "<",
+                    [
+                        "ref",
+                        "uj_dia",
+                        null
+                    ],
+                    [
+                        "ref",
+                        "uj_sys",
+                        null
+                    ]
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_dia_why",
+                "fields": [
+                    "uj_dia"
+                ]
+            },
+            {
+                "type": "choices",
+                "choicesHide": [
+                    "1"
+                ],
+                "when": "[uj_arm]='2'",
+                "blockSave": "hard",
+                "choicesAll": [
+                    "1",
+                    "2",
+                    "3"
+                ],
+                "fields": [
+                    "uj_dose"
+                ],
+                "whenAst": [
+                    "cmp",
+                    "=",
+                    [
+                        "ref",
+                        "uj_arm",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "2"
+                    ]
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_dose_why",
+                "fields": [
+                    "uj_dose"
+                ]
+            },
+            {
+                "type": "window",
+                "windowFrom": "[uj_anchor]",
+                "windowLo": 0,
+                "windowHi": 14,
+                "windowUnit": "days",
+                "blockSave": "hard",
+                "dateType": "date",
+                "dateFormat": "ymd",
+                "fromType": "date",
+                "fromFormat": "ymd",
+                "fields": [
+                    "uj_visit"
+                ],
+                "windowFromOp": [
+                    "ref",
+                    "uj_anchor",
+                    null
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_visit_why",
+                "i18n": {
+                    "message": {
+                        "fr": "Dites pourquoi cette date de visite est juste."
+                    }
+                },
+                "message": "Say why this visit date is right.",
+                "fields": [
+                    "uj_visit"
+                ]
+            },
+            {
+                "type": "delta",
+                "deltaVs": "[uj_wt]",
+                "deltaMax": "1",
+                "deltaUnit": "kg",
+                "blockSave": "hard",
+                "deltaGroup": "[uj_wt] both",
+                "deltaText": "a change of at most 1 kg",
+                "deltaVsLabel": "[uj_wt]",
+                "fields": [
+                    "uj_wt2"
+                ],
+                "deltaVsOp": [
+                    "ref",
+                    "uj_wt",
+                    null
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_wt2_why",
+                "fields": [
+                    "uj_wt2"
+                ]
+            },
+            {
+                "type": "exists",
+                "blockSave": "hard",
+                "fields": [
+                    "uj_mother"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_mother_why",
+                "fields": [
+                    "uj_mother"
+                ]
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "34",
+                "rangeHardHi": "42",
+                "rangeHardBlock": "confirm",
+                "rangeUnit": "C",
+                "rangeHardText": "34 to 42 C",
+                "fields": [
+                    "uj_temp"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_temp_why",
+                "fields": [
+                    "uj_temp"
+                ]
+            },
+            {
+                "type": "constraint",
+                "assert": "[uj_off]>=90",
+                "message": "Below 90%: check the probe.",
+                "blockSave": "off",
+                "fields": [
+                    "uj_off"
+                ],
+                "assertAst": [
+                    "cmp",
+                    ">=",
+                    [
+                        "ref",
+                        "uj_off",
+                        null
+                    ],
+                    [
+                        "lit",
+                        "90"
+                    ]
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_off_why",
+                "fields": [
+                    "uj_off"
+                ]
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "30",
+                "rangeHardHi": "220",
+                "rangeHardBlock": "hard",
+                "rangeHardText": "30 to 220",
+                "fields": [
+                    "uj_hr"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_hr_why",
+                "fields": [
+                    "uj_hr"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_ro_why",
+                "fields": [
+                    "uj_ro"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_emb_why",
+                "fields": [
+                    "uj_emb"
+                ]
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "5",
+                "rangeHardHi": "60",
+                "rangeHardBlock": "hard",
+                "rangeHardText": "5 to 60",
+                "fields": [
+                    "uj_rr"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_sql_why",
+                "fields": [
+                    "uj_rr"
+                ]
+            },
+            {
+                "algorithm": "none",
+                "blockSave": "hard",
+                "idPattern": "UJ-[0-9]{3}",
+                "type": "single",
+                "fields": [
+                    "uj_code"
+                ]
+            },
+            {
+                "type": "unique",
+                "blockSave": "hard",
+                "fields": [
+                    "uj_code"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_code_why",
+                "fields": [
+                    "uj_code"
+                ],
+                "justifyStale": [
+                    "uj_code"
+                ]
+            },
+            {
+                "type": "writeonce",
+                "fields": [
+                    "uj_lock"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_lock_why",
+                "fields": [
+                    "uj_lock"
+                ]
+            },
+            {
+                "type": "range",
+                "rangeHardLo": "0",
+                "rangeHardHi": "24",
+                "rangeHardBlock": "hard",
+                "rangeHardText": "0 to 24",
+                "fields": [
+                    "uj_far"
+                ]
+            },
+            {
+                "type": "justify",
+                "justifyReason": "uj_far_why",
+                "fields": [
+                    "uj_far"
+                ],
+                "configError": "@UVJUSTIFY on \"uj_far\": \"reason\" names \"[uj_far_why]\", which is on page 4 of the survey \"uv_justify_test\", not on page 3 with this field — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section."
             },
             {
                 "type": "range",

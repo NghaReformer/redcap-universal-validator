@@ -887,10 +887,11 @@
      others holds [field, code], code null but for a checkbox option. */
   var UV_LOCK_READS = Object.create(null);
   /* Fields @UVJUSTIFY pairs with a reason field on this page: field =>
-     {reason, given(), label(), later()}, set as each pair is bound
+     {reason, given(), stale(), label(), later()}, set as each pair is bound
      (QRIDJustifyInit). The save guard drops the item of a mode a reason
      stands for on such a field once the reason is given (QRID_justified), and
-     names the reason field while it is not. */
+     names the reason field while it is not. given() is false for a reason
+     written for an earlier value of the field, and stale() says so (JUS-1). */
   var UV_JUSTIFY = Object.create(null);
   /* mode => true for the modes a reason stands for (php/modes.json
      "justify"), copied from the generated JUSTIFY_OF_MODE by the dispatcher
@@ -4302,10 +4303,12 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
     /* one label a line (QRID_fieldLabel folds a label's own line breaks):
        a label may hold a comma, so a list joined by ", " reads as more
        fields than it names */
-    /* a field a reason can still release names the reason field */
+    /* a field a reason can still release names the reason field; a reason
+       written for an earlier value is asked for anew (JUS-1) */
     function badLabel(el){
       return QRID_justifiable(el)
-        ? label(el) + " (or give a reason in \u201C" + UV_JUSTIFY[el.__qridFieldName].label() + "\u201D)" : label(el);
+        ? label(el) + " (or give a " + (UV_JUSTIFY[el.__qridFieldName].stale() ? "new " : "") + "reason in \u201C"
+            + UV_JUSTIFY[el.__qridFieldName].label() + "\u201D)" : label(el);
     }
     var names = bad.map(badLabel).map(function(t){ return "\n• " + t; }).join("");
     var hard = bad.some(function(el){ return el.__qridBlockMode === "hard"; });
@@ -7881,6 +7884,18 @@ function QRIDWriteOnceInit(QRID_CONFIG){
    as the other factories find them (QRID_fieldAnchor), a checkbox by its
    options. The audit and the scan mark the findings the same way
    (UniversalValidator::markJustified).
+   A reason stands for the value it was saved with (JUS-1). The page keeps
+   the reason and each field's value as it opened. While the reason is the
+   saved one, it releases nothing for a field whose value was changed on
+   this page, nor for a field the server names in justifyStale (its saved
+   reason is older than its saved value, UniversalValidator::pageJustify):
+   the note and the save message then ask for a new reason. A reason changed
+   on this page stands for every field it is paired with. This is what
+   REDCap's log will show after the save, which the audit and the scan read
+   (reasonOlderThanValue): REDCap logs a field only when a save changes it,
+   so values compare as REDCap stores them, PHP's trim() set taken off both
+   ends. A checkbox field reads as one unchanged value here, as the log
+   reader shows no save of it.
    tests/justify_dom_js.cjs locks this contract. */
 function QRIDJustifyInit(QRID_CONFIG){
   var configError = QRID_CONFIG.configErrorOverride || "";
@@ -7888,11 +7903,29 @@ function QRIDJustifyInit(QRID_CONFIG){
   var V = { message: (typeof QRID_CONFIG.message === "string") ? QRID_CONFIG.message : "",
             i18n: (QRID_CONFIG.i18n && typeof QRID_CONFIG.i18n === "object") ? QRID_CONFIG.i18n : null };
   var NOTE = "Fix this value, or say why it is right in \u201C{reason}\u201D.";
+  var NOTE_STALE = "The reason in \u201C{reason}\u201D was given for an earlier value. Fix this value, or change the reason to say why this value is right.";
   if(!configError && !/^[a-z][a-z0-9_]*$/.test(reason)) configError = "@UVJUSTIFY needs the field that holds the reason.";
+  /* the fields whose saved reason is older than their saved value (JUS-1) */
+  var staleSaved = Object.create(null);
+  (Array.isArray(QRID_CONFIG.justifyStale) ? QRID_CONFIG.justifyStale : []).forEach(function(f){
+    if(typeof f === "string") staleSaved[f] = true;
+  });
+  /* the reason and each field's value as the page opened, taken as each is bound */
+  var opened = { reason: null, values: Object.create(null) };
+  function stored(v){ return String(v == null ? "" : v).replace(/^[ \t\n\r\0\x0B]+|[ \t\n\r\0\x0B]+$/g, ""); }
   function given(){
     var anc = QRID_fieldAnchor(reason);
     if(anc && QRID_fieldHidden(anc.el)) return false;
     return QRID_reasonGiven(QRID_WHEN.readRef(reason, null));
+  }
+  /* Whether the reason now in the box was written for an earlier value of
+     fieldName: it is the reason the page opened with, and the field's value
+     was changed here or was already newer than it when the page opened. */
+  function staleFor(fieldName){
+    if(opened.reason === null || !QRID_reasonGiven(opened.reason)) return false;
+    if(stored(QRID_WHEN.readRef(reason, null)) !== stored(opened.reason)) return false;
+    if(staleSaved[fieldName] === true) return true;
+    return fieldName in opened.values && stored(QRID_WHEN.readRef(fieldName, null)) !== opened.values[fieldName];
   }
   function label(){
     var a = QRID_fieldAnchor(reason);
@@ -7906,6 +7939,10 @@ function QRIDJustifyInit(QRID_CONFIG){
     if(anchor.getAttribute && anchor.getAttribute("data-qrid-bound-j")) return true;   /* per-mode bind marker */
     if(anchor.setAttribute) anchor.setAttribute("data-qrid-bound-j", "1");
     var msg = QRID_attachFieldRegion(found, fieldName, "j");
+    if(opened.reason === null) opened.reason = QRID_WHEN.readRef(reason, null);
+    opened.values[fieldName] = stored(QRID_WHEN.readRef(fieldName, null));
+    function stale(){ return given() && staleFor(fieldName); }
+    function stands(){ return given() && !staleFor(fieldName); }
     function refresh(){
       /* an autocomplete dropdown's text box may render after the bind */
       QRID_followWidget(anchor, msg, fieldName);
@@ -7917,11 +7954,14 @@ function QRIDJustifyInit(QRID_CONFIG){
         if(el.__qridFieldName === fieldName && QRID_JUSTIFY_OF_MODE[el.__qridMode] === true
            && QRID_guardSpeaks(el) && QRID_itemHolds(el)){ holds = true; break; }
       }
-      if(!holds || given()){ msg.style.display = "none"; msg.innerHTML = ""; return; }
+      if(!holds || stands()){ msg.style.display = "none"; msg.innerHTML = ""; return; }
       msg.style.cssText = "display:block;margin:4px 0;padding:4px 8px;border-radius:4px;" +
         "font-size:12px;font-family:inherit;border:1px solid #d9c7a3;background:#fdf6e7;color:#6b4e16";
-      /* a function, so a label holding "$&" or "$$" is not read as a pattern */
-      msg.innerHTML = QRID_ruleHtml(V, "message") || QRID_escapeHtml(NOTE.replace("{reason}", function(){ return label(); }));
+      /* a function, so a label holding "$&" or "$$" is not read as a pattern.
+         A reason written for an earlier value gets its own words: the rule's
+         message asks for a reason the person sees already written. */
+      msg.innerHTML = stale() ? QRID_escapeHtml(NOTE_STALE.replace("{reason}", function(){ return label(); }))
+        : (QRID_ruleHtml(V, "message") || QRID_escapeHtml(NOTE.replace("{reason}", function(){ return label(); })));
     }
     var queued = false;
     function later(){
@@ -7929,7 +7969,7 @@ function QRIDJustifyInit(QRID_CONFIG){
       queued = true;
       setTimeout(function(){ queued = false; refresh(); }, 0);
     }
-    UV_JUSTIFY[fieldName] = { reason: reason, given: given, label: label, later: later };
+    UV_JUSTIFY[fieldName] = { reason: reason, given: stands, stale: stale, label: label, later: later };
     if(source.el.addEventListener){
       source.el.addEventListener("input", later);
       source.el.addEventListener("change", later);
@@ -10075,7 +10115,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "deltaVs", "deltaVsOp", "deltaVsLabel", "deltaVsComma", "deltaMax",
                       "deltaMaxPct", "deltaDirection", "deltaUnit", "deltaText", "deltaGroup",
                       "deltaComputed", "writeonceRolesUnread", "writeonceSaved",
-                      "writeonceValuesUnread", "justifyReason"];
+                      "writeonceValuesUnread", "justifyReason", "justifyStale"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",

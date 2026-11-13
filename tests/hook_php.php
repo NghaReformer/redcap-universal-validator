@@ -412,24 +412,31 @@ namespace {
     // of earlier requests ($stored), the way the framework's log table would.
     {
         $KEY = str_repeat('ab', 32);
-        $req = function ($stored, $data, $mode = '', $subs = null, $dict = null, $throws = false)
+        $req = function ($stored, $data, $mode = '', $subs = null, $dict = null, $throws = false, $noInList = false)
             use ($dialogRules, $dictionary, $KEY) {
             $m = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
                 public $stored = [];
                 public $logQueries = [];
                 public $queryThrows = false;
+                /** true: a framework that does not take "message in (?, ?)" (JUS-7) */
+                public $noInList = false;
                 public function queryLogs($sql, $params)
                 {
                     $this->logQueries[] = [$sql, $params];
                     if ($this->queryThrows) throw new \Exception('log table unreadable');
-                    if (!preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+                    // one kind of entry, or the two kinds of a finding in one query (JUS-7)
+                    $several = !$this->noInList
+                        && preg_match('/^select log_id, message, fingerprint, finding where message in \(\?, \?\) and (record|record_hmac|instrument) = \?$/', $sql, $mm);
+                    if (!$several && !preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
                         throw new \Exception('unexpected log query: ' . $sql);
                     }
+                    $scope = array_pop($params);
                     $rows = [];
                     foreach ($this->stored as $i => $c) {
-                        if ($c[0] === $params[0] && isset($c[1][$mm[1]]) && (string) $c[1][$mm[1]] === $params[1]
+                        if (in_array($c[0], $params, true) && isset($c[1][$mm[1]]) && (string) $c[1][$mm[1]] === $scope
                             && isset($c[1]['fingerprint'])) {
-                            $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null];
+                            $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null]
+                                + ($several ? ['message' => $c[0]] : []);
                         }
                     }
                     return new class($rows) {
@@ -441,6 +448,7 @@ namespace {
             };
             $m->stored = $stored;
             $m->queryThrows = $throws;
+            $m->noInList = $noInList;
             $m->subSettings = $subs === null ? $dialogRules : $subs;
             $m->projectSettings = ['log-values' => $mode];
             $m->projectIdReturn = 149;
@@ -462,9 +470,15 @@ namespace {
         $r2 = $req($r1->logCalls, $classicData);
         check('PRF-9: a second save of the same values logs nothing (got ' . json_encode($fieldsOf($r2)) . ')',
             invalidLogs($r2) === []);
-        $reads = array_values(array_filter($r2->logQueries, function ($q) { return $q[1][0] === 'invalid-id-saved'; }));
-        check('PRF-9: ...after one read of the log for the record',
-            count($reads) === 1 && $reads[0][1] === ['invalid-id-saved', '2']);
+        // one query for both kinds of entry of a finding, open or saved with a reason (JUS-7)
+        check('PRF-9: ...after one read of the log for the record (got ' . json_encode($r2->logQueries) . ')',
+            count($r2->logQueries) === 1 && $r2->logQueries[0][1] === ['invalid-id-saved', 'uvalidate-justified', '2']
+            && strpos($r2->logQueries[0][0], 'message in (?, ?)') !== false);
+        // a framework that refuses that query is asked once per kind, and nothing is logged twice
+        $r2b = $req($r1->logCalls, $classicData, '', null, null, false, true);
+        check('JUS-7: without "message in" the log is read once per kind, and the second save still logs nothing (got ' . json_encode($r2b->logQueries) . ')',
+            invalidLogs($r2b) === [] && array_map(function ($q) { return $q[1]; }, $r2b->logQueries)
+                === [['invalid-id-saved', 'uvalidate-justified', '2'], ['invalid-id-saved', '2'], ['uvalidate-justified', '2']]);
         $changed = $classicData;
         $changed[2][351]['main_id_1'] = '1ABC-00003E';
         $r3 = $req(array_merge($r1->logCalls, $r2->logCalls), $changed);
@@ -474,15 +488,23 @@ namespace {
         check('PRF-9: a log that cannot be read loses nothing: every value is logged',
             count(invalidLogs($r4)) === 2);
 
-        // The none mode keeps no value, so its fingerprint names the place:
-        // a different invalid value at a logged place is not logged again.
+        // The none mode stores no value, but its fingerprint is worked out
+        // from the value (JUS-1): the same values are logged once, and a
+        // different invalid value at a logged place is a new problem.
         $n1 = $req([], $classicData, 'none');
-        $n2 = $req($n1->logCalls, $changed, 'none');
+        $n1b = $req($n1->logCalls, $classicData, 'none');
+        $n2 = $req(array_merge($n1->logCalls, $n1b->logCalls), $changed, 'none');
         $nReads = array_values(array_filter($n2->logQueries, function ($q) { return $q[1][0] === 'invalid-id-saved'; }));
-        check('PRF-9: none mode logs once per place, read by record_hmac',
-            count(invalidLogs($n1)) === 2 && invalidLogs($n2) === []
+        check('PRF-9: none mode logs each problem once, read by record_hmac',
+            count(invalidLogs($n1)) === 2 && invalidLogs($n1b) === []
             && count($nReads) === 1 && strpos($nReads[0][0], 'record_hmac = ?') !== false
-            && $nReads[0][1][1] === invalidLogs($n1)[0][1]['record_hmac']);
+            && $nReads[0][1][2] === invalidLogs($n1)[0][1]['record_hmac']);
+        $nNew = invalidLogs($n2);
+        check('JUS-1: none mode logs another invalid value at a logged place, and only that one (got ' . json_encode($fieldsOf($n2)) . ')',
+            $fieldsOf($n2) === ['main_id_1']);
+        check('JUS-1: ... still with no value and no hash of it in the entry',
+            count($nNew) === 1 && !isset($nNew[0][1]['value']) && !isset($nNew[0][1]['value_hmac'])
+            && strlen($nNew[0][1]['fingerprint'] ?? '') === 64 && !in_array($nNew[0][1]['fingerprint'], array_map(function ($c) { return $c[1]['fingerprint']; }, invalidLogs($n1)), true));
 
         // A rule problem names no record: once for each place of the instrument.
         $badDict = $dictionary;

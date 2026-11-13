@@ -1386,7 +1386,13 @@ outside its window because the clinic was closed. A rule that holds the save the
 or an unsaved form. `@UVJUSTIFY` names a second field where the reason is
 written. Once that field holds a reason, the field's broken rules no longer
 hold the save, and the audit and the scan report those findings apart from
-the open ones:
+the open ones.
+
+This is not REDCap's own "Require a reason when making changes" setting.
+That setting asks for a reason on every change of a saved record and keeps
+it in REDCap's logging. `@UVJUSTIFY` asks only while one of the module's
+rules is broken, keeps the reason in a field of the form, and writes no
+reason text to any log. A project may use both:
 
 ```text
 @UVRANGE={"hard":[30,250]} @UVJUSTIFY={"reason":"[weight_reason]"}
@@ -1400,13 +1406,23 @@ the open ones:
   in itself (`@CALCTEXT`, `@CALCDATE`, `@DEFAULT`, `@SETVALUE`, `@PREFILL`,
   `@NOW`, `@TODAY` and their `-SERVER` and `-UTC` forms, `@USERNAME`,
   `@APPUSERNAME-APP`, `@LATITUDE`, `@LONGITUDE`, `@DOWNLOAD-COUNT`,
-  `@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY`), a field with any
+  `@LANGUAGE-CURRENT-FORM`, `@LANGUAGE-CURRENT-SURVEY`, and MyCap's
+  `@MC-PARTICIPANT-*` and `@MC-TASK-*` tags), a field with any
   form of `@READONLY`, a field with `@HIDDEN`, `@HIDDEN-FORM` or
   `@HIDDEN-SURVEY`, which hide it where the reason is written (`@HIDDEN-APP`
   and `@HIDDEN-PDF` are allowed), a field that carries `@UVJUSTIFY` itself, which would let two fields stand for each
   other, a field with `@UVWRITEONCE`, whose reason could never be cleared,
-  and a field another rule's `"return"` writes into. A tag name inside
-  another tag's value, such as a message or a placeholder, refuses nothing.
+  a field with `@RICHTEXT` or an ontology search (BioPortal, FHIR), whose
+  widget writes its own text into the field after the save was judged and
+  saves markup for an empty box, and a field another rule's `"return"`
+  writes into. On an instrument that is a survey shown one section per
+  page, the reason field must be in the section of the field: the survey
+  draws one page at a time, so a reason on another page could not be
+  written where the value is. REDCap reads an action tag wherever its name
+  stands, so the name of one of REDCap's tags inside another tag's value
+  (a placeholder that reads "not `@DEFAULT`") refuses the field too, and the
+  error says so; reword that value. The module's own tag names inside a
+  message refuse nothing.
 - **`message`** is the note under the field that asks for the reason (a map of
   language ids to texts is accepted, as for the other tags). Without it the
   note reads "Fix this value, or say why it is right in" the reason field's
@@ -1424,22 +1440,37 @@ the open ones:
   spaces, zero-width characters, byte-order marks, soft hyphens and other
   invisible characters alone give none. A
   missing data code gives none either, so a reason field marked "unknown"
-  still asks for one. On the form, a
+  still asks for one. A
   reason field the person cannot see gives no reason: its row hidden by
   branching logic, or, for a reason field embedded in another field's label,
-  the row it sits in. A reason stands until someone clears it, so a later,
-  different broken value of the field saves under the same reason. Clear the
-  reason field when the value changes for another reason.
+  the row it sits in. The audit and the scan work the branching logic out
+  and take no reason from a hidden field either. One visible character is
+  a reason; there is no minimum length. To ask for more, make the reason
+  field a dropdown or radio of the reasons you allow, or give it a rule of
+  its own (`@UVREQUIRED`, `@UVALIDATE`, `@UVASSERT`), which is judged like
+  any other rule.
+- **A reason stands for the value it was saved with.** When the field later
+  gets another value that breaks a rule, the reason already saved releases
+  nothing: the note reads "The reason in “…” was given for an earlier value"
+  and the save message asks for a new reason. Changing the reason field
+  releases the save. The audit and the scan decide the same from REDCap's
+  log: a reason last saved before the field's value was last saved is no
+  reason, also for a value written by an import or the API. A value and a
+  reason saved together, or a reason saved later, stand. Where the log
+  cannot say (it could not be read, the record was renamed or came with a
+  copied project, or the field is a checkbox) the reason stands as given. A
+  reason picked from a list is the saved reason until another choice is
+  picked, so use a Text or Notes field where one reason may apply to
+  several values in a row. Opening a form whose reason field is filled reads
+  the record's log once.
 - **On the page.** While a covered rule holds the save, or asks "Save
   anyway?", and no reason is given, a note under the field asks for one, and
   the field's line in the save message reads "Weight (or give a reason in
-  “Reason for change”)". Once the reason is given the field no longer holds
+  “Why this weight is right”)". Once the reason is given the field no longer holds
   the save for those rules; their own notes stay. A reason never lets
   anything else through: a rule with `blockSave` `"off"` still only warns, a
   lookup still on its way still makes the save wait its moment, and a field locked by
-  `@UVWRITEONCE` stays locked. On a survey page that does not carry the
-  reason field, the tag does nothing; the audit after the save still reads
-  the reason. On a rule that only warns (`blockSave` `"off"`, or any rule
+  `@UVWRITEONCE` stays locked. On a rule that only warns (`blockSave` `"off"`, or any rule
   that reads another event or instance, which the page shows only as advice;
   an `@UVWINDOW` whose condition reads this page alone keeps its `blockSave`)
   a reason never shows a note on the page; it only labels the finding in the
@@ -1447,7 +1478,11 @@ the open ones:
 - **Audited.** The post-save audit logs a broken rule whose reason is given,
   in the same record, event and instance, as `uvalidate-justified` with
   `justified_by` naming the reason field; open findings stay
-  `invalid-id-saved`. The reason itself is never logged. A reason field that
+  `invalid-id-saved`. The reason itself is never logged. A finding left
+  open because its reason was given for an earlier value carries
+  `reason_stale` naming the reason field. Each new broken value gets its own
+  entry, also where `log-values` is `none`: the entry's fingerprint is worked
+  out from the value, which itself is not stored. A reason field that
   cannot be read, or missing data codes that cannot be read, leave the
   finding open. The Validation scan counts these findings apart: the summary
   adds "and N saved with a reason" while the scan runs and once it ends, the

@@ -32,10 +32,11 @@ on one new instrument `uv_justify_test`, in five sections:
   descriptive `uj_emb_box` carry no rule.
 - Section B of the form puts a reason beside `@UVUNIQUE` (`uj_code`) and
   beside `@UVWRITEONCE` (`uj_lock`). A reason releases neither.
-- Sections C and D hold `uj_far` and its reason, one survey page each.
+- Sections C and D hold `uj_far` and its reason, one survey page each. With
+  the survey of Setup 5 in place that pair is refused (A1, G3).
 - Section E holds the checkbox `uj_signs` and six refused tags `uj_bad_*`.
 
-Every "Expect" in sections A to H and in J2 to J4 is the module's own answer.
+Every "Expect" in sections A to H, in J2 to J4 and in K is the module's own answer.
 `tests/justify_live_twin_php.php` runs the real module over the fixture on a
 copy of pid 149's events and forms, with REDCap's data and log kept as each
 save and import of this sheet leaves them. It checks each configuration error
@@ -70,12 +71,21 @@ php tests/justify_live_twin_php.php && node tests/justify_live_twin_js.cjs
   reason field whose row branching logic hides gives no reason. A reason
   field embedded in another field's label counts as shown while the row it
   sits in shows (C8). The audit and
-  the scans read the saved value and never see branching (J2).
+  the scans work the branching logic out and take no reason from a hidden
+  field either (J2).
+- A reason stands for the value it was saved with. Another broken value
+  under the saved reason is held again, the note reading "The reason in
+  “<label>” was given for an earlier value. Fix this value, or change the
+  reason to say why this value is right." and the alert line ending
+  " (or give a new reason in “<label>”)". The audit and the scans read
+  REDCap's log: a reason last saved before the value was last saved is no
+  reason, and the log entry carries `reason_stale` (section K).
 - A reason never adds a hold. A rule with blockSave `off` still only warns
   and gets no note. A field the person cannot change (read-only) or cannot see
   never holds the save, so no note asks for its reason (C7, F5).
-- The reason field must be on the same form. On a survey page without it the
-  tag does nothing, and the rule holds as it would alone (G3).
+- The reason field must be on the same form, and on a survey shown one
+  section per page in the section of its field. A pair in two sections is
+  refused, so the rule holds as it would alone (A1, G3).
 - Each save of the form audits all of it and logs each finding the module
   log does not hold yet. A finding whose reason is given is logged as
   `uvalidate-justified` with `justified_by` naming the reason field; an open
@@ -106,7 +116,7 @@ php tests/justify_live_twin_php.php && node tests/justify_live_twin_js.cjs
 7. [only if the durable scan is enabled] H0: run the Validation scan now,
    before any save on the new form. Write down the finding count of its panel
    (F0) and the number in its line "N rules could not be evaluated" (R0). R0
-   already counts the seven refused tags of A1.
+   already counts the eight refused tags of A1.
 8. Form URL, record XE-1:
    `DataEntry/index.php?pid=149&id=XE-1&event_id=380&page=uv_justify_test`
 
@@ -147,7 +157,8 @@ save, 09:55 for C7b to C7e, 09:56 for C8b and C8c, 09:57 for D2, 10:00 for D3, 1
 10:15 for F1b, 10:20 for F2, 10:25 for F3c, 10:30 for F4b, 10:35 for F5b,
 10:40 for the import of F6 and 10:45 for its save, 10:50 to 10:54 for the
 five survey pages, 11:00, 11:05 and 11:10 for the imports of H2, 11:15 and
-11:20 for those of J2, and 11:25 for J4b.
+11:20 for those of J2, 11:25 for J4b, 11:30 for K1b, 11:35 for the import of
+K2 and 11:40 for K2b, 11:45 for K3, 11:50 for K3b and 11:55 for K3c.
 
 ---
 
@@ -155,11 +166,11 @@ five survey pages, 11:00, 11:05 and 11:10 for the imports of H2, 11:15 and
 
 | # | Action | Expect |
 |---|---|---|
-| A1 | Open the form for XE-1 | Seven fields show their error under the field after "⚠ Validator configuration error: ", word for word as in the table below. No other field shows an error. Under "Required field": "✗ This field must not be left blank." and the reason note naming “Why it is blank”. No other field has a reason note |
-| A2 | Run the config snippet above | Each of the 16 fields `uj_req`, `uj_wt`, `uj_id`, `uj_pool`, `uj_dia`, `uj_dose`, `uj_visit`, `uj_wt2`, `uj_mother`, `uj_temp`, `uj_off`, `uj_hr`, `uj_ro`, `uj_code`, `uj_lock` and `uj_far` has one rule with `"type":"justify"` and `"justifyReason"` naming its reason field (`uj_req_why` for `uj_req`, and so on). The rule on `uj_visit` carries `"message":"Say why this visit date is right."` and the French text under `i18n`. `missingCodes` is `["UNK"]`. The page source has no `justifyBy` |
+| A1 | Open the form for XE-1 | Eight fields show their error under the field after "⚠ Validator configuration error: ", word for word as in the table below. No other field shows an error. Under "Required field": "✗ This field must not be left blank." and the reason note naming “Why it is blank”. No other field has a reason note |
+| A2 | Run the config snippet above | Each of the 15 fields `uj_req`, `uj_wt`, `uj_id`, `uj_pool`, `uj_dia`, `uj_dose`, `uj_visit`, `uj_wt2`, `uj_mother`, `uj_temp`, `uj_off`, `uj_hr`, `uj_ro`, `uj_code` and `uj_lock` has one rule with `"type":"justify"` and `"justifyReason"` naming its reason field (`uj_req_why` for `uj_req`, and so on). The rule on `uj_visit` carries `"message":"Say why this visit date is right."` and the French text under `i18n`. `missingCodes` is `["UNK"]`. The page source has no `justifyBy` |
 | A3 | "Bare tag" = 11 and leave. Save. Clear it. "Respiratory rate" = 70 and leave. Save. Clear it | Under "Bare tag": "✗ This value is above the plausible range (allowed 0 to 10)." Held, with the line "• Bare tag" after the required field's line, offering no reason. Respiratory rate: "✗ This value is above the plausible range (allowed 5 to 60)." and no reason note; held with "• Respiratory rate (per minute)". A refused tag releases nothing, and the field's own rule still runs |
 
-The seven errors:
+The eight errors:
 
 | Field | Error |
 |---|---|
@@ -170,9 +181,12 @@ The seven errors:
 | `uj_bad_self` | `@UVJUSTIFY on "uj_bad_self": "reason" names this field itself — name the field where the reason is written, e.g. "[uj_bad_self_reason]".` |
 | `uj_bad_none` | `@UVJUSTIFY on "uj_bad_none": no rule a reason can stand for checks this field — give it a rule of @UVALIDATE, @UVASSERT, @UVREQUIRED, @UVCHOICES, @UVWINDOW, @UVEXISTS, @UVRANGE or @UVDELTA (a reason does not stand for @UVUNIQUE or @UVWRITEONCE).` |
 | `uj_bad_twice` | `field "uj_bad_twice" is given @UVJUSTIFY 2 times — this tag takes no "when" condition, so keep one.` |
+| `uj_far` | `@UVJUSTIFY on "uj_far": "reason" names "[uj_far_why]", which is on page 4 of the survey "uv_justify_test", not on page 3 with this field — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section.` |
 
 `uj_rr` names an SQL reason field that does not exist yet. J4 adds it, and
-the error goes.
+the error goes. `uj_far`'s error is there because Setup 5 made the instrument
+a survey shown one section per page; without that survey setting the pair is
+kept.
 
 ## Section B: each rule a reason stands for (XE-1)
 
@@ -183,7 +197,7 @@ form saves as it opens, since every reason saved before still stands.
 | # | Action | Expect |
 |---|---|---|
 | B1 | Save with nothing typed | Held, one line: "• Required field (or give a reason in “Why it is blank”)" |
-| B1b | "Why it is blank" = Not done. Save | The reason note goes and "✗ This field must not be left blank." stays. The record saves. The module log gains `uvalidate-justified` for `uj_req`, with type `required`, reason `required-blank`, `justified_by` `uj_req_why`. Its only rule problems are one `uvalidate-unconfigurable` entry for each refused tag of A1 (`uj_rr` and the six `uj_bad_*` fields), its `why` starting "configuration error:". This first save of the form logs them, and no later save logs them again |
+| B1b | "Why it is blank" = Not done. Save | The reason note goes and "✗ This field must not be left blank." stays. The record saves. The module log gains `uvalidate-justified` for `uj_req`, with type `required`, reason `required-blank`, `justified_by` `uj_req_why`. Its only rule problems are one `uvalidate-unconfigurable` entry for each refused tag of A1 (`uj_rr`, `uj_far` and the six `uj_bad_*` fields), its `why` starting "configuration error:". This first save of the form logs them, and no later save logs them again |
 | B2 | "Weight" = 300.0 and leave | "✗ This value is above the plausible range (allowed 30 to 250 kg)." and the reason note "Fix this value, or say why it is right in “Reason for change”." Save is held: "• Weight (or give a reason in “Reason for change”)" |
 | B2b | "Reason for change" = Scale checked twice. Save | The reason note goes; the range note stays. The record saves. New entry `uvalidate-justified` for `uj_wt`, with type `range`, reason `hard-high`, `justified_by` `uj_wt_why`, `event_id` 380, `instance` 1, `value` 300.0, a `fingerprint` of 64 hex digits and a `finding` key of 64 hex digits that differs from it. No entry holds "Scale checked twice" |
 | B3 | "Lab number" = 79927398710 and leave | `✗ This ID's check character does not match — probably a typo or mis-scan. Please re-scan or re-type it.` and the reason note naming “Why the lab number is right”. Held: "• Lab number (Luhn check digit) (or give a reason in “Why the lab number is right”)" |
@@ -265,7 +279,7 @@ C1 to C4 change the page only, and each puts the reason back.
 | G1b | "Why it is blank" = Refused. "Weight" = 300.0 and leave. Next | The reason note under Weight. Held: "• Weight (or give a reason in “Reason for change”)" |
 | G1c | "Reason for change" = Scale checked twice. Next | Page 2 opens. XE-4 gets one entry, `uvalidate-justified` for `uj_wt`. `uj_req` is judged once the response is complete (G5), so a page turn logs nothing for it. No entry holds the reason |
 | G2 | Page 2 (participant code, enrolment weight). Next | Page 3 opens. No new entry, since G1c logged the `uj_wt` finding |
-| G3 | Page 3. "Hours fasted" = 30 and leave. Next | "✗ This value is above the plausible range (allowed 0 to 24)." and no reason note, because the reason field is on page 4. Next is held: "• Hours fasted", offering no reason |
+| G3 | Page 3. "Hours fasted" = 30 and leave. Next | Under "Hours fasted" the general line of G1, since its `@UVJUSTIFY` is refused (A1): the reason field is on page 4. "✗ This value is above the plausible range (allowed 0 to 24)." and no reason note. Next is held: "• Hours fasted", offering no reason |
 | G4 | "Hours fasted" = 12. Next. On page 4, Next | Pages 4 and 5 open. Neither Next writes an entry |
 | G5 | Page 5. Submit | Each `uj_bad_*` field shows the general line of G1. The survey closes. One new entry, `uvalidate-justified` for `uj_req`, now that the response is complete |
 
@@ -301,13 +315,25 @@ down what you saw in the run report.
 | # | Action | Expect |
 |---|---|---|
 | J1 | In C3, look at the box after choosing UNK with the "M" button | The box holds UNK, the code, which the page reads as no reason. If it shows the label "Unknown" or stays blank, record it |
-| J2 | Data Import Tool, CSV `record_id,redcap_event_name,uj_hr_show` with the row `XE-1,visit_1_arm_1,0`. Import. Reopen XE-1's form. Save. [only if the durable scan is enabled] Run the scan. Then import the row again with 1 | The reason row is hidden and its text is still saved. The page counts no reason, so the reason note asks under Heart rate, and Save is held with the line of C5. The scan reads the saved text and keeps the counts of H1 |
+| J2 | Data Import Tool, CSV `record_id,redcap_event_name,uj_hr_show` with the row `XE-1,visit_1_arm_1,0`. Import. Reopen XE-1's form. Save. [only if the durable scan is enabled] Run the scan. Then import the row again with 1 | The reason row is hidden and its text is still saved. The page counts no reason, so the reason note asks under Heart rate, and Save is held with the line of C5. The scan works the branching logic out and takes no reason from the hidden row either: "<F0 + 2> findings so far, and 16 saved with a reason". With the row shown again (the import with 1) the counts are those of H1 |
 | J3 | On XE-1's form, click "reset" under "Why it is blank". Save. Then choose Not done again and Save | REDCap clears the choice without an event. Within a second the reason note is back under "Required field". Held: "• Required field (or give a reason in “Why it is blank”)". With Not done again the note goes and the record saves |
-| J4 | Only an administrator can add an SQL field; skip this step and J4b otherwise. In the Online Designer, add `uj_sql_why` after "Respiratory rate", with type "Dynamic Query (SQL)", label "Why the respiratory rate is right", query `select 1, 'Patient crying' union all select 2, 'Counted twice'`. Reopen XE-1. "Respiratory rate" = 70 and leave. Save | `uj_rr`'s error of A1 is gone; the six `uj_bad_*` errors stay. "✗ This value is above the plausible range (allowed 5 to 60)." and the reason note naming “Why the respiratory rate is right”. Held: "• Respiratory rate (per minute) (or give a reason in “Why the respiratory rate is right”)" |
+| J4 | Only an administrator can add an SQL field; skip this step and J4b otherwise. In the Online Designer, add `uj_sql_why` after "Respiratory rate", with type "Dynamic Query (SQL)", label "Why the respiratory rate is right", query `select 1, 'Patient crying' union all select 2, 'Counted twice'`. Reopen XE-1. "Respiratory rate" = 70 and leave. Save | `uj_rr`'s error of A1 is gone; the six `uj_bad_*` errors and `uj_far`'s stay. "✗ This value is above the plausible range (allowed 5 to 60)." and the reason note naming “Why the respiratory rate is right”. Held: "• Respiratory rate (per minute) (or give a reason in “Why the respiratory rate is right”)" |
 | J4b | "Why the respiratory rate is right" = Counted twice. Save | The reason note goes. The record saves. New entry for `uj_rr`, with type `range`, reason `hard-high`, `justified_by` `uj_sql_why`. Then delete `uj_sql_why` |
 | J5 | Read the module log at the imports of C7, F6, H2 and J2 | No entry at any import, since an import runs no module hook. If an import writes an entry, record it |
 | J6 | On survey page 3 (G3), run `document.getElementsByName('uj_far_why').length` in the browser console | 0, because REDCap draws only the current page's fields. If it is 1, record it, since the reason field would then sit hidden on the page |
 | J7 | In C8, run `document.getElementsByName('uj_emb_why')[0].closest('tr').id` in the browser console | `uj_emb_box-tr`: REDCap moves the embedded box into the row of the label that names it, and the page judges that row. If it names another row, record it |
+
+## Section K: a reason stands for the value it was saved with (XE-1)
+
+| # | Action | Expect |
+|---|---|---|
+| K1 | Reopen XE-1's form. "Weight" = 310.0 and leave. Save. Then type Scale checked twice in "Reason for change" again | The form opens with no reason note under Weight. With 310.0 the range note and, in place of the reason note, "The reason in “Reason for change” was given for an earlier value. Fix this value, or change the reason to say why this value is right." Held: "• Weight (or give a new reason in “Reason for change”)". The same reason typed again changes nothing |
+| K1b | "Reason for change" = Scale checked a third time. Save | The note goes. The record saves. New entry `uvalidate-justified` for `uj_wt`, with `value` 310.0 and `justified_by` `uj_wt_why`, and one for `uj_wt2` with type `delta`, reason `down`, `justified_by` `uj_wt2_why`, since the second weighing is now below the first. No entry holds the reason |
+| K2 | Data Import Tool, CSV `record_id,redcap_event_name,uj_wt` with the row `XE-1,visit_1_arm_1,320.0`. Import. Reopen the form. Save | The note of K1 shows under Weight as the form opens: the import saved the weight after its reason. Held, the line of K1. The config snippet shows `"justifyStale":["uj_wt"]` on the weight's justify rule. [only if the durable scan is enabled] A scan run now counts the weight as a finding, not as saved with a reason |
+| K2b | "Reason for change" = Scale replaced. Save | The note goes. The record saves. New entry `uvalidate-justified` for `uj_wt`, with `value` 320.0 |
+| K3 | "Oxygen saturation" = 80 and leave. Save | The warning of D3 and no reason note, since the rule never blocks. The record saves with no alert. New entry `invalid-id-saved` for `uj_off`, with `reason_stale` `uj_off_why` and no `justified_by`: the reason of D4 was given for 85 |
+| K3b | "Why the saturation is right" = Known lung disease, on oxygen. Save | The record saves. New entry `uvalidate-justified` for `uj_off`, with `justified_by` `uj_off_why` |
+| K3c | Save | The record saves and writes no entry |
 
 ---
 

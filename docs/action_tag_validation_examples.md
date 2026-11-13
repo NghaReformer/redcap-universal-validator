@@ -4801,10 +4801,25 @@ to texts.
   none, so a reason field marked "unknown" still asks for one. On the form, a
   reason field the person cannot see gives none either: its row hidden by
   branching logic, or, for a reason field embedded in another field's label,
-  the row it sits in.
-- A reason stands until someone clears it. A later, different broken value of
-  the field saves under the same reason, so clear the reason field when the
-  value changes for another reason.
+  the row it sits in. The audit and the scan work the branching logic out
+  and say the same.
+- One visible character is a reason; there is no minimum length. To ask for
+  more, make the reason field a dropdown or radio of allowed reasons, or
+  give it a rule of its own (`@UVREQUIRED`, `@UVALIDATE`, `@UVASSERT`).
+- A reason stands for the value it was saved with. A later, different broken
+  value of the field is held again, with a note that the reason was given
+  for an earlier value, until the reason field is changed. The audit and the
+  scan read REDCap's log: a reason last saved before the value was last
+  saved is no reason (the log entry carries `reason_stale`), also for a
+  value an import wrote. A reason picked from a list counts as changed only
+  when another choice is picked.
+- This is not REDCap's "Require a reason when making changes" setting. That
+  one asks on every change of a saved record and keeps the reason in
+  REDCap's logging. `@UVJUSTIFY` asks only while a rule is broken and keeps
+  the reason in a field of the form.
+- On a survey shown one section per page the reason field must be in the
+  section of the field, or the tag is refused: the survey draws one page at
+  a time.
 - The note shows while a covered rule holds the save or asks "Save anyway?"
   and no reason is given. The rules' own notes stay once the reason is given.
 - A reason never lets anything else through. A rule with `blockSave` `"off"`
@@ -4814,8 +4829,6 @@ to texts.
   `@UVWINDOW` whose condition reads this page alone keeps its `blockSave`) a
   reason never shows a note on the page; it only labels the finding in the
   audit and the scan.
-- On a survey page that does not carry the reason field, the tag does nothing
-  on that page. The audit after the save still reads the reason.
 - The audit logs a finding whose reason is given, in the same record, event
   and instance, as `uvalidate-justified` with `justified_by` naming the reason
   field; open findings stay `invalid-id-saved`. The reason itself is never

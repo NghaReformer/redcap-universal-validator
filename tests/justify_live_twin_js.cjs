@@ -15,7 +15,8 @@
  * (blank, spaces, a Missing Data Code, a blank choice, a hidden row), a
  * reason typed in a box embedded in another field's label, the
  * Enter key, the duplicate and the lock a reason does not release, the
- * reason on another survey page, and the configuration errors.
+ * reason on another survey page, the configuration errors, and a reason
+ * that was given for an earlier value (section K, JUS-1).
  *
  * RUN:  php tests/justify_live_twin_php.php && node tests/justify_live_twin_js.cjs
  */
@@ -523,7 +524,8 @@ const FORMAT_OK = '✓ ID format OK. (This project\'s IDs carry no check charact
   check('F3c the code and its reason cleared: XE-2 saves', save(env) === 'saved');
 }
 {
-  const env = boot(PAGES.form, V.F4, { ready: READONLY });
+  // the page of F4 is told that the code's reason is older than the code (F2); the code breaks nothing
+  const env = boot(PAGES.form2, V.F4, { ready: READONLY });
   type(env, 'uj_lock', '300.0');
   check('F4 300.0: the range note, and the note asking for the reason', shown(env, 'uj_lock', 'n') === W() && ask(env, 'uj_lock') === NOTE('uj_lock_why'), notes(env, 'uj_lock'));
   const s = save(env);
@@ -576,6 +578,7 @@ const SECTION = (letter) => Array.from(new Set(Object.values(PAGES.sections))).f
   type(env, 'uj_far', '30');
   check('G3 page 3, 30 hours: the range note', shown(env, 'uj_far', 'n') === '✗ This value is above the plausible range (allowed 0 to 24).', notes(env, 'uj_far'));
   check('G3 ... no note asks for a reason, as the reason field is on page 4', !region(env, 'uj_far', 'j') || ask(env, 'uj_far') === '', notes(env, 'uj_far'));
+  check('G3 ... and the field shows the survey\'s general wording: its @UVJUSTIFY is refused (JUS-5)', cfgErr(env, 'uj_far') === SURVEY, cfgErr(env, 'uj_far'));
   const s = save(env);
   check('G3 Next is held, the line naming no reason field', s === 'held: ' + HELD + '\n• ' + label('uj_far'), s);
   type(env, 'uj_far', '12');
@@ -588,7 +591,7 @@ const SECTION = (letter) => Array.from(new Set(Object.values(PAGES.sections))).f
 {
   const env = boot(PAGES.survey, {}, { ready: READONLY, record: 'XE-4', sections: SECTION('E') });
   for (const f of Object.keys(PAGES.surveyErrors)) {
-    if (f === 'uj_rr') continue;
+    if (f === 'uj_rr' || f === 'uj_far') continue;   // on pages 1 and 3
     check('G5 page 5, ' + f + ': the survey\'s general wording', cfgErr(env, f) === SURVEY, cfgErr(env, f));
   }
   check('G5 Submit goes through', save(env) === 'saved');
@@ -622,7 +625,7 @@ const SECTION = (letter) => Array.from(new Set(Object.values(PAGES.sections))).f
   // J4: an administrator added the SQL field "uj_sql_why"
   const env = boot(PAGES.sql, V.J4, { ready: READONLY, sql: true });
   check('J4 the respiratory rate\'s configuration error is gone', cfgErr(env, 'uj_rr') === '', cfgErr(env, 'uj_rr'));
-  check('J4 ... the six other errors stay', Object.keys(PAGES.errors).filter((f) => f !== 'uj_rr').every((f) => cfgErr(env, f) === '⚠ Validator configuration error: ' + PAGES.errors[f]));
+  check('J4 ... the seven other errors stay', Object.keys(PAGES.errors).filter((f) => f !== 'uj_rr').every((f) => cfgErr(env, f) === '⚠ Validator configuration error: ' + PAGES.errors[f]));
   type(env, 'uj_rr', '70');
   check('J4 70: the range note, and the note asking for the reason in the SQL field', shown(env, 'uj_rr', 'n') === '✗ This value is above the plausible range (allowed 5 to 60).'
     && ask(env, 'uj_rr') === NOTE('uj_sql_why'), notes(env, 'uj_rr'));
@@ -630,6 +633,42 @@ const SECTION = (letter) => Array.from(new Set(Object.values(PAGES.sections))).f
   check('J4 Save is held, the line naming the SQL field by its label', s === 'held: ' + HELD + '\n• Respiratory rate (per minute) (or give a reason in “Why the respiratory rate is right”)', s);
   pick(env, 'uj_sql_why', '2');
   check('J4b "Counted twice": the note asking goes, the record saves', ask(env, 'uj_rr') === '' && save(env) === 'saved', ask(env, 'uj_rr'));
+}
+
+// ---- Section K: a reason stands for the value it was saved with (JUS-1) --------------------------
+const NOTE_STALE = (why) => 'The reason in “' + label(why) + '” was given for an earlier value. Fix this value, or change the reason to say why this value is right.';
+/* J4b saved "Counted twice" in the SQL field, which is no part of the fixture the values come from */
+const withSql = (v) => Object.assign({}, v, { uj_sql_why: '2' });
+const offerNew = (f, why) => '\n• ' + label(f) + ' (or give a new reason in “' + label(why) + '”)';
+{
+  // K1: another broken weight under the reason B2b saved
+  const env = boot(PAGES.sql, withSql(V.K1), { ready: READONLY, sql: true });
+  check('K1 the form opens with 300.0 and its saved reason: no note asks, and it saves', ask(env, 'uj_wt') === '' && save(env) === 'saved', ask(env, 'uj_wt'));
+  type(env, 'uj_wt', '310.0');
+  check('K1 310.0: the range note, and the note saying the reason was given for an earlier value',
+    shown(env, 'uj_wt', 'n') === W() && ask(env, 'uj_wt') === NOTE_STALE('uj_wt_why'), notes(env, 'uj_wt'));
+  const s = save(env);
+  check('K1 Save is held, the line asking for a new reason', s === 'held: ' + HELD + offerNew('uj_wt', 'uj_wt_why'), s);
+  type(env, 'uj_wt_why', 'Scale checked twice');
+  check('K1 the saved reason typed again is the saved reason: still asked', ask(env, 'uj_wt') === NOTE_STALE('uj_wt_why'), ask(env, 'uj_wt'));
+  type(env, 'uj_wt_why', 'Scale checked a third time');
+  check('K1b a new reason: the note goes, the record saves', ask(env, 'uj_wt') === '' && save(env) === 'saved', ask(env, 'uj_wt'));
+}
+{
+  // K2: the import wrote 320.0 alone, so the page opens told that the reason is older than the weight
+  const env = boot(PAGES.stale, withSql(V.K2), { ready: READONLY, sql: true });
+  check('K2 the form opens with the note under Weight', ask(env, 'uj_wt') === NOTE_STALE('uj_wt_why'), ask(env, 'uj_wt'));
+  const s = save(env);
+  check('K2 Save is held, the line asking for a new reason', s === 'held: ' + HELD + offerNew('uj_wt', 'uj_wt_why'), s);
+  type(env, 'uj_wt_why', 'Scale replaced');
+  check('K2b a new reason: the note goes, the record saves', ask(env, 'uj_wt') === '' && save(env) === 'saved', ask(env, 'uj_wt'));
+}
+{
+  // K3: a rule that never blocks: the new value saves under the old reason, with no note and no question
+  const env = boot(PAGES.sql, withSql(V.K3), { ready: READONLY, sql: true });
+  type(env, 'uj_off', '80');
+  check('K3 80: the warning, and no note asking', shown(env, 'uj_off', 'c') === '✗ Below 90%: check the probe.' && ask(env, 'uj_off') === '', notes(env, 'uj_off'));
+  check('K3 Save goes through with no alert and no question', save(env) === 'saved' && env.win._alerts.length === 0 && env.win._confirms.length === 0);
 }
 
 console.log('justify_live_twin_js: ' + n + ' checks, ' + fail + ' failure(s)');

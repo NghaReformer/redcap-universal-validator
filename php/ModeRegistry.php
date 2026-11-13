@@ -25,11 +25,11 @@ final class ModeRegistry
 {
     /** Keys every audit log entry already has (UniversalValidator::logInvalid, auditRule). */
     const RESERVED_LOG_KEYS = ['field', 'type', 'algorithm', 'reason', 'instrument', 'event_id', 'instance', 'record',
-        'record_hmac', 'hmac_unavailable', 'value', 'value_hmac', 'as_of', 'z', 'reference', 'vs', 'justified_by'];
+        'record_hmac', 'hmac_unavailable', 'value', 'value_hmac', 'as_of', 'z', 'reference', 'vs', 'justified_by', 'reason_stale'];
     /** Keys every scan violation already has (UniversalValidator::scanRecord, FindingRowMapper). */
     const RESERVED_SCAN_KEYS = ['record', 'event_id', 'instance', 'field', 'type', 'reason', 'rule', 'value', 'valueWithheld',
         'valueState', 'locus', 'instrument', 'dag', 'branch', 'z', 'reference', 'ruleSource', 'findingId',
-        'justified', 'justifiedBy'];
+        'justified', 'justifiedBy', 'reasonStale'];
     /** @var array|null the decoded, checked file */
     private static $data = null;
     /** @var array derived maps, built once per request */
