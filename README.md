@@ -648,10 +648,23 @@ enforcement:
   the session has not asked about in the last ten minutes (120 a minute,
   shared with `@UVEXISTS`; system setting **Live lookups: new values a
   minute**), so opening and saving forms does not use it up. A lookup of a
-  field of more than 50,000 saved values whose value index is not built yet
-  also answers *could not check* at once, in place of reading every value.
+  field of more than 50,000 saved values whose value index cannot answer
+  also answers *could not check* at once, in place of reading every value,
+  and the post-save audit logs the field as not checked, with the reason.
+  Up to 2.4.0 the audit read every value inside the save request: 33 to 39
+  seconds at 400,000 records, on every save. The Validation scan still checks
+  such a field.
   Surveys never show *could not check* and are never held: there a failed
   check lets the save through, and the audit is the net.
+- **Data Access Groups.** Under `project` and `event` scope a value is a
+  duplicate whichever group holds it. REDCap may confine a group user's reads
+  to their own group, so the module compares the records of other groups from
+  the data table: a user in a group is told *already used* for a value another
+  group holds, with no record named, and the post-save audit logs the
+  duplicate. Up to 2.4.0 such a value was *not used before* wherever REDCap
+  confined the read, and the audit logged nothing. When the data table cannot
+  be read, a value the user's own group does not hold answers *could not
+  check* for a user in a group, never *not used before*.
 - Works on Text, Notes, dropdown, radio, yes/no, true/false, SQL and slider fields;
   composes with the other modes on the same field.
 
@@ -883,12 +896,21 @@ the specimen ID on the collection form.
   be read. Where the value index cannot answer, a *not
   found* costs a read of the whole searched field, so survey lookups may cause
   at most 60 such reads a minute per project; past that they answer *could not
-  check*, which a survey shows as nothing. Every survey lookup, `@UVUNIQUE`
+  check*, which a survey shows as nothing. A survey `@UVUNIQUE` lookup asks
+  that budget before any read but the index's (up to 2.4.0 a filtered export
+  ran first, for every request). Every survey lookup, `@UVUNIQUE`
   and `@UVEXISTS` together, also counts in the survey throttle: 30 a minute per
   browser session, and per project 600 a minute for callers with no session or
   a session less than a minute old, and 6,000 for older sessions. Up to
   2.3.0-rc.2 a caller who dropped the session cookie on every request was
-  counted in the 6,000.
+  counted in the 6,000. Of the 600, one network address may spend 300, so a
+  single machine cannot use up the budget all respondents share; behind a
+  reverse proxy that hands REDCap its own address for every caller, the 300
+  is the cap. An `@UVUNIQUE` request from a caller who is not signed in is
+  counted before the module reads any rule, whether or not it is then
+  answered. A throttle that reaches its limit writes one
+  `uv-throttle-limit-reached` row to the module log per minute, with the tier
+  and no address.
 - **Audited.** The post-save audit logs `type: exists`, reason `not-found`
   (`filtered` for a value saved only in entries that fail `where`).
   Saving the form that holds a `match` field checks the lookup again. The
@@ -1834,17 +1856,30 @@ whose database had 128 MB of memory for its tables, and 33 to 39 seconds at
 `@UVUNIQUE` and `@UVEXISTS` search, in four tables (`uv_lookup_key`,
 `uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record`). They are created when
 the module is enabled or upgraded and when its system settings are saved,
-whether or not the Validation scan is on.
+whether or not the Validation scan is on. With `uv_rate_bucket`, the counter
+of the survey throttle, that makes 5 module tables on every installation: the live
+lookups and the throttle they serve run without the scan, and a table made by
+the first lookup would be made inside a person's request.
 
 - **Built once per field.** A build reads all the field's rows once and
   stores one key per value and record: a hash of the value as lookups compare
   it (trimmed, letter case folded, numbers by value). A field of up to 20,000
   saved values is built by its first lookup (one field a request). A larger
   one is built by the module's cron *uv_lookup_index*, which runs every 5 minutes:
-  the first lookup marks the field, and until the cron has built it
-  the lookups read the data table, as before. While the cron reads a field,
-  the project's other fields keep answering. Where the cron has not run for
-  15 minutes, a lookup builds a field that has waited as long itself.
+  the first lookup marks the field, and until the cron has built it a field
+  of up to 50,000 saved values is read from the data table and a larger one
+  answers *could not check*. While the cron reads a field,
+  the project's other fields keep answering. A lookup never builds a larger
+  field itself, however long it has waited: where the cron has not run for
+  15 minutes, the post-save audit's *not checked* row says so.
+- **No request reads without a bound.** A field of more than 50,000 saved
+  values is never read whole by a live lookup or by the post-save audit: with
+  no index answer they report *could not check* and *not checked*. A lookup
+  reads at most 500,000 positions of REDCap's log to bring a project's index
+  up to date; a project further behind (no lookup for days on a busy server)
+  gets no index answer until the cron has caught it up, which it does every
+  run for every project with indexed fields. The log is read by position
+  through its primary key.
 - **Kept current from the log.** Every value REDCap saves writes a row to the
   project's log. Before it answers, a lookup reads the records the log names
   since the last lookup and indexes them again. It also counts the log rows of
@@ -1854,14 +1889,24 @@ whether or not the Validation scan is on.
 - **Confirmed before use.** The records the index names are checked against
   their current rows in the data table before any is used, so a stale key
   costs one row read and never a wrong answer.
-- **Rebuilt when it cannot be shown current:** after a change to the data
-  dictionary, a log pruned into the last hour, a move to another log or data
+- **Rebuilt when it cannot be shown current:** after a log pruned into the
+  last hour, a move to another log or data
   table, more than 20,000 changed records in one stretch of the log (or 5,000
   to index again), and every 7 days. After a burst of changes the rebuild
   waits 7.5 minutes. While a field is not built, its lookups read the data
-  table. The cron rebuilds each field a day before its 7 days are up, and the
+  table when the field has at most 50,000 saved values. The cron rebuilds each
+  field a day before its 7 days are up, and the
   field answers throughout: from its old keys and the new ones until the new
   build is complete.
+- **A change to the data dictionary rebuilds the field it names**, and any
+  indexed field the dictionary no longer holds. Every field of the project is
+  rebuilt when the change names no field the dictionary holds now: a field
+  deleted or renamed away, an instrument, an upload of the whole dictionary,
+  or more than 50 fields at once. Up to 2.4.0 every change rebuilt every
+  field, so editing one label stopped the index for the whole project.
+- **A renamed record** is indexed under its new ID by the next lookup. REDCap
+  logs a rename under one of the two IDs; the module reads the other from the
+  same log row.
 - **What it does not see on its own:** a value written to the data table with
   no log row (another module's direct SQL, for example), and a log row that
   becomes visible more than an hour after later rows. The 7-day rebuild picks
@@ -1871,8 +1916,12 @@ whether or not the Validation scan is on.
 - **Size.** One row of `uv_lookup_key` per saved value of a searched field,
   about 100 bytes with its indexes. The cron drops the keys of a field no
   lookup has asked for in 30 days.
+- **When the index cannot work** (its tables cannot be read, or the database
+  refuses its lock), the cron's summary line says so and the module log gets
+  one `uv-lookup-index-unavailable` row a day.
 - **Off switch.** The system setting *Live lookups — turn OFF the value index*
-  makes every lookup read the data table again.
+  makes every lookup read the data table again. A field of more than 50,000
+  saved values is then checked by the Validation scan only.
 
 ## Verification
 
