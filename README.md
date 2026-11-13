@@ -2016,6 +2016,13 @@ on PHP 7.4, 8.1 and 8.3 (the declared floor is exercised, not just stated),
 release-shaped package to verify its layout. If either engine drifts, CI fails.
 See [`tests/README.md`](tests/README.md).
 
+The suites are in the repository, not in the release archive. The archive holds
+only what a REDCap server needs, because REDCap serves every file of a module
+folder by URL; `tools/package_rules.json` lists what it must not hold and CI
+checks the built archive against it. Each PHP script under `tests/`, `tools/`
+and `data/` also answers a web request with 404, for a server that holds a git
+checkout instead of the archive. To run the suites, clone the repository.
+
 ## Install
 
 See [`docs/INSTALL.md`](docs/INSTALL.md), or the
@@ -2108,6 +2115,8 @@ node tests/a11y_dom_js.cjs    # field DOM contract (a11y, debounce, survey, read
 node tests/config_notice_js.cjs     # page-level config-error notice; a config of another configShape is not read
 node tests/dispatch_notice_js.cjs   # dispatcher config-error routing
 node tests/gen_pooled_fixture.cjs   # regenerate pooled_fixture.json after a parser change
+node tests/package_contents_js.cjs  # the release archive holds no test, tool or development file
+php  tests/cli_guard_php.php        # every PHP script under tests/, tools/ and data/ refuses a web request
 ```
 
 `js/engine.js` is vendored from the `qrcode_generation` repo with a set of

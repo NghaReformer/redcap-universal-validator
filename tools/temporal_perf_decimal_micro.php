@@ -1,5 +1,11 @@
 <?php
 /** temporal_perf_decimal_micro: cost of the uncharged primitives on 4,000-digit operands. */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require_once __DIR__ . '/../php/TemporalLogic.php';
 use INSPIRE\UniversalValidator\ExactDecimal;
 use INSPIRE\UniversalValidator\Logic;

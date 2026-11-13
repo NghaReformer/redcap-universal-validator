@@ -6,6 +6,12 @@
  * budget charges 1 unit per 32 members. One save's audit and one record's scan.
  * Usage: php tools/temporal_perf_allinst.php [n1,n2,...]
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/temporal_perf_harness.php';
 $ns = isset($argv[1]) ? array_map('intval', explode(',', $argv[1])) : [500, 1500, 3000];
 $forms = ['record_id'=>'fa','a_val'=>'fa','b_open'=>'fb'];

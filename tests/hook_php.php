@@ -19,6 +19,12 @@
  */
 
 namespace ExternalModules {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
     // Minimal stand-in for the framework base class. Test scripts set the public
     // fixtures; the module calls these methods exactly as in production.
     /** A signed-in user whose design rights decide which configuration errors a page lists (LIVE-4). */

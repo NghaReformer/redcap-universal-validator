@@ -7,6 +7,12 @@
  * Same in the browser evaluator (QRID_temporalValue filters v!=='' only).
  * Run: php tools/temporal_sem_whitespace.php
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require_once __DIR__ . '/temporal_sem_lib.php';
 use INSPIRE\UniversalValidator\AddressResolver;
 use INSPIRE\UniversalValidator\ProjectShape;

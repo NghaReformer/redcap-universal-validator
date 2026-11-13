@@ -6,6 +6,12 @@
  * The binding's own field IS checked against its type (validateProject), elapsedFrom is not.
  * Run: php tools/temporal_sem_elapsed_type.php
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require_once __DIR__ . '/temporal_sem_lib.php';
 use INSPIRE\UniversalValidator\ProjectShape;
 use INSPIRE\UniversalValidator\TemporalRules;

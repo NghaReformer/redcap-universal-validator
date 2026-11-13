@@ -2,6 +2,12 @@
 // Temporal probe: what does the H3 sanitiser actually emit for the exact
 // failure tests/mysql/run.php:757 claims proves "the column is named"?
 namespace INSPIRE\UniversalValidator\Scan;
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/../php/Scan/Schema.php';
 require __DIR__ . '/../php/Scan/ScanDb.php';
 require __DIR__ . '/../php/Scan/ScanStore.php';

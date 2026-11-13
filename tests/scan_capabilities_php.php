@@ -32,6 +32,12 @@
  */
 
 namespace ExternalModules {
+    if (PHP_SAPI !== 'cli') {
+        // A test or a tool, never a page: answer a web request with 404 and stop.
+        http_response_code(404);
+        exit;
+    }
+
     class AbstractExternalModule {
         public $queries = [];
         /** Rows to hand back, keyed by a substring of the SQL. */

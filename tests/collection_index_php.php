@@ -6,6 +6,12 @@
  * collections, values, operators, sides, case modes, blank polarities and
  * skipped members, both must give the same answer.
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require_once __DIR__ . '/../php/TemporalLogic.php';
 use INSPIRE\UniversalValidator\CollectionIndex;
 use INSPIRE\UniversalValidator\Logic;

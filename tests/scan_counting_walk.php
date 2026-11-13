@@ -36,6 +36,12 @@
  *     started; the next project id is left free for a neighbour
  */
 
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 use INSPIRE\UniversalValidator\Scan\Hmac;
 use INSPIRE\UniversalValidator\Scan\FindingRowMapper;
 use INSPIRE\UniversalValidator\Scan\ScanOutcome;

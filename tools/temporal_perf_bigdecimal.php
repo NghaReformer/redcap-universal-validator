@@ -6,6 +6,12 @@
  * not charged at all.
  * Usage: php tools/temporal_perf_bigdecimal.php [digits] [n1,n2,...]
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/temporal_perf_harness.php';
 
 $digits = (int)($argv[1] ?? 4000);

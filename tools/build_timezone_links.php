@@ -24,6 +24,12 @@
  * Usage: php tools/build_timezone_links.php [--out FILE] SOURCE [SOURCE...]
  */
 
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 $args = array_slice($argv, 1);
 $out = dirname(__DIR__) . '/php/timezone_links.json';
 $i = array_search('--out', $args, true);

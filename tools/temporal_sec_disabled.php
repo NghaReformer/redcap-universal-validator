@@ -1,5 +1,11 @@
 <?php
 /** temporal_sec: with enable-event-instance-refs OFF, extended rules must read nothing and evaluate nothing. */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/temporal_sec_harness.php';
 
 $shapes = [

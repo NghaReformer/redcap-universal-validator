@@ -6,6 +6,12 @@
  * their dictionaries without action tags and lock them here. A check of that
  * refusal leaves its field unlocked.
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 function lock_return_targets(array $dd)
 {
     $targets = [];

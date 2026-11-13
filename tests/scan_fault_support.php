@@ -34,6 +34,12 @@
  */
 
 namespace INSPIRE\UniversalValidator\Scan;
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 
 // Its own dependencies, so a suite that wants only the framework stand-in does
 // not have to know which of the eight classes below the store fakes touch.

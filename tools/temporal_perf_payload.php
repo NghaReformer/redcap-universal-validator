@@ -5,6 +5,12 @@
  * tools/temporal_perf_engine.cjs to time per-keystroke evaluation).
  * Usage: php tools/temporal_perf_payload.php <outdir> [scenario-filter]
  */
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/temporal_perf_harness.php';
 
 $out = $argv[1] ?? sys_get_temp_dir();

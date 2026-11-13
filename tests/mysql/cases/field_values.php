@@ -14,6 +14,12 @@
  * that lost its project predicate answers with the neighbour's records.
  */
 
+if (PHP_SAPI !== 'cli') {
+    // A test or a tool, never a page: answer a web request with 404 and stop.
+    http_response_code(404);
+    exit;
+}
+
 use INSPIRE\UniversalValidator\Scan\FieldValues;
 
 $PID = 900;
