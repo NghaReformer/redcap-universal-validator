@@ -335,10 +335,16 @@ function typeIn(env, value) { env.field.value = value; env.field.fire('input'); 
     // Polled: a loaded machine runs the hold's timer late.
     for (let waited = 0; waited < 3000 && env.saves.length === 0; waited += 25) await sleep(25);
     check('9 ...and with no answer the save goes on after lookupHoldMs', env.saves.length === 1 && env.win._alerts.length === 0, env.saves.length);
-    check('9 ...the field says it could not be checked', /Could not check/.test(env.msg().innerHTML), env.msg().innerHTML);
-    const asked = env.stub.calls.length;
-    env.btn.click();
-    check('9 ...and the next save neither waits nor asks again', env.saves.length === 2 && env.stub.calls.length === asked);
+    // With no hold the same save gives the lookup up at once: read in the
+    // same task, before the page's own poll can judge the field again.
+    const now = boot('', Object.assign(EXISTS(block), { existsReturnFields: ['site'] }), { lookupHoldMs: 0 });
+    typeIn(now, 'SP-4');
+    const ev0 = now.btn.click();
+    check('9 ..."lookupHoldMs": 0 never waits for it', !ev0._prevented && now.saves.length === 1);
+    check('9 ...the field says it could not be checked', /Could not check/.test(now.msg().innerHTML), now.msg().innerHTML);
+    const asked = now.stub.calls.length;
+    now.btn.click();
+    check('9 ...and the next save does not ask again', now.saves.length === 2 && now.stub.calls.length === asked);
   }
   {
     // The server's limit answered: nothing waits for the limit to clear.
