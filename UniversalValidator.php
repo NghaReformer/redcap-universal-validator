@@ -8328,6 +8328,8 @@ class UniversalValidator extends AbstractExternalModule
                 return $refuse('"event" "' . $frag['existsEvent'] . '" is not an event of this project — use its unique event name.');
             }
         }
+        $why = $this->existsMatchProblem($frag, $name, $dd, $dd, $pid, '');
+        if ($why !== null) return $refuse($why);
         if (isset($frag['existsWhere'])) {
             $why = $this->existsWhereProblem($frag, $name, $dd, $dd, $pid, '');
             if ($why !== null) return $refuse($why);
@@ -8511,6 +8513,34 @@ class UniversalValidator extends AbstractExternalModule
                     . ' — the entry found there has no value for it. Name an "event" that holds both forms, or ' . $verb
                     . ' fields of a form every such event holds.';
             }
+        }
+        return null;
+    }
+
+    /**
+     * Why a "match" target of an exists rule on $name cannot be read from the
+     * entry the lookup finds in project $pidThere, or null (EXI-10): it is on
+     * another form that repeats, or on a form missing from an event the
+     * entry can be in (existsEntryPlacement, as "where" and "return" are
+     * checked). Such a rule was accepted, and then every value was "not
+     * found": the entry never holds the target. Where what repeats, or which
+     * forms an event holds, cannot be read, the rule is left as it is: it
+     * may be one that works. Another project's forms and events are not
+     * named: its refusal is CROSS_UNAVAILABLE.
+     */
+    private function existsMatchProblem(array $frag, $name, array $ddThere, array $ddHere, $pidThere, $there)
+    {
+        $match = (isset($frag['existsMatch']) && is_array($frag['existsMatch'])) ? $frag['existsMatch'] : [];
+        if (!$match) return null;
+        $shape = $this->existsEntryShape($frag, $name, $ddThere, $ddHere, $pidThere, $there, '"match"', 'matched');
+        if (isset($shape['problem'])) return null;
+        $pkThere = $ddThere ? (string) array_keys($ddThere)[0] : null;
+        foreach ($match as $t => $_) {
+            $t = (string) $t;
+            if (!isset($ddThere[$t]) || !is_array($ddThere[$t])) continue;
+            $why = self::existsEntryPlacement($shape, $frag, $ddThere[$t], '"match" target "[' . $t . ']"' . $there, 'Match',
+                'match', $t !== $pkThere);
+            if ($why !== null) return $there === '' ? $why : sprintf(self::CROSS_UNAVAILABLE, (int) $pidThere);
         }
         return null;
     }
@@ -8939,6 +8969,8 @@ class UniversalValidator extends AbstractExternalModule
                     . 'users with rights there instead ("Who gets an answer").');
             }
         }
+        $why = $this->existsMatchProblem($frag, $name, $ddB, $ddA, $b, ' of project ' . $b);
+        if ($why !== null) return $refuse($why);
         // crossGate already required every "where" field to be on the
         // agreement's list of fields it may search.
         if (isset($frag['existsWhere'])) {

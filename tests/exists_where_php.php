@@ -247,6 +247,9 @@ namespace {
         'w_s'     => f('result', w('{"in":"[specimen_id]","where":"[consent]=\'1\'","surveys":true}')),
         'w_m'     => f('result', w('{"in":"[specimen_id]","match":{"lab_site":"[t_msite]"},"where":"[consent]=\'1\'"}')),
         't_msite' => f('result', '', '', 'dropdown', '', SITES),
+        // EXI-10: a "match" target on a form that does not repeat is read from the entry of a repeating one
+        'w_mbase' => f('result', w('{"in":"[rep_id]","match":{"status":"[t_mtext]"}}')),
+        't_mtext' => f('result'),
     ];
     // Refused set-ups: field => [the tag's JSON, the words the refusal holds]
     $BAD = [
@@ -261,6 +264,9 @@ namespace {
         'b_rep'    => ['{"in":"[specimen_id]","where":"[rep_flag]=\'1\'"}', '"where" field "[rep_flag]" is on the repeating form "rep_form"'],
         'b_event'  => ['{"in":"[home2]","where":"[lab_status]=\'x\'"}', 'is on the form "lab_reg", which is not in every event'],
         'b_recev'  => ['{"in":"record","where":"[consent]=\'1\'"}', '"where" with "in":"record" needs "event" in a longitudinal project'],
+        // EXI-10: a "match" target the entry found never holds made every value "not found"
+        'b_mrep'   => ['{"in":"[specimen_id]","match":{"rep_flag":"[t_mtext]"}}', '"match" target "[rep_flag]" is on the repeating form "rep_form"'],
+        'b_mevent' => ['{"in":"[home2]","match":{"lab_status":"[t_mtext]"}}', '"match" target "[lab_status]" is on the form "lab_reg", which is not in every event'],
         'b_recrep' => ['{"in":"record","event":"enrolment_arm_1","where":"[rep_flag]=\'1\'"}', 'is on the repeating form "rep_form" —'],
     ];
     foreach ($BAD as $fname => $spec) $DICT[$fname] = f('result', w($spec[0]));
@@ -374,7 +380,7 @@ namespace {
         check('dictionary: ' . $fname . ' refused (' . $spec[1] . ')', strpos(errOf($cfg, $fname), $spec[1]) !== false);
     }
     foreach (['w_and', 'w_upper', 'w_c0', 'w_cs', 'w_ci', 'w_blank', 'w_mdc', 'w_num', 'w_date', 'w_comma', 'w_cb', 'w_rep',
-              'w_rec', 'w_ret', 'w_s', 'w_m'] as $fname) {
+              'w_rec', 'w_ret', 'w_s', 'w_m', 'w_mbase'] as $fname) {
         check('dictionary: ' . $fname . ' accepted', ruleFor($cfg, $fname) !== null && errOf($cfg, $fname) === '');
     }
     $ra = ruleFor($cfg, 'w_and');

@@ -2219,7 +2219,11 @@ this record.
 
 - **Eligible fields:** Text, dropdown, radio and SQL fields. The searched field and
   each `match` target must exist and hold one value (no checkbox, file or
-  descriptive field).
+  descriptive field). A `match` target must be readable from the entry the
+  lookup finds: on the form of `in`, or on a form that does not repeat and is
+  in every event that entry can be in. Any other is refused when the rule is
+  read, since the entry would never hold it and every value would be *not
+  found*.
 - **How values compare.** Values are trimmed (spaces, tabs, line breaks and the
   no-break space) and letter case is ignored, so `sp-1` finds `SP-1`. Add
   `"caseSensitive":true` to compare letter for letter. Only A to Z fold:
