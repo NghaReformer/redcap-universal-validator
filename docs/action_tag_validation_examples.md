@@ -2281,8 +2281,11 @@ this record.
   the module's read of the data table is not. A value saved nowhere is *not
   found* for a user in a group too, and the audit logs a violation. A value
   saved only in another group is *found*, without naming the record. A rule
-  with `match`, `where` or `return` cannot judge an entry REDCap does not let
-  the user read, and answers *could not check* there. When the data table
+  with `match` or `where` is judged only on the entries of the user's own
+  group: when the value is saved in another group and no entry of their own
+  passes, the answer is *could not check*, whether or not REDCap confines the
+  read, so the answer never tells what another group's entry holds. A rule
+  with `return` copies values from the user's own group only. When the data table
   cannot be read, a *not found* from a rule that looks across groups is kept
   only when the module sees other groups' records in the same request;
   otherwise it is *could not check*, and the audit reports a rule problem.

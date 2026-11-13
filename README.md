@@ -870,9 +870,13 @@ the specimen ID on the collection form.
   group, but not the module's read of the data table. A value saved nowhere is
   therefore *not found* for a user in a group too, and the post-save audit
   logs it as a violation. A value saved only in another group is *found*,
-  without naming the record. A rule with `match`, `where` or `return` cannot
-  judge a record REDCap does not let the user read, and answers *could not
-  check* there. When the data table cannot be read, a *not found* from a rule
+  without naming the record. A rule with `match` or `where` is judged only on
+  the entries of the user's own group: when the value is saved in another
+  group and no entry of their own passes, the answer is *could not check*,
+  never *found* or *saved, but filtered*, which would tell them what the other
+  group's entry holds. This holds whether or not REDCap confines the read. A
+  rule with `return` copies values from the user's own group only. When the
+  data table cannot be read, a *not found* from a rule
   that looks across groups is kept only when the module sees records of other
   groups in the same request; otherwise the answer is *could not check*.
 - **Surveys: opt-in, and never on an Identifier.** `"surveys":true` enables the

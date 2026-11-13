@@ -678,6 +678,75 @@ namespace {
     check('EXI-1 the event row being edited is left out of the instances of another form that carry it (got ' . json_encode($a) . ')',
         $a['state'] === 'not-found' && $b['state'] === 'not-found');
 
+    // ---- EXI-3: "where" and "match" are judged on the caller's own group only ----------------
+    // Reads NOT confined to the group, which is how a module's getData may run.
+    $DG = [
+        'record_id' => f('enrol'),
+        'pid_code'  => f('enrol'),
+        'hiv'       => f('enrol'),
+        'dob'       => f('enrol'),
+        'my_dob'    => f('result'),
+        'g_where'   => f('result', '@UVEXISTS={"in":"[pid_code]","where":"[hiv]=\'1\'"}'),
+        'g_match'   => f('result', '@UVEXISTS={"in":"[pid_code]","match":{"dob":"[my_dob]"}}'),
+        'g_plain'   => f('result', '@UVEXISTS=[pid_code]'),
+        'g_rec'     => f('result', '@UVEXISTS={"in":"record","where":"[hiv]=\'1\'"}'),
+    ];
+    $DATA_G = [
+        '1' => [351 => ['record_id' => '1', 'pid_code' => 'N-POS', 'hiv' => '1', 'dob' => '1970-07-07', 'redcap_data_access_group' => 'north']],
+        '2' => [351 => ['record_id' => '2', 'pid_code' => 'S-POS', 'hiv' => '1', 'dob' => '1990-01-02', 'redcap_data_access_group' => 'south']],
+        '3' => [351 => ['record_id' => '3', 'pid_code' => 'S-NEG', 'hiv' => '0', 'dob' => '1985-05-05', 'redcap_data_access_group' => 'south']],
+        '4' => [351 => ['record_id' => '4', 'pid_code' => 'N-NEG', 'hiv' => '0', 'redcap_data_access_group' => 'north']],
+        '5' => [351 => ['record_id' => '5', 'redcap_data_access_group' => 'north']],
+    ];
+    $GN = ['north' => ['forms' => ['enrol' => '1', 'result' => '1'], 'group_id' => 7, 'expiration' => '']];
+    $asks = [
+        'where, another group, passes'  => ['g_where', ['g_where' => 'S-POS']],
+        'where, another group, fails'   => ['g_where', ['g_where' => 'S-NEG']],
+        'match, another group, right'   => ['g_match', ['g_match' => 'S-POS', 'my_dob' => '1990-01-02']],
+        'match, another group, wrong'   => ['g_match', ['g_match' => 'S-POS', 'my_dob' => '1990-01-03']],
+        'record ID, another group, passes' => ['g_rec', ['g_rec' => '2']],
+        'record ID, another group, fails'  => ['g_rec', ['g_rec' => '3']],
+    ];
+    foreach ($asks as $label => list($fld, $vals)) {
+        list($a, $b) = both(function () use ($DG, $DATA_G, $GN, $fld, $vals) {
+            return core(ask(mod('north', $DG, $DATA_G, $GN), $fld, $vals, '5', 'result', 7));
+        });
+        check("EXI-3 $label: unknown, with nothing of what the entry holds (got " . json_encode($a) . ' / ' . json_encode($b) . ')',
+            $a === ['state' => 'unknown', 'record' => null] && $b === $a);
+    }
+    list($a, $b) = both(function () use ($DG, $DATA_G, $GN) {
+        return core(ask(mod('north', $DG, $DATA_G, $GN), 'g_where', ['g_where' => 'N-POS'], '5', 'result', 7));
+    });
+    check('EXI-3 the caller\'s own group is judged as before: found, named', $a === ['state' => 'found', 'record' => '1'] && $b === $a);
+    list($a, $b) = both(function () use ($DG, $DATA_G, $GN) {
+        return core(ask(mod('north', $DG, $DATA_G, $GN), 'g_where', ['g_where' => 'N-NEG'], '5', 'result', 7));
+    });
+    check('EXI-3 ...and "saved, but filtered" is said of their own group\'s entry (got ' . json_encode($a) . ')',
+        $a === ['state' => 'not-found', 'record' => null, 'filtered' => true] && $b === $a);
+    list($a, $b) = both(function () use ($DG, $DATA_G, $GN) {
+        return core(ask(mod('north', $DG, $DATA_G, $GN), 'g_where', ['g_where' => 'NOWHERE'], '5', 'result', 7));
+    });
+    check('EXI-3 a value saved nowhere is still not found', $a === ['state' => 'not-found', 'record' => null] && $b === $a);
+    list($a, $b) = both(function () use ($DG, $DATA_G, $GN) {
+        return core(ask(mod('north', $DG, $DATA_G, $GN), 'g_plain', ['g_plain' => 'S-NEG'], '5', 'result', 7));
+    });
+    check('EXI-3 a rule that tests only the value still finds it in another group, unnamed', $a === ['state' => 'found', 'record' => null] && $b === $a);
+    list($a, $b) = both(function () use ($DG, $DATA_G, $GN) {
+        return core(ask(mod('north', $DG, $DATA_G, $GN), 'g_rec', ['g_rec' => '1'], '5', 'result', 7));
+    });
+    check('EXI-3 a record ID of their own group that passes "where" is found', $a['state'] === 'found' && $b['state'] === 'found');
+    // The save audit of the same person judges the same way.
+    $DATA_G['5'][351]['g_where'] = 'S-NEG';
+    $m = mod('north', $DG, $DATA_G, $GN);
+    $m->redcap_save_record(149, '5', 'result', 351, 7, null, null, 1);
+    check('EXI-3 the audit of a person in a group reports no finding from another group\'s entry',
+        !logsOf($m, 'invalid-id-saved') && count(array_filter(logsOf($m, 'uvalidate-unconfigurable'), function ($e) {
+            return strpos((string) ($e['why'] ?? ''), 'another Data Access Group') !== false;
+        })) === 1);
+    // Staff in no group are answered in full.
+    $r = core(ask(mod('nurse', $DG, $DATA_G, $FULL), 'g_where', ['g_where' => 'S-NEG'], '5', 'result'));
+    check('EXI-3 staff in no group: judged on every entry', $r === ['state' => 'not-found', 'record' => null, 'filtered' => true]);
+
     fwrite(STDOUT, "exists_table_php: $n checks, $fail failure(s)" . ($INDEX ? ' through the lookup index' : '') . "\n");
     if (!$INDEX) {
         passthru(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__) . ' --index', $rc);

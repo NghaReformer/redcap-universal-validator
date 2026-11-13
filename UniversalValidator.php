@@ -1627,6 +1627,16 @@ class UniversalValidator extends AbstractExternalModule
         if (isset($opts['skip']) && is_array($opts['skip']) && $spec['in'] !== 'record') {
             $spec['skip'] = $this->existsSkipSlot($pid, $opts['skip']);
         }
+        // A person in a Data Access Group has "match" and "where" judged on
+        // the entries of their own group only (EXI-3). Judged on another
+        // group's entries, found against "saved, but filtered" or "not
+        // found" told them what those entries hold: a status, a guessed date
+        // of birth. An entry of another group that holds the value answers
+        // unknown, whether REDCap confines the read or not.
+        $spec['judgeIn'] = ($prefer !== null && ($spec['where'] !== null
+            || count($spec['target']) > ($spec['in'] === 'record' ? 0 : 1))) ? $prefer : null;
+        $beyond = false;
+        $beyondWhy = $unknown + ['why' => self::EXISTS_BEYOND_GROUP_WHY];
         try {
             if ($spec['in'] === 'record') {
                 $pk = $this->recordIdFieldOf($pid);
@@ -1650,7 +1660,7 @@ class UniversalValidator extends AbstractExternalModule
                     $hit = self::recordIdMatch($ids, $value, $spec['fold'], $scope, $dag, $self, $mark);
                 } else {
                     $hit = self::recordWhereHit($spec, self::recordIdMatches($ids, $value, $spec['fold'], $scope, $dag, $self, $mark),
-                                                $data, $filtered);
+                                                $data, $filtered, $beyond);
                 }
                 if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
                 // The data table names every record whose ID matches, in any
@@ -1663,7 +1673,7 @@ class UniversalValidator extends AbstractExternalModule
                 // takes must not tell "saved, but filtered" from "absent".
                 if (empty($opts['foreign']) && (!$budgeted || $spec['where'] === null)) {
                     $t = $this->existsRecordFromTable($pid, $spec, $value, $read, $ids, $scope, $dag, $self, $prefer, $opts, $filtered,
-                        $budgeted ? 'index' : 'any');
+                        $budgeted ? 'index' : 'any', $beyond);
                     if ($t !== null) return $t;
                     if ($this->liveReadSkipped) return $unknown + ['why' => self::LIVE_READ_SKIPPED_WHY];
                 }
@@ -1684,10 +1694,11 @@ class UniversalValidator extends AbstractExternalModule
                     } else {
                         // The records the exact read already judged are not judged again.
                         $more = array_diff_key(self::recordIdMatches($all, $value, $spec['fold'], $scope, $dag, $self, $mark), $ids);
-                        $hit = self::recordWhereHit($spec, $more, $rows, $filtered);
+                        $hit = self::recordWhereHit($spec, $more, $rows, $filtered, $beyond);
                     }
                     if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
                 }
+                if ($beyond) return $beyondWhy;
                 return self::existsFilteredMiss($this->existsMiss($pid, $scope, $opts, $dag), $filtered);
             }
             $fields = array_keys($spec['target']);
@@ -1751,16 +1762,17 @@ class UniversalValidator extends AbstractExternalModule
             if (!is_array($data)) return $unknown;
             $filtered = false;
             if ($spec['returns']) {
-                $hits = self::existsHitsIn($data, $spec, $scope, $dag, $filtered);
+                $hits = self::existsHitsIn($data, $spec, $scope, $dag, $filtered, $beyond);
                 if ($hits) {
                     $best = self::bestExistsHit($hits, $prefer);
                     return ['state' => 'found', 'record' => $best['record'], 'dag' => $best['dag']]
                         + self::existsReturnOutcome($hits, $spec['returns'], $prefer);
                 }
             } else {
-                $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered);
+                $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered, $beyond);
                 if ($hit !== null) return ['state' => 'found'] + $hit;
             }
+            if ($beyond) return $beyondWhy;
             // The read just made is the evidence of what this request can see
             // there; it spares existsMiss a second read of that project.
             if (!empty($opts['foreign'])) $this->noteGroupsSeen($pid, $data, false);
@@ -1849,15 +1861,17 @@ class UniversalValidator extends AbstractExternalModule
      * there, without its name; with either, the answer is unknown. Under
      * "scope":"dag" such a record is outside the group the rule looks in.
      */
-    private function existsRecordFromTable($pid, array $spec, $value, array $read, array $ids, $scope, $dag, $self, $prefer, array $opts, &$filtered, $via = 'any')
+    private function existsRecordFromTable($pid, array $spec, $value, array $read, array $ids, $scope, $dag, $self, $prefer, array $opts, &$filtered, $via = 'any', &$beyond = false)
     {
         $pk = $this->recordIdFieldOf($pid);
         if ($pk === '') return null;
         $cands = $this->existsCandidates($pid, $pk, $value, $spec['fold'], $spec['recordMark'], [], null, $self, $via);
         if ($cands === null) return null;
         $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
+        // A record of another group that the caller's "where" is not judged on (EXI-3).
+        $beyondWhy = ['state' => 'unknown', 'record' => null, 'dag' => null, 'why' => self::EXISTS_BEYOND_GROUP_WHY];
         $more = array_values(array_filter($cands, function ($r) use ($ids) { return !array_key_exists($r, $ids); }));
-        if (!$more) return self::existsFilteredMiss($notFound, $filtered);
+        if (!$more) return $beyond ? $beyondWhy : self::existsFilteredMiss($notFound, $filtered);
         $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'records' => $more,
                                   'fields' => $read, 'exportDataAccessGroups' => true]);
         if (!is_array($data)) return ['state' => 'unknown', 'record' => null, 'dag' => null];
@@ -1865,18 +1879,22 @@ class UniversalValidator extends AbstractExternalModule
         $mark = $spec['recordMark'];
         $hit = $spec['where'] === null
             ? self::recordIdMatch($got, $value, $spec['fold'], $scope, $dag, $self, $mark)
-            : self::recordWhereHit($spec, self::recordIdMatches($got, $value, $spec['fold'], $scope, $dag, $self, $mark), $data, $filtered);
+            : self::recordWhereHit($spec, self::recordIdMatches($got, $value, $spec['fold'], $scope, $dag, $self, $mark), $data, $filtered, $beyond);
         if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
+        if ($beyond) return $beyondWhy;
         $unseen = array_values(array_filter($more, function ($r) use ($got) { return !array_key_exists($r, $got); }));
         if ($unseen && $scope !== 'dag') {
             if ($spec['where'] === null && !$spec['returns']) return ['state' => 'found', 'record' => $unseen[0], 'dag' => false];
             return ['state' => 'unknown', 'record' => null, 'dag' => null,
                     'why' => isset($opts['callerDag']) && $opts['callerDag'] !== null
-                        ? 'a value saved in another Data Access Group may not be visible from yours'
+                        ? self::EXISTS_BEYOND_GROUP_WHY
                         : 'the saved values could not be read just now'];
         }
         return self::existsFilteredMiss($notFound, $filtered);
     }
+
+    /** What a person in a Data Access Group is told when the value is saved in another group and the rule tests more than the value. */
+    const EXISTS_BEYOND_GROUP_WHY = 'a value saved in another Data Access Group may not be visible from yours';
 
     /**
      * A miss ($miss, from existsMiss) where the value IS saved, in entries
@@ -1903,11 +1921,17 @@ class UniversalValidator extends AbstractExternalModule
      * with no row there has no entry, so it fails. The values come from the
      * read that found the IDs, so judging costs no read of its own.
      */
-    private static function recordWhereHit(array $spec, array $cands, array $d, &$filtered)
+    private static function recordWhereHit(array $spec, array $cands, array $d, &$filtered, &$beyond = false)
     {
         if (!$cands) return null;
+        $only = isset($spec['judgeIn']) ? $spec['judgeIn'] : null;
         foreach ($cands as $rec => $rdag) {
             $rec = (string) $rec;
+            // A record of another group than the caller's is not judged (EXI-3).
+            if ($only !== null && $rdag !== $only) {
+                $beyond = true;
+                continue;
+            }
             $filtered = true;
             $node = (isset($d[$rec]) && is_array($d[$rec])) ? $d[$rec] : [];
             foreach (self::recordContexts($node) as $ctx) {
@@ -2209,6 +2233,22 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Whether one entry holds the value looked up in the searched field, the
+     * "match" fields and "where" left aside: all that is read of an entry of
+     * another Data Access Group than the caller's (EXI-3, existsSpec
+     * 'judgeIn'). A saved Missing Data Code holds nothing.
+     */
+    private static function existsRowHoldsValue(array $ctx, array $spec)
+    {
+        $in = $spec['in'];
+        if (!isset($spec['keys'][$in])) return false;
+        $row = $ctx['values'];
+        $rv = (isset($row[$in]) && !is_array($row[$in])) ? Logic::lookupTrim($row[$in]) : '';
+        if ($rv === '' || ($spec['codes'] && self::isMissingCode($rv, $spec['codes']))) return false;
+        return Logic::lookupKey($rv, $spec['fold'], $spec['marks'][$in]) === $spec['keys'][$in];
+    }
+
+    /**
      * Whether one entry (a recordContexts context) meets the rule's "where"
      * condition; true for a rule without one. The condition reads the entry
      * as REDCap stores it, with the rule's letter case (existsSpec 'fold'),
@@ -2251,12 +2291,13 @@ class UniversalValidator extends AbstractExternalModule
      * matches nothing. An entry that fails "where" is skipped and sets
      * $filtered (existsRowMatch).
      */
-    private static function existsMatchIn(array $data, array $spec, $scope, $dag, $prefer = null, &$filtered = null)
+    private static function existsMatchIn(array $data, array $spec, $scope, $dag, $prefer = null, &$filtered = null, &$beyond = false)
     {
         $best = null;
         $bestScore = -1;
         $top = ($prefer !== null ? 2 : 0) + 1;
         $skip = isset($spec['skip']) ? $spec['skip'] : null;
+        $only = isset($spec['judgeIn']) ? $spec['judgeIn'] : null;
         foreach ($data as $rec => $node) {
             if (!is_array($node)) continue;
             $rdag = self::dagOfRecordNode($node);
@@ -2264,6 +2305,10 @@ class UniversalValidator extends AbstractExternalModule
             foreach (self::recordContexts($node) as $ctx) {
                 if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
                 if ($skip !== null && self::existsEntrySkipped($skip, $rec, $ctx)) continue;
+                if ($only !== null && $rdag !== $only) {
+                    if (self::existsRowHoldsValue($ctx, $spec)) $beyond = true;
+                    continue;
+                }
                 $exact = self::existsRowMatch($ctx, $spec, $filtered);
                 if ($exact === null) continue;
                 $score = ($prefer !== null && $rdag === $prefer ? 2 : 0) + ($exact ? 1 : 0);
@@ -2288,10 +2333,11 @@ class UniversalValidator extends AbstractExternalModule
      * hits, so values are copied only from them; one that fails it sets
      * $filtered.
      */
-    private static function existsHitsIn(array $data, array $spec, $scope, $dag, &$filtered = null)
+    private static function existsHitsIn(array $data, array $spec, $scope, $dag, &$filtered = null, &$beyond = false)
     {
         $hits = [];
         $skip = isset($spec['skip']) ? $spec['skip'] : null;
+        $only = isset($spec['judgeIn']) ? $spec['judgeIn'] : null;
         foreach ($data as $rec => $node) {
             if (!is_array($node)) continue;
             $rdag = self::dagOfRecordNode($node);
@@ -2299,6 +2345,10 @@ class UniversalValidator extends AbstractExternalModule
             foreach (self::recordContexts($node) as $ctx) {
                 if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
                 if ($skip !== null && self::existsEntrySkipped($skip, $rec, $ctx)) continue;
+                if ($only !== null && $rdag !== $only) {
+                    if (self::existsRowHoldsValue($ctx, $spec)) $beyond = true;
+                    continue;
+                }
                 $exact = self::existsRowMatch($ctx, $spec, $filtered);
                 if ($exact === null) continue;
                 $hits[] = ['record' => (string) $rec, 'dag' => $rdag, 'exact' => $exact,
@@ -11801,17 +11851,20 @@ class UniversalValidator extends AbstractExternalModule
         $data = \REDCap::getData($params + ['records' => $cands]);
         if (!is_array($data)) return ['state' => 'unknown', 'record' => null, 'dag' => null];
         $filtered = false;
+        $beyond = false;
         if ($spec['returns']) {
-            $hits = self::existsHitsIn($data, $spec, $scope, $dag, $filtered);
+            $hits = self::existsHitsIn($data, $spec, $scope, $dag, $filtered, $beyond);
             if ($hits) {
                 $best = self::bestExistsHit($hits, $prefer);
                 return ['state' => 'found', 'record' => $best['record'], 'dag' => $best['dag']]
                     + self::existsReturnOutcome($hits, $spec['returns'], $prefer);
             }
         } else {
-            $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered);
+            $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer, $filtered, $beyond);
             if ($hit !== null) return ['state' => 'found'] + $hit;
         }
+        // Saved in another group, where "match" and "where" are not judged (EXI-3).
+        if ($beyond) return ['state' => 'unknown', 'record' => null, 'dag' => null, 'why' => self::EXISTS_BEYOND_GROUP_WHY];
         $seen = [];
         foreach ($data as $rec => $node) if (is_array($node)) $seen[(string) $rec] = true;
         $unseen = array_values(array_filter($cands, function ($r) use ($seen) { return !isset($seen[$r]); }));
@@ -11821,7 +11874,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             return ['state' => 'unknown', 'record' => null, 'dag' => null,
                     'why' => isset($opts['callerDag']) && $opts['callerDag'] !== null
-                        ? 'a value saved in another Data Access Group may not be visible from yours'
+                        ? self::EXISTS_BEYOND_GROUP_WHY
                         : 'the saved values could not be read just now'];
         }
         return self::existsFilteredMiss($notFound, $filtered);
