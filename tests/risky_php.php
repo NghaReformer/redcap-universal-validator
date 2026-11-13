@@ -182,6 +182,16 @@ foreach ([
     ['[[:digit:]]{4}', 'PCRE-only syntax'],
     ['(?i)FC[0-9]{4}', 'group form JavaScript cannot compile'],
     ['FC[][0-9]{4}',   'empty character class'],
+    // review 2026-11-13, VAL-4: PCRE ran these and new RegExp threw
+    ['[0-9]?+[A-Z]',        'quantifier where JavaScript allows none'],
+    ['[A-Z]{2}+[0-9]{4}',   'quantifier where JavaScript allows none'],
+    ['(?<=A)+B',            'quantifier where JavaScript allows none'],
+    ['(?<!A){2}B',          'quantifier where JavaScript allows none'],
+    ['A\b+B',               'quantifier where JavaScript allows none'],
+    // review 2026-11-13, VAL-5: both engines ran these and read them differently
+    ['(A)?\1B',             'a back-reference \1 to \9'],
+    ['\x4?A',               '\x without two hex digits'],
+    ['FC\e[0-9]{4}',        '\a, \e'],
 ] as $case) {
     $n++;
     $why = '';
@@ -196,6 +206,28 @@ $n++;
 if (CheckCharacter::patternCompiles('[[:digit:]]{4}') !== true) {
     $fail++;
     fwrite(STDERR, "patternCompiles wrongly applied the PCRE-only gate\n");
+}
+
+// ---- what the gate admits, the two engines read the same way (VAL-4, VAL-5) ----
+// Same rows as risky_js.cjs: [pattern, value, matches].
+foreach ([
+    ['AB[0-9]{2}',  'AB12',  true],     // \uHHHH is compiled as PCRE's \x{HHHH}
+    ['AB[0-9]{2}',  'UB12',  false],
+    ['\x41B[0-9]{2}',    'AB12',  true],
+    ['[0-9]{2}?[A-Z]',   '12A',   true],     // a lazy quantifier is not a possessive one
+    ['(?<=A)B|AB',       'AB',    true],
+    ['(?=A)+[A-Z]{2}',   'AB',    true],     // a quantified lookahead runs in both
+    ['(?=A)+[A-Z]{2}',   'BA',    false],
+    ['FC{[0-9]',         'FC{1',  true],     // a "{" that is not a quantifier is a literal
+] as $row) {
+    $n++;
+    $res = CheckCharacter::validateSingleField(
+        ['algorithm' => 'none', 'source' => 'normalized_id', 'strip' => '', 'idPattern' => $row[0]], $row[1]);
+    $got = $res['reason'] === 'valid' ? true : ($res['reason'] === 'format' ? false : $res['reason']);
+    if ($got !== $row[2]) {
+        $fail++;
+        fwrite(STDERR, 'server verdict for ' . json_encode($row[0]) . ' on ' . json_encode($row[1]) . ': ' . json_encode($res) . "\n");
+    }
 }
 
 echo sprintf("risky_php: %d checks, %d mismatch(es)\n", $n, $fail);

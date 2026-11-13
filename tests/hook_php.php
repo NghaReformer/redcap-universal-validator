@@ -901,6 +901,17 @@ namespace {
     check('alternates: a single field logs a value matching no format',
         count(invalidLogs($m)) === 1);
 
+    // VAL-11 (review 2026-11-13): a pooled value over the scan cap is not read.
+    // The log says that, and does not blame the rule's configuration.
+    $m = newModule($altRule('pooled'), $dictionary,
+        [2 => [351 => ['main_id_1' => str_repeat($FC . ' ', 20000)]]], 149);
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    $un = logsOf($m, 'uvalidate-unconfigurable');
+    check('VAL-11: a pooled value over the scan cap is logged as too long, not as a broken rule',
+        count($un) === 1 && count(invalidLogs($m)) === 0
+        && strpos($un[0][1]['why'], 'longer than the') !== false && strpos($un[0][1]['why'], 'was not checked') !== false
+        && strpos($un[0][1]['why'], 'uncompilable') === false);
+
     // reason precedence: a SHAPE that matched but whose check failed is a
     // check-character finding, not a format one - that is what keeps the scan
     // catalogue and the browser wording saying the same thing.

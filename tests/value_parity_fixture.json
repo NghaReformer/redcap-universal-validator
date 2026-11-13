@@ -169,7 +169,7 @@
       ]
     },
     {
-      "why": "\"\\s\" differs only for whitespace JavaScript knows and PCRE does not (no-break space, U+2000-U+200A, U+3000 ...); the server reports those as not checked",
+      "why": "\"\\s\" is JavaScript's white space on both sides (no-break space, U+2000-U+200A, U+2028, U+3000 ...): the server compiles it as those ranges (VAL-1)",
       "rule": {
         "type": "single",
         "algorithm": "none",
@@ -179,12 +179,14 @@
       "rows": [
         ["FC-1234", "invalid", "format"],
         ["FC\r1234", "valid", "valid"],
-        ["FC\u20281234", "valid", "not-checked"],
-        ["FC\u00A01234", "valid", "not-checked"],
+        ["FC\u20281234", "valid", "valid"],
+        ["FC\u00A01234", "valid", "valid"],
         ["FC 1234", "valid", "valid"],
         ["FC\u00E91234", "invalid", "format"],
         ["FC\uD83D\uDE001234", "invalid", "format"],
-        ["FC\u30001234", "valid", "not-checked"],
+        ["FC\u30001234", "valid", "valid"],
+        ["FC\u00851234", "invalid", "format"],
+        ["FC\u200B1234", "invalid", "format"],
         ["FC1234", "invalid", "format"]
       ]
     },
@@ -199,12 +201,14 @@
       "rows": [
         ["FC-1234", "valid", "valid"],
         ["FC\r1234", "invalid", "format"],
-        ["FC\u20281234", "invalid", "not-checked"],
-        ["FC\u00A01234", "invalid", "not-checked"],
+        ["FC\u20281234", "invalid", "format"],
+        ["FC\u00A01234", "invalid", "format"],
         ["FC 1234", "invalid", "format"],
         ["FC\u00E91234", "valid", "valid"],
         ["FC\uD83D\uDE001234", "invalid", "format"],
-        ["FC\u30001234", "invalid", "not-checked"],
+        ["FC\u30001234", "invalid", "format"],
+        ["FC\u00851234", "valid", "valid"],
+        ["FC\u200B1234", "valid", "valid"],
         ["FC1234", "invalid", "format"]
       ]
     },
@@ -226,6 +230,138 @@
         ["FC\uD83D\uDE001234", "invalid", "format"],
         ["FC\u30001234", "valid", "valid"],
         ["FC1234", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "VAL-1: \"\\d\" is an ASCII digit on both sides. PHP's \"u\" modifier made it any Unicode digit, so the server passed a full-width or Arabic-Indic digit the browser refused",
+      "rule": {
+        "type": "single",
+        "algorithm": "none",
+        "idPattern": "FC\\d{4}",
+        "strip": ""
+      },
+      "rows": [
+        ["FC1234", "valid", "valid"],
+        ["FC123\uFF14", "invalid", "format"],
+        ["FC123\u0664", "invalid", "format"],
+        ["FC123\u0E54", "invalid", "format"],
+        ["FC12\uD835\uDFD234", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "VAL-1: \"\\w\" is an ASCII letter, digit or underscore on both sides, so an accented letter cannot ride through a digits_only check",
+      "rule": {
+        "type": "single",
+        "algorithm": "luhn",
+        "source": "digits_only",
+        "idPattern": "\\w+",
+        "strip": ""
+      },
+      "rows": [
+        ["A79927398713", "valid", "valid"],
+        ["A_79927398713", "valid", "valid"],
+        ["A\u00C979927398713", "invalid", "format"],
+        ["A\u042479927398713", "invalid", "format"],
+        ["A7992739871\uFF13", "invalid", "format"],
+        ["A79927398714", "invalid", "check-character"]
+      ]
+    },
+    {
+      "why": "VAL-1: \"\\D\" and \"\\W\" accept every character that is not an ASCII digit or word character, on both sides; the server used to refuse the ones Unicode calls digits or letters",
+      "rule": {
+        "type": "single",
+        "algorithm": "none",
+        "idPattern": "\\D\\W[0-9]{2}",
+        "strip": ""
+      },
+      "rows": [
+        ["A-12", "valid", "valid"],
+        ["\u0664\u00C912", "valid", "valid"],
+        ["\uFF11\u042412", "valid", "valid"],
+        ["\u00C9\u008512", "valid", "valid"],
+        ["1-12", "invalid", "format"],
+        ["AB12", "invalid", "format"],
+        ["A_12", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "VAL-1: the shorthands inside a class, negated ones included, are the same ASCII sets and the same white space",
+      "rule": {
+        "type": "single",
+        "algorithm": "none",
+        "idPattern": "FC[\\d-][^\\D-][\\W_][^\\w.][\\s.][^\\S.]X",
+        "strip": ""
+      },
+      "rows": [
+        ["FC12_-.\u00A0X", "valid", "valid"],
+        ["FC-2\u00C9\u00C9.\u00A0X", "valid", "valid"],
+        ["FC12_\u00C9\u2003\u2028X", "valid", "valid"],
+        ["FC\uFF112_-.\u3000X", "invalid", "format"],
+        ["FC1\u0664_-.\u3000X", "invalid", "format"],
+        ["FC12A-.\u3000X", "invalid", "format"],
+        ["FC12_A.\u3000X", "invalid", "format"],
+        ["FC12_-\u200B\u3000X", "invalid", "format"],
+        ["FC12_-.\u0085X", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "VAL-1: \"\\b\" and \"\\B\" are boundaries of ASCII word characters on both sides, so an accented letter after a letter is a boundary",
+      "rule": {
+        "type": "single",
+        "algorithm": "none",
+        "idPattern": "FC\\b.[0-9]{2}|SK\\B.[0-9]{2}",
+        "strip": ""
+      },
+      "rows": [
+        ["FC-12", "valid", "valid"],
+        ["FC\u00C912", "valid", "valid"],
+        ["FC\u042412", "valid", "valid"],
+        ["FCX12", "invalid", "format"],
+        ["SKX12", "valid", "valid"],
+        ["SK_12", "valid", "valid"],
+        ["SK\u00C912", "invalid", "format"],
+        ["SK-12", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "VAL-8: a character outside ASCII that Unicode upper-cases to ASCII (long s to S, dotless i to I, sharp s to SS, the fi ligature to FI) is not turned into part of the ID; it fails the check like any other foreign character. ASCII lower case is still upper-cased and a Unicode dash is still a hyphen",
+      "rule": { "type": "single" },
+      "rows": [
+        ["SI1-0589W", "valid", "valid"],
+        ["si1-0589w", "valid", "valid"],
+        ["SI1\u20130589W", "valid", "valid"],
+        ["\u017FI1-0589W", "invalid", "check-character"],
+        ["S\u01311-0589W", "invalid", "check-character"],
+        ["\u00DF1-0589N", "invalid", "check-character"],
+        ["\uFB011-0589X", "invalid", "check-character"],
+        ["FC1-0000S", "valid", "valid"],
+        ["FC1-0000\u017F", "invalid", "check-character"],
+        ["FC1-0005\u0131", "invalid", "check-character"]
+      ]
+    },
+    {
+      "why": "VAL-8: the same characters against a format pattern, which is matched after upper-casing",
+      "rule": {
+        "type": "single",
+        "algorithm": "none",
+        "idPattern": "[A-Z]{2}[0-9]-[0-9]{4}[0-9A-Z]"
+      },
+      "rows": [
+        ["si1-0589w", "valid", "valid"],
+        ["\u017FI1-0589W", "invalid", "format"],
+        ["S\u01311-0589W", "invalid", "format"],
+        ["\u00DF1-0589N", "invalid", "format"],
+        ["\uFB011-0589X", "invalid", "format"],
+        ["FC1-0000\u017F", "invalid", "format"]
+      ]
+    },
+    {
+      "why": "VAL-8: in a pooled field the character is dropped by cleaning like any other foreign character, so it cannot complete an ID",
+      "rule": { "type": "pooled" },
+      "rows": [
+        ["FC1-0000S", "valid", "valid"],
+        ["FC1-0000\u017F", "invalid", "no-id;junk"],
+        ["\u00DF1-0589N", "invalid", "no-id;junk"]
       ]
     }
   ],

@@ -150,6 +150,16 @@ n++;
     ['[[:digit:]]{4}', 'PCRE-only syntax'],
     ['(?i)FC[0-9]{4}', 'group form JavaScript cannot compile'],
     ['FC[][0-9]{4}', 'empty character class'],
+    // review 2026-11-13, VAL-4: PCRE ran these and new RegExp threw
+    ['[0-9]?+[A-Z]', 'quantifier where JavaScript allows none'],
+    ['[A-Z]{2}+[0-9]{4}', 'quantifier where JavaScript allows none'],
+    ['(?<=A)+B', 'quantifier where JavaScript allows none'],
+    ['(?<!A){2}B', 'quantifier where JavaScript allows none'],
+    ['A\\b+B', 'quantifier where JavaScript allows none'],
+    // review 2026-11-13, VAL-5: both engines ran these and read them differently
+    ['(A)?\\1B', 'a back-reference \\1 to \\9'],
+    ['\\x4?A', '\\x without two hex digits'],
+    ['FC\\e[0-9]{4}', '\\a, \\e'],
   ];
   for (const [pat, needle] of cases) {
     const g = Q.gatePattern(pat, '');
@@ -158,6 +168,44 @@ n++;
       console.error(`gatePattern(${JSON.stringify(pat)}) -> ${JSON.stringify(g.error)}`);
     }
   }
+}
+
+// ---- what the gate admits, the two engines read the same way (VAL-4, VAL-5) ----
+// Same rows as risky_php.php: [pattern, value, matches].
+for (const [pat, value, want] of [
+  ['\\u0041B[0-9]{2}', 'AB12', true],
+  ['\\u0041B[0-9]{2}', 'UB12', false],
+  ['\\x41B[0-9]{2}', 'AB12', true],
+  ['[0-9]{2}?[A-Z]', '12A', true],
+  ['(?<=A)B|AB', 'AB', true],
+  ['(?=A)+[A-Z]{2}', 'AB', true],
+  ['(?=A)+[A-Z]{2}', 'BA', false],
+  ['FC{[0-9]', 'FC{1', true],
+]) {
+  n++;
+  const g = Q.gatePattern(pat, '');
+  if (g.re === null || g.re.test(value) !== want) {
+    fail++;
+    console.error(`browser verdict for ${JSON.stringify(pat)} on ${JSON.stringify(value)}: ${g.error || !want}`);
+  }
+}
+
+// ---- the gate never hands back a pattern new RegExp refuses (VAL-4) ----
+// A refusal that reaches the compile step is a rule the server may have saved.
+n++;
+{
+  const atoms = ['A', '[0-9]', '.', '\\d', '\\b', '^', '$', '(?<=A)', '(?<!A)', '(?=A)', '(A)', '(?:A|B)', '{', '}', ']', '|', '\\.'];
+  const quants = ['', '', '*', '+', '?', '{2}', '{1,2}', '{2,}', '*?', '+?', '??', '{2}?', '?+', '*+', '++', '{2}+', '{2}{2}', '{2}*'];
+  let seed = 7, bad = [];
+  const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const pick = (a) => a[Math.floor(rnd() * a.length)];
+  for (let k = 0; k < 4000; k++) {
+    let p = '';
+    for (let j = 1 + Math.floor(rnd() * 4); j > 0; j--) p += pick(atoms) + pick(quants);
+    const g = Q.gatePattern(p, '');
+    if (g.re === null && /not a valid JavaScript regex/.test(g.error)) bad.push(p);
+  }
+  if (bad.length) { fail++; console.error('patterns that reached the compile step and failed there: ' + JSON.stringify(bad.slice(0, 8))); }
 }
 
 console.log(`risky_js: ${n} patterns checked, ${fail} mismatch(es)`);

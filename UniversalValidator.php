@@ -5307,7 +5307,7 @@ class UniversalValidator extends AbstractExternalModule
         $source  = isset($rule['source']) && $rule['source'] !== '' ? $rule['source'] : 'normalized_id';
         $strip   = isset($rule['strip']) ? $rule['strip'] : "-/ _|\\";
         $pattern = isset($rule['idPattern']) ? $rule['idPattern'] : null;
-        $unconfigurable = []; $notChecked = [];
+        $unconfigurable = []; $notChecked = []; $tooLong = []; $scanCap = 0;
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
@@ -5343,6 +5343,11 @@ class UniversalValidator extends AbstractExternalModule
                 // a PCRE limit hit mid-match. Reported, never passed as valid
                 // (VAL-1).
                 $notChecked[] = $field;
+            } elseif (isset($res['reason']) && $res['reason'] === 'over-scan-cap') {
+                // A pooled value over the rule's scan cap. The rule is sound;
+                // the value was not read, and the log says so (VAL-11).
+                $tooLong[] = $field;
+                $scanCap = (int) $res['cap'];
             } elseif (empty($res['ok'])) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => $algo, 'type' => $type,
                                      'reason' => isset($res['reason']) ? $res['reason'] : ''];
@@ -5353,6 +5358,9 @@ class UniversalValidator extends AbstractExternalModule
         }
         if ($notChecked) {
             $out['unconfigurable'][] = ['fields' => $notChecked, 'why' => 'the server cannot tell how the browser reads this value against the format pattern (a character outside printable ASCII that the two regex engines read differently, or a regex engine limit); check the value by hand'];
+        }
+        if ($tooLong) {
+            $out['unconfigurable'][] = ['fields' => $tooLong, 'why' => 'the value is longer than the ' . $scanCap . ' characters this rule reads in one field, so it was not checked; check the value by hand'];
         }
         return $out;
     }

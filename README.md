@@ -77,11 +77,13 @@ validate identically here, in Excel, and in the browser (same verified engine).
   after the save still runs. A keyed hash is
   pseudonymization, not anonymity: treat the module log as identifying data in
   access and retention policies. The audit trims a value the way the browser
-  does and checks values with characters outside printable ASCII too. Where
-  JavaScript and PCRE regex read such a value differently (for example "."
-  against a carriage return, or `\s` against a no-break space), the value is
-  reported in a `uvalidate-unconfigurable` entry for a manual check, never
-  passed as valid.
+  does and checks values with characters outside printable ASCII too. In a
+  format pattern `\d`, `\w`, `\s` and `\b` mean on the server what they mean in
+  the browser: ASCII digits and word characters, and JavaScript's white space.
+  A full-width or Arabic-Indic digit does not match `\d` on either side. Where
+  JavaScript and PCRE regex still read a value differently (for example "."
+  against a carriage return), the value is reported in a
+  `uvalidate-unconfigurable` entry for a manual check, never passed as valid.
 - **Save-time settings validation** — an invalid rule (unknown algorithm,
   catastrophic or non-compiling regex, unsafe pooled lengths, unsupported field
   types) is rejected when the Configure dialog is saved, with a message naming

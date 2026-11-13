@@ -57,6 +57,19 @@ class CheckCharacter
      *  LineTerminator (LF, CR, LS, PS). The browser judges input.value.trim(),
      *  so the server trims the same set (VAL-3). */
     const JS_TRIM_CLASS = '[\x{0009}-\x{000D}\x{0020}\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]';
+
+    /** What \d, \w and \s match in a JavaScript RegExp without the "u" flag,
+     *  as code point ranges: ASCII digits, ASCII word characters, and the
+     *  white space of JS_TRIM_CLASS. PHP's "u" modifier turns on Unicode
+     *  properties, so PCRE's own \d \w \s \b match far more (a full-width or
+     *  Arabic-Indic digit, an accented letter); asciiShorthands writes these
+     *  ranges into the pattern instead (VAL-1). Ranges ascend and do not touch. */
+    const JS_SHORTHAND = [
+        'd' => [[0x30, 0x39]],
+        'w' => [[0x30, 0x39], [0x41, 0x5A], [0x5F, 0x5F], [0x61, 0x7A]],
+        's' => [[0x09, 0x0D], [0x20, 0x20], [0xA0, 0xA0], [0x1680, 0x1680], [0x2000, 0x200A],
+                [0x2028, 0x2029], [0x202F, 0x202F], [0x205F, 0x205F], [0x3000, 0x3000], [0xFEFF, 0xFEFF]],
+    ];
     // One pooled parse costs about (scanned length) x |PAIRS| x (member length)
     // "char-ops"; this budget bounds the product for every legal config, so an
     // expensive rule shrinks its scan cap instead of stalling the save hook.
@@ -157,7 +170,7 @@ class CheckCharacter
             );
         }
         if ($uppercase) {
-            $s = mb_strtoupper($s, 'UTF-8');
+            $s = self::upperCase($s);
         }
         if ($strip !== null && $strip !== '') {
             // Split the strip set by code point (not byte) so a multibyte
@@ -174,6 +187,33 @@ class CheckCharacter
             $s = $out;
         }
         return $s;
+    }
+
+    /**
+     * $s in upper case, except that a character outside ASCII whose upper case
+     * holds an ASCII character is left as it is (VAL-8). Unicode upper-cases
+     * the long s to "S", the dotless i to "I", the sharp s to "SS" and the
+     * ligature fi to "FI", so "FC1-0589" plus a long s was upper-cased into
+     * an ASCII ID and reported as verified while the field stored another
+     * string. Left alone, the character is outside every ID alphabet and
+     * fails the check or the format like any other foreign character. The
+     * test is that upper-casing must not add ASCII characters: ASCII maps to
+     * ASCII one for one, so more of them afterwards came from outside.
+     * Twin of upperCase in QRCheck (js).
+     */
+    private static function upperCase($s)
+    {
+        $u = mb_strtoupper($s, 'UTF-8');
+        if (!preg_match('/[^\x00-\x7F]/', $s)) return $u;
+        if (preg_match_all('/[\x00-\x7F]/', $u) === preg_match_all('/[\x00-\x7F]/', $s)) return $u;
+        $chars = preg_split('//u', $s, -1, PREG_SPLIT_NO_EMPTY);
+        if ($chars === false) return $u;                   // not UTF-8: nothing maps cleanly anyway
+        $out = '';
+        foreach ($chars as $ch) {
+            $up = mb_strtoupper($ch, 'UTF-8');
+            $out .= (strlen($ch) > 1 && preg_match('/[\x00-\x7F]/', $up)) ? $ch : $up;
+        }
+        return $out;
     }
 
     /**
@@ -305,15 +345,27 @@ class CheckCharacter
         // quantifiers are caught too. Keep BYTE-IDENTICAL to QRID_riskyPattern (js).
         for (;;) {
             if (preg_match('/[+*][ \t\n\r\f]*[*+{]/', $s)) return true;                                        // a++  a*+  a*{2} ...
+            if (preg_match('/\x01\{0,[0-9]+\}[ \t\n\r\f]*[*+{]/', $s)) return true;                            // (a|aa)+  (a?){2,20}
             if (preg_match('/\([^()]*(?:[*+]|\{[0-9]+,[0-9]*\})[^()]*\)[ \t\n\r\f]*[*+{?]/', $s)) return true; // (…a+…)+  (…{1,20}…){1,20}
             if (preg_match('/\[[^\]]*\][ \t\n\r\f]*[*+][ \t\n\r\f]*[*+{]/', $s)) return true;                  // [0-9]+* style
-            // Collapse every innermost group: a body that can match more than one
-            // way (alternation, optional, variable-length content) becomes a
-            // variable-length token X*; a fixed body becomes the single token A.
-            // A repetition of a variable token is then caught by the rules above
-            // on the next pass — (a|aa)+ -> X*+ -> rule 1.
+            // Collapse every innermost group to the token G (RISKY_GROUP), an
+            // atom that may match any character, since what the group matched
+            // is no longer known to the stages below. The quantifier written
+            // after G says how its length varies: none for a fixed body, "*"
+            // for a body with an unbounded quantifier, and {0,k-1} for a body
+            // of k possible lengths (alternation, optionals, bounded
+            // quantifiers). A repetition of the last two is caught by the
+            // rules above on the next pass: (a|aa)+ -> G{0,1}+. The tokens
+            // used to be the letters A and X*, which the stages below read as
+            // those letters: (\d) between two \d* looked like a separator no
+            // digit can match, and \d*(\d)\d*(\d)\d*(\d)\d*(\d)\d*Z took 6.8 s
+            // on 200 digits in the browser (VAL-2).
             $t = preg_replace_callback('/\(([^()]*)\)/', function ($m) {
-                return (preg_match('/[|?*+]/', $m[1]) || preg_match('/\{[0-9]+,[0-9]*\}/', $m[1])) ? 'X*' : 'A';
+                if (preg_match('/[*+]|\{[0-9]+,\}/', $m[1])) return self::RISKY_GROUP . '*';
+                if (preg_match('/[|?]|\{[0-9]+,[0-9]+\}/', $m[1])) {
+                    return self::RISKY_GROUP . '{0,' . (self::groupChoices($m[1]) - 1) . '}';
+                }
+                return self::RISKY_GROUP;
             }, $s);
             if ($t === $s) break;
             $s = $t;
@@ -343,6 +395,59 @@ class CheckCharacter
 
     /** Members of the \d \w \s classes, for riskyEscapes. */
     const RISKY_ESCAPE_CLASS = ['d' => '0-9', 'w' => '0-9A-Z_a-z', 's' => " \t\n\r\f"];
+    /** The one character \t \n \r \f \v name, for riskyEscapes. */
+    const RISKY_ESCAPE_CHAR = ['t' => "\t", 'n' => "\n", 'r' => "\r", 'f' => "\f", 'v' => "\x0B"];
+    /** A collapsed group, in the stages of riskyPattern. */
+    const RISKY_GROUP = "\x01";
+
+    /**
+     * What the escape whose backslash is at $src[$i] matches:
+     * ['len' => its length, 'kind' => ..., 'text' => ...]. kind is "class"
+     * (text = class members), "char" (text = the one character), "any" (any
+     * character) or "none" (nothing: dropped). Twin of QRID_riskyEscapeAt (js).
+     */
+    private static function riskyEscapeAt($src, $i)
+    {
+        $e = $src[$i + 1];
+        if (isset(self::RISKY_ESCAPE_CLASS[$e])) return ['len' => 2, 'kind' => 'class', 'text' => self::RISKY_ESCAPE_CLASS[$e]];
+        if ($e === 'D' || $e === 'W' || $e === 'S') return ['len' => 2, 'kind' => 'any', 'text' => ''];
+        if (isset(self::RISKY_ESCAPE_CHAR[$e])) return ['len' => 2, 'kind' => 'char', 'text' => self::RISKY_ESCAPE_CHAR[$e]];
+        if ($e === 'x' || $e === 'u') {
+            $want = ($e === 'x') ? 2 : 4;
+            $hex = (string) substr($src, $i + 2, $want);
+            if (strlen($hex) !== $want || !ctype_xdigit($hex)) return ['len' => 2, 'kind' => 'any', 'text' => ''];
+            $code = hexdec($hex);
+            if ($code < 0x21 || $code > 0x7E) return ['len' => 2 + $want, 'kind' => 'any', 'text' => ''];
+            return ['len' => 2 + $want, 'kind' => 'char', 'text' => chr($code)];
+        }
+        if ($e === 'c') return ['len' => ($i + 2 < strlen($src)) ? 3 : 2, 'kind' => 'any', 'text' => ''];
+        if ($e >= '0' && $e <= '9') {
+            $len = 2;
+            $n = strlen($src);
+            while ($i + $len < $n && $src[$i + $len] >= '0' && $src[$i + $len] <= '9') $len++;
+            return ['len' => $len, 'kind' => 'any', 'text' => ''];
+        }
+        if (($e >= 'A' && $e <= 'Z') || ($e >= 'a' && $e <= 'z')) return ['len' => 2, 'kind' => 'none', 'text' => ''];
+        return ['len' => 2, 'kind' => 'char', 'text' => $e];
+    }
+
+    /**
+     * How many lengths a collapsed group's body can take, at most: the
+     * product of its atoms' choices times its number of branches, capped just
+     * over the budget. An over-count only refuses more.
+     * Twin of QRID_groupChoices (js).
+     */
+    private static function groupChoices($body)
+    {
+        $k = 1;
+        foreach (self::tokenizePattern($body) as $t) {
+            if ($k > self::MAX_BACKTRACK_PRODUCT) break;
+            $k *= $t['choices'];
+        }
+        if ($k <= self::MAX_BACKTRACK_PRODUCT) $k *= substr_count(preg_replace('/\[[^\]]*\]/', '', $body), '|') + 1;
+        if ($k > self::MAX_BACKTRACK_PRODUCT) $k = self::MAX_BACKTRACK_PRODUCT + 1;
+        return $k < 2 ? 2 : $k;
+    }
 
     /**
      * Rewrite each escape as an atom that matches at least what it matches, so
@@ -351,10 +456,17 @@ class CheckCharacter
      * and let a quantifier after \d or \. attach to the atom before it
      * ([0-9]+\.[0-9]+ read as [0-9]+[0-9]+ and was refused). Outside a class:
      * \d \w \s become their ASCII classes, \D \W \S and an escaped metacharacter
-     * become "." (any character), any other escaped symbol is that symbol, and a
-     * letter or digit escape (\b \n \x \u \1 \k ...) is dropped. Inside a class
-     * the members are added at the end of the body ("-" last, so it forms no
-     * range), and \D \W \S or an escaped "]" make the class match everything.
+     * become "." (any character), any other escaped symbol is that symbol, and
+     * \b \B and the other letter escapes are dropped. An escape that names one
+     * character is read as that character (VAL-2): \x42 and B are "B"
+     * (they were dropped and their digits read as the literals 4 and 2, so
+     * \x42*B*\x42*B*\x42*9 passed and took 7.3 s on 200 letters in the
+     * browser), \t \n \r \f \v are a class of that one character, and \cX, \0,
+     * an octal character or a reference \1 to \9 is any character. Inside a
+     * class the members are added at the end of the body ("-" last, so it
+     * forms no range), a decoded letter or digit stays in place (so
+     * [\x41-\x5A] is still a range), and \D \W \S, an escaped "]" or an "any
+     * character" escape make the class match everything.
      * Twin of QRID_riskyEscapes (js).
      */
     private static function riskyEscapes($src)
@@ -364,23 +476,34 @@ class CheckCharacter
         while ($i < $n) {
             $c = $src[$i];
             if ($c === '\\' && $i + 1 < $n) {
-                $e = $src[$i + 1];
-                $cls = self::RISKY_ESCAPE_CLASS[$e] ?? null;
-                $word = strpos('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', $e) !== false;
-                $i += 2;
+                $E = self::riskyEscapeAt($src, $i);
+                $ch = $E['text'];
+                $i += $E['len'];
                 if ($inCls) {
-                    if ($cls !== null) $extra .= $cls;
-                    elseif ($e === 'D' || $e === 'W' || $e === 'S' || $e === ']') $wide = true;
-                    elseif ($e === '-') $dash = true;
-                    elseif (!$word) $extra .= $e;
+                    if ($E['kind'] === 'class') $extra .= $ch;
+                    elseif ($E['kind'] === 'any') $wide = true;
+                    elseif ($E['kind'] === 'char') {
+                        if (ctype_alnum($ch)) $body .= $ch;
+                        elseif ($ch === ']') $wide = true;
+                        elseif ($ch === '-') $dash = true;
+                        else $extra .= $ch;
+                    }
                 } else {
-                    if ($cls !== null) $out .= '[' . $cls . ']';
-                    elseif ($e === 'D' || $e === 'W' || $e === 'S' || strpos('^$.*+?()[]{}|\\', $e) !== false) $out .= '.';
-                    elseif (!$word) $out .= $e;
+                    if ($E['kind'] === 'class') $out .= '[' . $ch . ']';
+                    elseif ($E['kind'] === 'any') $out .= '.';
+                    elseif ($E['kind'] === 'char') {
+                        if (strpos('^$.*+?()[]{}|\\', $ch) !== false) $out .= '.';
+                        elseif ($ch < ' ') $out .= '[' . $ch . ']';
+                        else $out .= $ch;
+                    }
                 }
                 continue;
             }
             $i++;
+            if ($c === self::RISKY_GROUP) {        // the group token itself, written raw: any character
+                if ($inCls) $wide = true; else $out .= '.';
+                continue;
+            }
             if ($inCls) {
                 if ($c === ']') { $out .= '[' . ($wide ? '^' : '') . $body . $extra . ($dash ? '-' : '') . ']'; $inCls = false; }
                 else $body .= $c;
@@ -453,15 +576,26 @@ class CheckCharacter
         // fungible with the surrounding class, so it cannot pin a split — a lone
         // [0-9] between {1,20} digit runs must not reset the product); it bridges on
         // with choices 1. Track the class FORWARD so a bridging chain is whole.
+        // An UNBOUNDED quantifier is a factor of the run too (VAL-2). It used
+        // to end the run, so [A-Z]*[A-Z]{1,30}[A-Z]{1,30}[A-Z]{1,30}[A-Z]{1,30}9
+        // was a product of 810,000, under the budget, with the "*" in front of
+        // it not counted: 19 s on 200 letters in the browser. Its factor is
+        // MAX_SINGLE_LEN, the most lengths it can take in a value the browser
+        // judges. Two of them with nothing bounded between (.*x.*, 262,144)
+        // still pass.
         for ($a = 0; $a < $m; $a++) {
-            if ($toks[$a]['choices'] < 2) continue;                                      // a run starts at a bounded repeat
-            $prod = $toks[$a]['choices'];
+            $fa = $toks[$a]['unbounded'] ? self::MAX_SINGLE_LEN : $toks[$a]['choices'];
+            if ($fa < 2) continue;                                                       // a run starts at a repeat
+            $prod = $fa;
             $prevCls = $toks[$a]['cls'];
             for ($b = $a + 1; $b < $m; $b++) {
-                if ($toks[$b]['unbounded']) break;                                       // unbounded -> stage two-a; ends the bounded run
-                if (!self::classesOverlap($prevCls, $toks[$b]['cls'])) break;            // a DISJOINT atom pins a split, ending the run
-                if ($toks[$b]['choices'] >= 2) {
-                    $prod *= $toks[$b]['choices'];
+                if (!self::classesOverlap($prevCls, $toks[$b]['cls'])) {
+                    if ($toks[$b]['mandatory']) break;                                   // a DISJOINT must-match atom pins a split, ending the run
+                    continue;                                                            // one that may match nothing pins nothing
+                }
+                $fb = $toks[$b]['unbounded'] ? self::MAX_SINGLE_LEN : $toks[$b]['choices'];
+                if ($fb >= 2) {
+                    $prod *= $fb;
                     if ($prod > self::MAX_BACKTRACK_PRODUCT) return true;
                 }
                 $prevCls = $toks[$b]['cls'];                                             // overlapping fixed atom bridges on (does not pin)
@@ -492,8 +626,9 @@ class CheckCharacter
                 $cls = self::expandClass(substr($s, $i + 1, $close - $i - 1));
                 $i = $close + 1;
             }
+            elseif ($c === self::RISKY_GROUP) { $cls = null; $i++; }          // a collapsed group: contents unknown
             elseif (strpos('^$*+?{}|()', $c) !== false) { $i++; continue; }   // anchors / stray metachars: not atoms
-            else { $cls = $c; $i++; }                                          // a literal char (incl. A / X collapse tokens)
+            else { $cls = $c; $i++; }                                          // a literal char
             // read the quantifier that follows this atom. `choices` = the number
             // of distinct match-lengths the atom can take (its backtracking slack):
             // 1 for a bare atom or a fixed {n}, 2 for ?, (hi-lo+1) for {lo,hi};
@@ -609,13 +744,12 @@ class CheckCharacter
     /**
      * Whether JS RegExp (no flags, UTF-16 code units) and PCRE /u (code points)
      * may disagree on $pattern for the value $norm. They read printable ASCII
-     * the same way, and \d \w \b and positive classes of ASCII the same way
-     * for any value. An astral character, two units to JS and one code point to
-     * PCRE, is matched as two placeholder characters (jsUnits), so ".", negated
-     * classes and \D \W \S count it as JS does. They differ only where both of
-     * these hold:
-     *  - the value has whitespace JS's \s knows and PCRE's does not (NBSP,
-     *    U+2000-U+200A, U+3000, U+FEFF ...) and the pattern uses \s or \S;
+     * the same way, and positive classes of ASCII the same way for any value.
+     * \d \w \s \b and their capitals are compiled as the ranges JavaScript
+     * gives them (asciiShorthands, VAL-1), so they agree for any value too. An
+     * astral character, two units to JS and one code point to PCRE, is matched
+     * as two placeholder characters (jsUnits), so ".", negated classes and
+     * \D \W \S count it as JS does. They differ only where both of these hold:
      *  - the value has CR, U+2028 or U+2029, which JS's "." refuses and PCRE's
      *    accepts, and the pattern has ".";
      *  - the value has any character outside printable ASCII and the pattern
@@ -628,7 +762,7 @@ class CheckCharacter
         if (!preg_match('/[^\x20-\x7E]/', $norm)) return false;
         $p = (string) $pattern;
         $n = strlen($p);
-        $dot = false; $negated = false; $space = false; $other = false;
+        $dot = false; $other = false;
         $inClass = false;
         for ($i = 0; $i < $n; $i++) {
             $c = $p[$i];
@@ -637,10 +771,10 @@ class CheckCharacter
             if ($c === '\\') {
                 if ($i + 1 >= $n) { $other = true; break; }
                 $e = $p[++$i];
-                if ($e === 's') $space = true;
-                elseif ($e === 'S') { $space = true; $negated = true; }
-                elseif ($e === 'D' || $e === 'W') $negated = true;
-                elseif (strpos('pPxuhHvVRXNcCkKgGQEz', $e) !== false) $other = true;
+                // \a and \e are a bell and an escape to PCRE, the letters to JS;
+                // \1 to \9 are a reference or an octal character by rules the
+                // two engines do not share (VAL-5)
+                if (strpos('pPxuhHvVRXNcCkKgGQEzae123456789', $e) !== false) $other = true;
                 continue;
             }
             if ($inClass) {
@@ -648,7 +782,7 @@ class CheckCharacter
                 continue;
             }
             if ($c === '[') {
-                if ($i + 1 < $n && $p[$i + 1] === '^') { $negated = true; $i++; }
+                if ($i + 1 < $n && $p[$i + 1] === '^') $i++;
                 $inClass = true;
                 // a "]" right after "[" or "[^" is a literal in both engines
                 if ($i + 1 < $n && $p[$i + 1] === ']') $i++;
@@ -657,7 +791,6 @@ class CheckCharacter
             if ($c === '.') $dot = true;
         }
         if ($other) return true;
-        if ($space && @preg_match('/[\x{00A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]/u', $norm)) return true;
         if ($dot && @preg_match('/[\r\x{2028}\x{2029}]/u', $norm)) return true;
         // not UTF-8: no exact reading is possible
         if (@preg_match('//u', $norm) !== 1) return true;
@@ -838,10 +971,28 @@ class CheckCharacter
     /** Example characters, most ID-like first. */
     const OVERLAP_PREFERENCE = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-';
     const OVERLAP_MAX_STATES = 20000;   // NFA states per pattern
-    const OVERLAP_MAX_VISITS = 400000;  // product states visited per question
+    const OVERLAP_MAX_VISITS = 400000;  // product states visited for one question asked on its own
+    // Product states visited for ALL the questions of one rule: checkFragment
+    // hands one counter to each of them. Every request builds its rules again,
+    // so this is the most one rule's proof can cost a page (VAL-3): about
+    // 0.2 s where a visit takes 3 microseconds. The widest rule in the suites
+    // and the guide uses 2,600; the reviewed 711-byte rule of four formats
+    // beside four, each with two {0,30} runs, uses 17,000 and still passes.
+    const OVERLAP_RULE_VISITS = 60000;
+    const OVERLAP_MEMO_ANSWERS = 512;   // answers kept per process
+    const OVERLAP_MEMO_PATTERNS = 64;   // read patterns (automaton and closures) kept per process
 
     /** Set while reading a pattern: something was read as a superset. */
     private static $ovApprox = false;
+    /** @var array pattern => ['nfa' => array, 'closures' => array] or false (not modelled) */
+    private static $ovNfaMemo = [];
+    /**
+     * @var array "a NUL b NUL len" => ['overlap' => ?bool, 'example' => ?string,
+     *            'cost' => int, 'short' => bool]: the answer, the visits it
+     *            took, and whether it is unknown only because 'cost' visits
+     *            were not enough.
+     */
+    private static $ovMemo = [];
 
     /**
      * Do two patterns accept a common value? Returns
@@ -850,23 +1001,59 @@ class CheckCharacter
      *   ['overlap' => null,  'example' => null]   unknown - treat as unsafe
      * With $len, only values of exactly $len characters count (a pooled pair
      * competes only at the lengths both declare).
+     *
+     * $budget is the caller's count of product states it may still visit. The
+     * search takes what it uses from it and answers "unknown" when it runs out,
+     * so a caller with many questions (checkFragment: every check-bearing
+     * alternate against every format-only one, at every shared length) spends
+     * one budget on all of them. Without it each call has OVERLAP_MAX_VISITS
+     * of its own.
+     *
+     * Answers are kept for the process, and so is each pattern as read: the
+     * same rule is validated again by every caller in a request, and a rule
+     * of four formats beside four asked 64 questions that rebuilt 128
+     * automatons, 1.1 s for one accepted annotation on every request (VAL-3).
+     * An answer taken from memory is charged the visits it first took, so the
+     * budget runs out at the same question whether or not the work is redone,
+     * and a rule gets the same verdict each time it is validated.
      */
-    public static function patternOverlap($a, $b, $len = null)
+    public static function patternOverlap($a, $b, $len = null, &$budget = null)
     {
         $unknown = ['overlap' => null, 'example' => null];
-        self::$ovApprox = false;
+        if (!is_string($a) || !is_string($b)) return $unknown;
+        $avail = ($budget === null) ? self::OVERLAP_MAX_VISITS : max(0, (int) $budget);
+        $key = $a . "\0" . $b . "\0" . ($len === null ? '' : (int) $len);
+        $m = isset(self::$ovMemo[$key]) ? self::$ovMemo[$key] : null;
+        // Kept answers that still stand: a full one these visits can pay for,
+        // or a search that already ran out with at least as many. A full one
+        // they cannot pay for runs out again, as the search itself would.
+        if ($m !== null && !$m['short'] && $m['cost'] > $avail) $m = ['overlap' => null, 'example' => null, 'cost' => $avail, 'short' => true];
+        if ($m === null || ($m['short'] && $m['cost'] < $avail)) {
+            $m = self::patternOverlapOf($a, $b, $len, $avail);
+            if (count(self::$ovMemo) >= self::OVERLAP_MEMO_ANSWERS) self::$ovMemo = [];
+            self::$ovMemo[$key] = $m;
+        }
+        if ($budget !== null) $budget = $m['short'] ? 0 : max(0, $avail - $m['cost']);
+        return ['overlap' => $m['overlap'], 'example' => $m['example']];
+    }
+
+    /** patternOverlap's answer, worked out: its keys plus 'cost' and 'short' (see $ovMemo). */
+    private static function patternOverlapOf($a, $b, $len, $avail)
+    {
+        $visits = 0;
+        $unknown = ['overlap' => null, 'example' => null, 'cost' => 0, 'short' => false];
         $na = self::ovNfa($a);
         $nb = self::ovNfa($b);
         if ($na === null || $nb === null) return $unknown;
-        $approx = self::$ovApprox;
-        $ex = self::ovSearch($na, $nb, $len);
-        if ($ex === null) return $unknown;                   // search budget exceeded
-        if ($ex === false) return ['overlap' => false, 'example' => null];
+        $ex = self::ovSearch($na, $nb, $len, $avail, $visits);
+        if ($ex === null) return ['overlap' => null, 'example' => null, 'cost' => $avail, 'short' => true];   // visits ran out
+        $unknown['cost'] = $visits;
+        if ($ex === false) return ['overlap' => false, 'example' => null, 'cost' => $visits, 'short' => false];
         $why = '';
         $ra = self::gatePattern($a, $why, true);
         $rb = self::gatePattern($b, $why, true);
         if ($ra !== null && $rb !== null && self::patTest($ra, $ex) && self::patTest($rb, $ex)) {
-            return ['overlap' => true, 'example' => $ex];
+            return ['overlap' => true, 'example' => $ex, 'cost' => $visits, 'short' => false];
         }
         // An overlap of the supersets that the real patterns do not share. With
         // no approximation in play this would be a reader bug; either way the
@@ -874,10 +1061,24 @@ class CheckCharacter
         return $unknown;
     }
 
-    /** Pattern -> ['eps' => [], 'tr' => [], 'start' => s, 'accept' => s], or null. */
+    /**
+     * Pattern -> ['nfa' => ['eps' => [], 'tr' => [], 'start' => s, 'accept' => s],
+     * 'closures' => ovClosures of it], or null. Kept per pattern (VAL-3).
+     */
     private static function ovNfa($pattern)
     {
         if (!is_string($pattern)) return null;
+        if (isset(self::$ovNfaMemo[$pattern])) {
+            return self::$ovNfaMemo[$pattern] === false ? null : self::$ovNfaMemo[$pattern];
+        }
+        if (count(self::$ovNfaMemo) >= self::OVERLAP_MEMO_PATTERNS) self::$ovNfaMemo = [];
+        $read = self::ovNfaOf($pattern);
+        self::$ovNfaMemo[$pattern] = ($read === null) ? false : $read;
+        return $read;
+    }
+
+    private static function ovNfaOf($pattern)
+    {
         $p = preg_replace('/^\^/', '', $pattern);
         $p = preg_replace('/\$$/', '', $p);
         $i = 0;
@@ -888,7 +1089,7 @@ class CheckCharacter
         if ($frag === null) return null;
         $nfa['start'] = $frag[0];
         $nfa['accept'] = $frag[1];
-        return $nfa;
+        return ['nfa' => $nfa, 'closures' => self::ovClosures($nfa)];
     }
 
     private static function ovAlt($p, &$i, $depth)
@@ -1194,7 +1395,13 @@ class CheckCharacter
         return null;
     }
 
-    /** Epsilon closure of every state, as sorted state lists. */
+    /**
+     * Epsilon closure of every state, as state lists. Only a state a
+     * character can leave, or the accepting one, is listed: the rest are the
+     * joints of the construction, about two in three of all states, and each
+     * one carried through the product made every question several times its
+     * size (VAL-3).
+     */
     private static function ovClosures(array $nfa)
     {
         $out = [];
@@ -1207,7 +1414,11 @@ class CheckCharacter
                     if (!isset($seen[$y])) { $seen[$y] = true; $stack[] = $y; }
                 }
             }
-            $out[$s] = array_keys($seen);
+            $keep = [];
+            foreach ($seen as $y => $_) {
+                if ($nfa['tr'][$y] || $y === $nfa['accept']) $keep[] = $y;
+            }
+            $out[$s] = $keep;
         }
         return $out;
     }
@@ -1215,19 +1426,27 @@ class CheckCharacter
     /**
      * Breadth-first search of the product automaton. Returns the shortest
      * common value (of exactly $len characters when $len is set), false when
-     * there is none, or null when the visit budget runs out.
+     * there is none, or null when it would visit more than $maxVisits product
+     * states. $ra and $rb are ovNfa's answers; $visits is how many it visited.
      */
-    private static function ovSearch(array $A, array $B, $len)
+    private static function ovSearch(array $ra, array $rb, $len, $maxVisits, &$visits)
     {
-        $ca = self::ovClosures($A);
-        $cb = self::ovClosures($B);
-        $key = function ($x, $y, $d) { return $x . ',' . $y . ',' . $d; };
+        $A = $ra['nfa'];
+        $B = $rb['nfa'];
+        $ca = $ra['closures'];
+        $cb = $rb['closures'];
+        // A product state (x, y, depth) as one integer, and the character two
+        // transitions share kept per pair of bitmaps: string keys and a scan of
+        // the alphabet at every step were most of what a question cost (VAL-3).
+        $nb = $B['n'];
+        $depths = ($len === null) ? 2 : (int) $len + 1;
         $frontier = [];
         $parent = [];
+        $picks = [];
         foreach ($ca[$A['start']] as $x) {
             foreach ($cb[$B['start']] as $y) {
-                $k = $key($x, $y, 0);
-                if (!isset($parent[$k])) { $parent[$k] = null; $frontier[] = [$x, $y]; }
+                $k = ($x * $nb + $y) * $depths;
+                if (!array_key_exists($k, $parent)) { $parent[$k] = null; $frontier[] = [$x, $y]; }
             }
         }
         $depth = 0;
@@ -1235,24 +1454,30 @@ class CheckCharacter
         $maxDepth = $len === null ? PHP_INT_MAX : $len;
         while ($frontier && $depth < $maxDepth) {
             $next = [];
+            // Without a length only two depths matter - nothing consumed yet,
+            // or something - so a pair is visited at most twice and an
+            // empty-string accept at the start cannot hide a real one.
+            $dFrom = ($len === null) ? min($depth, 1) : $depth;
+            $dTo   = ($len === null) ? 1 : $depth + 1;
             foreach ($frontier as $pair) {
                 list($x, $y) = $pair;
+                $from = ($x * $nb + $y) * $depths + $dFrom;
                 foreach ($A['tr'][$x] as $ta) {
                     foreach ($B['tr'][$y] as $tb) {
-                        $ch = self::ovPick($ta[0], $tb[0]);
-                        if ($ch === null) continue;
+                        $pk = $ta[0] . $tb[0];
+                        if (!isset($picks[$pk])) {
+                            $ch = self::ovPick($ta[0], $tb[0]);
+                            $picks[$pk] = ($ch === null) ? false : $ch;
+                        }
+                        $ch = $picks[$pk];
+                        if ($ch === false) continue;
                         foreach ($ca[$ta[1]] as $x2) {
                             foreach ($cb[$tb[1]] as $y2) {
-                                // Without a length every depth is the same
-                                // state, so a pair is visited once in total.
-                                // Without a length only two depths matter -
-                                // nothing consumed yet, or something - so a pair
-                                // is visited at most twice and an empty-string
-                                // accept at the start cannot hide a real one.
-                                $k = $key($x2, $y2, $len === null ? 1 : $depth + 1);
-                                if (isset($parent[$k]) || array_key_exists($k, $parent)) continue;
-                                if (++$visits > self::OVERLAP_MAX_VISITS) return null;
-                                $parent[$k] = [$key($x, $y, $len === null ? min($depth, 1) : $depth), $ch];
+                                $k = ($x2 * $nb + $y2) * $depths + $dTo;
+                                if (isset($parent[$k])) continue;
+                                if ($visits >= $maxVisits) return null;
+                                $visits++;
+                                $parent[$k] = [$from, $ch];
                                 $done = ($x2 === $A['accept'] && $y2 === $B['accept'])
                                     && ($len === null || $depth + 1 === $len);
                                 if ($done) {
@@ -1349,16 +1574,148 @@ class CheckCharacter
      * \9, or a character-class range that starts or ends at \d, \w or \s
      * ([\d-z]). PCRE runs the first three and refuses the last two; a browser
      * refuses the first two and reads the others as other characters, so the
-     * value would validate in one runtime and not the other. Twin of
-     * QRID_pcreVerbOrRef (js).
+     * value would validate in one runtime and not the other.
+     *
+     * Also what both engines run and read differently (review 2026-11-13,
+     * VAL-5): a back-reference \1 to \7, which matches nothing in a browser
+     * when its group took no part and fails in PCRE ((A)?\1B on "B"), and is
+     * an octal character to one engine where it is a reference to the other;
+     * \x without two hex digits (the letter x to a browser, a control
+     * character to PCRE); \a and \e (those letters to a browser, a bell and
+     * an escape character to PCRE); and \c without a letter after it.
+     * Twin of QRID_pcreVerbOrRef (js).
      */
     public static function usesPcreVerbOrRef($pattern)
     {
         $p = (string) $pattern;
         if (strpos(preg_replace('/\\\\./s', '', $p), '(*') !== false) return true;   // escaped characters dropped
         $d = str_replace('\\\\', '', $p);                                          // escaped-backslash pairs dropped
-        if (preg_match('/\\\\k[\'{]|\\\\o\{|\\\\[89]/', $d)) return true;
+        if (preg_match('/\\\\k[\'{]|\\\\o\{|\\\\[1-9]|\\\\x(?![0-9A-Fa-f]{2})|\\\\[ae]|\\\\c(?![A-Za-z])/', $d)) return true;
         return self::shorthandRange($d);
+    }
+
+    /**
+     * Whether $pattern has a quantifier where JavaScript allows none (review
+     * 2026-11-13, VAL-4): a possessive one (a "+" after a quantifier, as in
+     * [0-9]{2}+ or A?+), one on a lookbehind ((?<=A)+), on "^", "$", \b or
+     * \B, after a lazy quantifier, or with nothing before it. PCRE runs most
+     * of these and a browser refuses the whole pattern, so the rule saved, the
+     * field went unchecked while it was typed, a hard block never held, and
+     * the check after the save still filed findings. Run after the
+     * empty-class gate, so a "]" always closes a class here.
+     * Twin of QRID_jsRefusedQuantifier (js).
+     */
+    /**
+     * The lower-case text of $pattern that can never match, or null (review
+     * 2026-11-13, VAL-9). A value is upper-cased before its format is tested,
+     * in both runtimes, so fc[0-9]{4} matches nothing and [a-z0-9] matches
+     * digits only; both saved without a word. Reported: the first run of
+     * lower-case letters written as literals outside a class, or the first
+     * class that holds a lower-case letter and no upper-case one. A negated
+     * class is left alone ([^a-z] still matches what it says of an upper-cased
+     * value), and so is a class that also names the upper-case letters
+     * ([A-Za-z]). Escapes, a group's name and "(?" prefix are not text.
+     * Asked by AnnotationRules::checkFragment, the gate of every configuration
+     * channel; the browser never receives a rule it refused.
+     */
+    public static function lowercaseLiteral($pattern)
+    {
+        $p = (string) $pattern;
+        $n = strlen($p);
+        $run = '';
+        for ($i = 0; $i < $n; $i++) {
+            $c = $p[$i];
+            if ($c === '\\') {
+                if ($run !== '') return $run;
+                $e = $i + 1 < $n ? $p[$i + 1] : '';
+                $i++;
+                if ($e === 'x') $i += 2;                      // its hex digits
+                elseif ($e === 'u') $i += 4;
+                elseif ($e === 'c') $i += 1;                  // the letter it names
+                continue;
+            }
+            if ($c === '(' && preg_match('/\G\(\?(?:<[=!]|[:=!]|<[A-Za-z_][A-Za-z0-9_]*>)/', $p, $m, 0, $i)) {
+                if ($run !== '') return $run;
+                $i += strlen($m[0]) - 1;
+                continue;
+            }
+            if ($c === '[') {
+                if ($run !== '') return $run;
+                $j = $i + 1;
+                $negated = ($j < $n && $p[$j] === '^');
+                if ($negated) $j++;
+                $lower = false; $upper = false;
+                for (; $j < $n && $p[$j] !== ']'; $j++) {
+                    if ($p[$j] === '\\') {
+                        $e = $j + 1 < $n ? $p[$j + 1] : '';
+                        $j++;
+                        if ($e === 'x') $j += 2;
+                        elseif ($e === 'u') $j += 4;
+                        elseif ($e === 'c') $j += 1;
+                        elseif ($e === 'w' || $e === 'W' || $e === 'D' || $e === 'S') $upper = true;   // letters are in it
+                        continue;
+                    }
+                    if ($p[$j] >= 'a' && $p[$j] <= 'z') $lower = true;
+                    elseif ($p[$j] >= 'A' && $p[$j] <= 'Z') $upper = true;
+                }
+                if (!$negated && $lower && !$upper) return substr($p, $i, min($j, $n - 1) - $i + 1);
+                $i = $j;
+                continue;
+            }
+            if ($c >= 'a' && $c <= 'z') { $run .= $c; continue; }
+            if ($run !== '') return $run;
+        }
+        return $run !== '' ? $run : null;
+    }
+
+    public static function usesJsRefusedQuantifier($pattern)
+    {
+        $p = (string) $pattern;
+        $n = strlen($p);
+        $groups = [];            // one entry per open group: is it a lookbehind
+        $inClass = false;
+        // what stands before the current position: "none", "atom", "assert",
+        // "behind" (a lookbehind just closed), "quant" or "lazy"
+        $before = 'none';
+        for ($i = 0; $i < $n; $i++) {
+            $c = $p[$i];
+            if ($inClass) {
+                if ($c === '\\') $i++;
+                elseif ($c === ']') { $inClass = false; $before = 'atom'; }
+                continue;
+            }
+            if ($c === '\\') {
+                $e = $i + 1 < $n ? $p[$i + 1] : '';
+                $i++;
+                $before = ($e === 'b' || $e === 'B') ? 'assert' : 'atom';
+                continue;
+            }
+            if ($c === '[') { $inClass = true; continue; }
+            if ($c === '(') {
+                $look = false;
+                if (preg_match('/\G\(\?(<[=!]|[:=!]|<[A-Za-z_][A-Za-z0-9_]*>)/', $p, $m, 0, $i)) {
+                    $look = ($m[1] === '<=' || $m[1] === '<!');
+                    $i += strlen($m[0]) - 1;
+                }
+                $groups[] = $look;
+                $before = 'none';
+                continue;
+            }
+            if ($c === ')') {
+                $before = array_pop($groups) ? 'behind' : 'atom';
+                continue;
+            }
+            if ($c === '|') { $before = 'none'; continue; }
+            if ($c === '^' || $c === '$') { $before = 'assert'; continue; }
+            $q = ($c === '*' || $c === '+' || $c === '?') ? 1 : 0;
+            if (!$q && $c === '{' && preg_match('/\G\{[0-9]+(?:,[0-9]*)?\}/', $p, $m, 0, $i)) $q = strlen($m[0]);
+            if (!$q) { $before = 'atom'; continue; }       // a literal, a "." or a "{" that is not a quantifier
+            if ($before === 'quant' && $c === '?') { $before = 'lazy'; continue; }
+            if ($before !== 'atom') return true;
+            $before = 'quant';
+            $i += $q - 1;
+        }
+        return false;
     }
 
     /**
@@ -1489,7 +1846,8 @@ class CheckCharacter
             if (self::usesPcreVerbOrRef($pattern)) {
                 $why = 'the format pattern uses PCRE syntax that a browser cannot run or reads as other '
                     . 'characters: a verb such as (*ACCEPT), a named back-reference \\k\'name\' or \\k{name}, '
-                    . 'an octal \\o{...}, a reference \\8 or \\9, or a class range that starts or ends at \\d, '
+                    . 'an octal \\o{...}, a back-reference \\1 to \\9, \\x without two hex digits, \\a, \\e, \\c '
+                    . 'without a letter, or a class range that starts or ends at \\d, '
                     . '\\w or \\s, such as [\\d-z]. Use explicit character classes such as [A-Z] or [0-9] instead.';
                 return null;
             }
@@ -1525,6 +1883,16 @@ class CheckCharacter
                     . 'quantifiers shares a character class (use a disjoint class or a fixed length).';
                 return null;
             }
+            if (self::usesJsRefusedQuantifier($pattern)) {
+                // After the catastrophic gate, which already refuses a++ and
+                // a*+ and words them as what they are in a browser.
+                $why = 'the format pattern has a quantifier where JavaScript allows none: a possessive '
+                    . 'quantifier (a "+" after another quantifier, as in [0-9]{2}+ or A?+), a quantifier on a '
+                    . 'lookbehind such as (?<=A)+, on ^, $, \\b or \\B, after a lazy quantifier, or with nothing '
+                    . 'before it. PCRE runs these and a browser refuses the whole pattern, so the field would '
+                    . 'not be checked while it is typed. Remove the extra quantifier.';
+                return null;
+            }
         }
         $body = preg_replace('/^\^/', '', (string) $pattern);
         $body = preg_replace('/\$$/', '', $body);
@@ -1553,8 +1921,96 @@ class CheckCharacter
             if (strpos($body, $cand) === false) { $d = $cand; break; }
         }
         if ($d === null) { $d = '/'; $body = str_replace('/', '\\/', $body); }
-        $re = $d . '^(?:' . $body . ')$' . $d . 'u';
+        // "D": "$" is the end of the value only, as in the browser, never the
+        // place before a last line feed.
+        $re = $d . '^(?:' . self::asciiShorthands($body) . ')$' . $d . 'uD';
         return (@preg_match($re, '') === false) ? null : $re;
+    }
+
+    /**
+     * $body with \d \w \s, their capitals and \b \B written out as the browser
+     * reads them (VAL-1). The pattern is compiled with "u" so a value is matched
+     * by code point, and in PHP that modifier also makes the shorthands
+     * Unicode: FC\d{4} accepted "FC123" plus a full-width 4 on the server while
+     * the browser refused it, and \D \W \S refused values the browser
+     * accepted. Outside a class a shorthand becomes a class of JS_SHORTHAND's
+     * ranges; inside one its ranges join the class, a capital as the
+     * complement ranges, so [^\D] and [\W-] keep their meaning. \b and \B
+     * become lookarounds over the ASCII word characters ([\b] stays the
+     * backspace it is in both engines). \uHHHH, which the browser reads and
+     * PCRE refuses, becomes \x{HHHH}. Every other escape is copied as written.
+     */
+    private static function asciiShorthands($body)
+    {
+        $body = (string) $body;
+        if (strpos($body, '\\') === false) return $body;
+        $n = strlen($body);
+        $out = '';
+        $inClass = false;
+        for ($i = 0; $i < $n; $i++) {
+            $c = $body[$i];
+            if ($c === '\\' && $i + 1 < $n) {
+                $e = $body[++$i];
+                $low = strtolower($e);
+                if (isset(self::JS_SHORTHAND[$low])) {
+                    $members = self::shorthandMembers($low, $e !== $low);
+                    $out .= $inClass ? $members : '[' . $members . ']';
+                } elseif (!$inClass && ($e === 'b' || $e === 'B')) {
+                    $w = '[' . self::shorthandMembers('w', false) . ']';
+                    $out .= $e === 'b'
+                        ? '(?:(?<=' . $w . ')(?!' . $w . ')|(?<!' . $w . ')(?=' . $w . '))'
+                        : '(?:(?<=' . $w . ')(?=' . $w . ')|(?<!' . $w . ')(?!' . $w . '))';
+                } elseif ($e === 'u' && preg_match('/\G[0-9A-Fa-f]{4}/', $body, $m, 0, $i + 1)) {
+                    // JavaScript's \uHHHH, which PCRE does not have, is its \x{HHHH}
+                    $out .= '\\x{' . $m[0] . '}';
+                    $i += 4;
+                } else {
+                    $out .= '\\' . $e;
+                    // the character a \c names is part of the escape, whatever it is
+                    if ($e === 'c' && $i + 1 < $n) $out .= $body[++$i];
+                }
+                continue;
+            }
+            $out .= $c;
+            if ($inClass) {
+                if ($c === ']') $inClass = false;
+                continue;
+            }
+            if ($c === '[') {
+                $inClass = true;
+                if ($i + 1 < $n && $body[$i + 1] === '^') $out .= $body[++$i];
+                // PCRE reads a "]" right after "[" or "[^" as a member
+                if ($i + 1 < $n && $body[$i + 1] === ']') $out .= $body[++$i];
+            }
+        }
+        return $out;
+    }
+
+    /** @var array "d" "w" "s", or "D" "W" "S" for the complement => class members */
+    private static $shorthandMemo = [];
+
+    /** JS_SHORTHAND[$key] as PCRE class members; everything else when $negate. */
+    private static function shorthandMembers($key, $negate)
+    {
+        $memo = $negate ? strtoupper($key) : $key;
+        if (isset(self::$shorthandMemo[$memo])) return self::$shorthandMemo[$memo];
+        $ranges = self::JS_SHORTHAND[$key];
+        if ($negate) {
+            $gaps = [];
+            $next = 0;
+            foreach ($ranges as $r) {
+                if ($r[0] > $next) $gaps[] = [$next, $r[0] - 1];
+                $next = $r[1] + 1;
+            }
+            $gaps[] = [$next, 0x10FFFF];
+            $ranges = $gaps;
+        }
+        $out = '';
+        foreach ($ranges as $r) {
+            $out .= sprintf('\\x{%X}', $r[0]);
+            if ($r[1] > $r[0]) $out .= sprintf('-\\x{%X}', $r[1]);
+        }
+        return self::$shorthandMemo[$memo] = $out;
     }
 
     /**
@@ -2058,6 +2514,13 @@ class CheckCharacter
         // to it, which shows nothing (VAL-3).
         $raw = self::browserTrim($raw);
         if ($raw === '') return ['ok' => true, 'reason' => 'no-op', 'count' => 0];
+        // A value over the scan cap is not a fault of the rule, so it gets its
+        // own reason and the audit can say what happened (VAL-11). Still no
+        // verdict: the browser stops at the same cap.
+        $st = self::pooledState($cfg);
+        if ($st !== null && mb_strlen($raw, 'UTF-8') > self::pooledScanCap($st)) {
+            return ['ok' => true, 'reason' => 'over-scan-cap', 'count' => 0, 'cap' => self::pooledScanCap($st)];
+        }
         $segs = self::pooledParse($cfg, $raw);
         if ($segs === null) return ['ok' => true, 'reason' => 'unconfigurable', 'count' => 0];
         $ids = 0; $junk = 0; $bad = 0; $dups = 0; $seen = [];

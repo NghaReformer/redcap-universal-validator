@@ -2202,7 +2202,8 @@ class AnnotationRules
         $cfg = json_decode($val, true);
         if (!is_array($cfg)) {
             return ['error' => self::TAG . ' JSON does not parse ('
-                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+                . json_last_error_msg() . ') — ' . self::jsonBackslashHint($val)
+                . 'use double quotes around keys and string values.'];
         }
         $unknown = array_diff(array_keys($cfg), self::JSON_KEYS);
         if ($unknown) {
@@ -2216,6 +2217,119 @@ class AnnotationRules
             return ['error' => '"type" must be "single" or "pooled".'];
         }
         return self::validateConfig($cfg, $opts);
+    }
+
+    /**
+     * The error for pooled ID lengths too short to hold an ID of $algo, or
+     * null (VAL-7). An ID is its check character(s) plus at least one more
+     * character; at a shorter length no value can verify, so the length would
+     * only ever report invalid IDs.
+     *
+     * @param int[] $lens the declared lengths, ascending
+     */
+    private static function lengthsBelowCheck(array $lens, $algo)
+    {
+        $least = CheckCharacter::nCheckChars($algo) + 1;
+        $short = [];
+        foreach ($lens as $L) {
+            if ($L < $least) $short[] = $L;
+        }
+        if (!$short) return null;
+        return 'an ID length of ' . implode(', ', $short) . ' leaves no room for an ID: the ' . $algo
+            . ' check takes ' . ($least - 1) . ' character' . ($least === 2 ? '' : 's')
+            . ', so an ID needs at least ' . $least . '.';
+    }
+
+    /** The error for a pattern with lower-case text (CheckCharacter::lowercaseLiteral), VAL-9. */
+    private static function lowercaseError($found)
+    {
+        return 'the format pattern has the lower-case "' . $found . '". A value is upper-cased before it is '
+            . 'matched, so lower-case letters in a pattern can never match. Write the pattern in upper case '
+            . '(FC[0-9]{4}, not fc[0-9]{4}).';
+    }
+
+    /**
+     * A sentence for the "JSON does not parse" error when the tag's JSON has
+     * a backslash JSON does not allow, else '' (VAL-10). A regex written the
+     * way the Configure dialog takes it ("pattern":"FC\d{4}") is not JSON: a
+     * backslash there must be doubled, and the error said only to use double
+     * quotes. JSON's own escapes (\" \\ \/ \b \f \n \r \t \uXXXX) are skipped,
+     * so the one named is the one the parser stopped at.
+     */
+    private static function jsonBackslashHint($val)
+    {
+        $rest = preg_replace('/\\\\(?:["\\\\\/bfnrt]|u[0-9A-Fa-f]{4})/', '', (string) $val);
+        if (!is_string($rest) || !preg_match('/\\\\(.?)/s', $rest, $m)) return '';
+        $esc = '\\' . $m[1];
+        return 'a backslash inside the tag\'s JSON must be doubled: write "\\' . $esc . '" where the pattern needs '
+            . $esc . ' (for example "pattern":"FC\\\\d{4}"). Also ';
+    }
+
+    /**
+     * Options of an @UVALIDATE tag that are read by no part of the rule it
+     * describes (VAL-9): each was accepted and did nothing, so the designer
+     * saw a setting the field never applied. Checked for the action tag only.
+     * The Configure dialog keeps the value of a box it hides when the rule
+     * type changes, and refusing those would disable a rule over a box its
+     * owner cannot see.
+     *
+     * @param array $out the tag's fragment, in engine keys
+     * @return string[]
+     */
+    private static function inertOptionErrors(array $out)
+    {
+        $errors = [];
+        $type = isset($out['type']) && $out['type'] !== '' ? $out['type'] : 'single';
+        if ($type !== 'pooled') {
+            // engine key => the name it has in the tag
+            $pooledOnly = ['idLengths' => 'idLengths', 'idMinLen' => 'idMinLen', 'idMaxLen' => 'idMaxLen',
+                           'expectedIds' => 'expectedIds', 'keepChars' => 'keepChars'];
+            $named = [];
+            // With "alternates", keepChars is read on a single-value rule
+            // too: every format's strip list must agree with it.
+            $hasAlts = isset($out['alternates']) && is_array($out['alternates']) && $out['alternates'];
+            foreach ($pooledOnly as $k => $label) {
+                if ($k === 'keepChars' && $hasAlts) continue;
+                if (isset($out[$k])) $named[] = '"' . $label . '"';
+            }
+            if ($named) {
+                $errors[] = implode(', ', $named) . (count($named) === 1 ? ' applies' : ' apply')
+                    . ' to a pooled field only (several IDs in one field, "type":"pooled"); a single-value '
+                    . 'rule does not read ' . (count($named) === 1 ? 'it' : 'them') . '. Remove '
+                    . (count($named) === 1 ? 'it' : 'them') . ', or set "type":"pooled".';
+            }
+        }
+        if (!empty($out['suggestFix'])) {
+            // The hint names the check character a value should end in. It is
+            // shown for one value checked over its whole normalized text, so
+            // it needs a single-value rule and a format with a check algorithm
+            // and source normalized_id (the browser's suggestion()).
+            $algo = isset($out['algorithm']) && $out['algorithm'] !== '' ? $out['algorithm'] : 'iso7064_mod37_36';
+            $source = isset($out['source']) && $out['source'] !== '' ? $out['source'] : 'normalized_id';
+            $formats = [];
+            if (isset($out['alternates']) && is_array($out['alternates'])) {
+                foreach ($out['alternates'] as $a) {
+                    if (!is_array($a)) continue;
+                    $formats[] = [isset($a['algorithm']) && $a['algorithm'] !== '' ? $a['algorithm'] : $algo,
+                                  isset($a['source']) && $a['source'] !== '' ? $a['source'] : $source];
+                }
+            } else {
+                $formats[] = [$algo, $source];
+            }
+            $can = false;
+            foreach ($formats as $f) {
+                if ($f[0] !== 'none' && $f[1] === 'normalized_id') $can = true;
+            }
+            if ($type === 'pooled') {
+                $errors[] = '"suggestFix" does nothing on a pooled field: the hint is given for one ID in a '
+                    . 'single-value field. Remove it.';
+            } elseif (!$can) {
+                $errors[] = '"suggestFix" has nothing to suggest here: the hint names the check character an ID '
+                    . 'should end in, which needs a check algorithm (not "none") computed over the whole ID '
+                    . '("source":"normalized_id"). Remove it, or use such a format.';
+            }
+        }
+        return $errors;
     }
 
     /**
@@ -2293,6 +2407,8 @@ class AnnotationRules
             }
         }
         $errors = self::checkFragment($out, $opts);
+        // only once the rule itself is sound: its own errors come first
+        if (!$errors) $errors = self::inertOptionErrors($out);
         if ($errors) return ['error' => implode(' ', $errors)];
         return $out;
     }
@@ -2394,6 +2510,7 @@ class AnnotationRules
             // Single admission point, shared with the pooled parser and twinned
             // by QRID_gatePattern (js) — see CheckCharacter::gatePattern.
             if (CheckCharacter::gatePattern($pattern, $why) === null) $errors[] = $why;
+            elseif (($low = CheckCharacter::lowercaseLiteral($pattern)) !== null) $errors[] = self::lowercaseError($low);
         }
         if ($algo === 'none' && ($pattern === null || $pattern === '') && !$hasAlts) {
             $errors[] = 'algorithm "none" validates format only, so a format pattern is required.';
@@ -2425,6 +2542,7 @@ class AnnotationRules
             $baseKeep   = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
                 . (isset($frag['keepChars']) ? (string) $frag['keepChars'] : '');
             $union = [];        // every length any alternate can produce
+            $pairCount = 0;     // (format, length) pairs: what the pooled parser tries at each position
             $keepSets = [];
             $shapes = [];
             foreach ($alts as $i => $a) {
@@ -2497,6 +2615,10 @@ class AnnotationRules
                     $errors[] = $nm . ': ' . $why;
                     continue;
                 }
+                if (($low = CheckCharacter::lowercaseLiteral($a['pattern'])) !== null) {
+                    $errors[] = $nm . ': ' . self::lowercaseError($low);
+                    continue;
+                }
                 if ($type === 'pooled') {
                     if (!isset($a['lengths']) || !is_array($a['lengths']) || !count($a['lengths'])) {
                         $errors[] = $nm . ' needs "lengths" — a pooled rule splits a run at member '
@@ -2512,7 +2634,15 @@ class AnnotationRules
                             break;
                         }
                     }
+                    // An ID is its check character(s) plus at least one more,
+                    // so a shorter length can never hold a valid one (VAL-7).
+                    $short = self::lengthsBelowCheck($ls, $aAlgo);
+                    if ($short !== null) {
+                        $errors[] = $nm . ': ' . $short;
+                        continue;
+                    }
                     $union = array_merge($union, $ls);
+                    $pairCount += count($ls);
                 }
                 $shapes[$i] = ['name' => $nm, 'pattern' => $a['pattern'], 'formatOnly' => ($aAlgo === 'none'),
                                'lengths' => ($type === 'pooled') ? $ls : null];
@@ -2552,6 +2682,12 @@ class AnnotationRules
             // reader cannot model, or the search budget exhausted - the rule is
             // refused rather than assumed safe (H-1).
             if (!$errors && count($shapes) > 1) {
+                // One search budget for the whole rule, not one per question:
+                // eight alternates can ask 16 pairs at every shared length,
+                // and this runs each time the rule is built (VAL-3). A question
+                // two pairs share (alternates with one pattern) is asked once.
+                $ovBudget = CheckCharacter::OVERLAP_RULE_VISITS;
+                $ovAsked = [];
                 foreach ($shapes as $fi => $F) {
                     if (!$F['formatOnly']) continue;
                     foreach ($shapes as $ki => $K) {
@@ -2561,7 +2697,11 @@ class AnnotationRules
                         $ex = null;
                         $unknown = false;
                         foreach ($lens as $L) {
-                            $ov = CheckCharacter::patternOverlap($K['pattern'], $F['pattern'], $L);
+                            $q = $K['pattern'] . "\0" . $F['pattern'] . "\0" . ($L === null ? '' : $L);
+                            if (!isset($ovAsked[$q])) {
+                                $ovAsked[$q] = CheckCharacter::patternOverlap($K['pattern'], $F['pattern'], $L, $ovBudget);
+                            }
+                            $ov = $ovAsked[$q];
                             if ($ov['overlap'] === null) { $unknown = true; break; }
                             if ($ov['overlap']) { $ex = $ov['example']; break; }
                         }
@@ -2570,8 +2710,9 @@ class AnnotationRules
                                 . 'overlap ' . $F['name'] . ', which has no check character. If the two '
                                 . 'shapes do overlap, a mis-scanned ' . $K['name'] . ' ID that no longer fits '
                                 . $K['name'] . '\'s pattern could pass as a clean ' . $F['name'] . ' ID, '
-                                . 'its check character never tested. Write ' . $K['name'] . '\'s pattern with '
-                                . 'explicit character classes (no backreferences), or narrow '
+                                . 'its check character never tested. Write the patterns with explicit '
+                                . 'character classes and fixed lengths such as [A-Z]{2}[0-9]{6} (wide ranges '
+                                . 'such as {0,30} in several formats multiply the cases to compare), or narrow '
                                 . $F['name'] . '\'s so the two cannot overlap.';
                             break 2;
                         }
@@ -2626,6 +2767,14 @@ class AnnotationRules
                 if (count($union) > CheckCharacter::MAX_LEN_CHOICES) {
                     $errors[] = 'the alternates declare ' . count($union) . ' distinct ID lengths — at most '
                         . CheckCharacter::MAX_LEN_CHOICES . ' are supported.';
+                } elseif ($pairCount > CheckCharacter::MAX_LEN_CHOICES) {
+                    // What both runtimes cap is the (format, length) pairs
+                    // the parser tries at every position (pooledState, js
+                    // PAIRS), not the distinct lengths: 8 formats of 5
+                    // lengths each saved here and was refused by both (VAL-6).
+                    $errors[] = 'the alternates declare ' . $pairCount . ' format-and-length combinations (each '
+                        . 'length of each format counts) — at most ' . CheckCharacter::MAX_LEN_CHOICES
+                        . ' are supported. Give the formats fewer lengths, or split them into separate fields.';
                 }
                 $sw = $errors ? null : CheckCharacter::swallowSum($union);
                 if ($sw !== null) {
@@ -2685,6 +2834,10 @@ class AnnotationRules
                         . 'could swallow ' . count($sw['parts']) . ' real ones. Split such projects '
                         . 'into separate fields/rules.';
                 }
+                // The range form below has had this since VAL-8; the exact
+                // lengths were accepted and every value was then invalid (VAL-7).
+                $short = $errors ? null : self::lengthsBelowCheck($ints, $algo);
+                if ($short !== null) $errors[] = $short;
             } else {
                 $min = isset($frag['idMinLen']) && self::posInt($frag['idMinLen']) ? (int) $frag['idMinLen'] : 8;
                 $max = isset($frag['idMaxLen']) && self::posInt($frag['idMaxLen']) ? (int) $frag['idMaxLen'] : 14;

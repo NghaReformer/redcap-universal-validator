@@ -98,9 +98,10 @@ $r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"\\\\
 check('F2-BYPASS-01: \\x{} code-point escape -> u-flag dialect error',
     isset($r['error']) && strpos($r['error'], 'flag') !== false);
 // F2-OVERREJECT-02: a LITERAL backslash pair before u{ is not a \u escape -> accepted.
-$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"\\\\\\\\u{2}"}');
+// Asked of the pattern gate: the rule itself is refused since VAL-9 (2026-11-13)
+// for its lower-case u, which an upper-cased value can never match.
 check('F2-OVERREJECT-02: literal-backslash \\\\u{ is not a u-flag escape -> accepted',
-    !isset($r['error']));
+    CheckCharacter::gatePattern('\\\\u{2}', $why) !== null);
 // F1/F2 control: a plain bounded pattern with disjoint classes is still accepted.
 $r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"[A-Z]{3}[0-9]{5}"}');
 check('F1/F2 control: disjoint bounded pattern still passes',
@@ -1040,11 +1041,11 @@ check('H-01 the driving case (disjoint shapes) still accepted, single',
     }, $ALT4)]) === []);
 check('H-01 the driving case still accepted, pooled',
     fragErrors(['type' => 'pooled', 'strip' => '-', 'alternates' => $ALT4]) === []);
-// no witness can be produced from an alternation, so no claim is made
+// no value fits both, so no claim is made (the alternation is read, not skipped)
 check('H-01 stays silent when no witness can be built',
     $altErr([
-        ['label' => 'wild', 'pattern' => '[A-Z0-9-]+',   'algorithm' => 'none'],
-        ['label' => 'grp',  'pattern' => '(a|b)[0-9]{3}', 'algorithm' => $MOD],
+        ['label' => 'wild', 'pattern' => '[C-Z][A-Z0-9-]*', 'algorithm' => 'none'],
+        ['label' => 'grp',  'pattern' => '(A|B)[0-9]{3}', 'algorithm' => $MOD],
     ], ['type' => 'single']) === '');
 
 // H-02: the KEEP map was keyed by display name, so two alternates sharing a
@@ -1156,6 +1157,52 @@ foreach ([['SK[1-5]-[0-9]{4}[0-9A-Z]', '[A-Z0-9-]+'], ['(SK|DT)[1-5]-[0-9]{4}[0-
         && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[0], $why, true), $ex)
         && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[1], $why, true), $ex));
 }
+
+// ---- review 2026-11-13, VAL-3: one search budget per rule, answers kept ----
+// Every request builds its rules again, and four wide formats beside four
+// asked 64 questions of up to 400,000 visits each: 1.1 s per request for one
+// accepted annotation. The budget is counted in product states visited, so
+// these checks hold on any machine.
+$wideK = function ($letter) { return '[A-Z0-9]{0,30}' . $letter . '[E-Z0-9]{0,30}'; };
+$wideF = function ($n) { return '[E-Z0-9]{0,31}[E-Z0-9]{0,' . $n . '}'; };
+$full = 1000000;
+$b1 = $full;
+$r1 = CheckCharacter::patternOverlap($wideK('A'), $wideF(31), 40, $b1);
+$cost = $full - $b1;
+check('VAL-3: a wide pair is proven disjoint, and the visits it took come off the caller\'s budget (' . $cost . ')',
+    $r1 === ['overlap' => false, 'example' => null] && $cost > 100 && $cost < CheckCharacter::OVERLAP_RULE_VISITS / 10);
+$b2 = $full;
+$r2 = CheckCharacter::patternOverlap($wideK('A'), $wideF(31), 40, $b2);
+check('VAL-3: the same question again gets the same answer and is charged the same', $r2 === $r1 && $full - $b2 === $cost);
+$b3 = $cost - 1;
+$r3 = CheckCharacter::patternOverlap($wideK('A'), $wideF(31), 40, $b3);
+check('VAL-3: a budget one visit short gives "unknown" and is spent, kept answer or not', $r3['overlap'] === null && $b3 === 0);
+$b4 = $cost;
+$r4 = CheckCharacter::patternOverlap($wideK('A'), $wideF(31), 40, $b4);
+check('VAL-3: a budget of exactly the cost is enough', $r4['overlap'] === false && $b4 === 0);
+$b5 = 10;
+$r5 = CheckCharacter::patternOverlap($wideK('B'), $wideF(31), 40, $b5);
+$r6 = CheckCharacter::patternOverlap($wideK('B'), $wideF(31), 40);
+check('VAL-3: a search that ran out is not kept as the answer to a caller with more visits',
+    $r5['overlap'] === null && $b5 === 0 && $r6['overlap'] === false);
+check('VAL-3: without a budget a question still has ' . CheckCharacter::OVERLAP_MAX_VISITS . ' visits of its own',
+    CheckCharacter::patternOverlap($wideK('C'), $wideF(31), 44)['overlap'] === false);
+$wideRule = function (array $lens) use ($wideK, $wideF, $MOD) {
+    $alts = [];
+    foreach (['A', 'B', 'C', 'D'] as $p) $alts[] = ['label' => 'K' . $p, 'pattern' => $wideK($p), 'algorithm' => $MOD, 'lengths' => $lens];
+    foreach ([31, 32, 33, 34] as $nF) $alts[] = ['label' => 'F' . $nF, 'pattern' => $wideF($nF), 'algorithm' => 'none', 'lengths' => $lens];
+    return $alts;
+};
+check('VAL-3: four wide formats beside four, at one length, fit the rule\'s budget', $altErr($wideRule([40])) === '');
+$past = $altErr($wideRule([40, 44, 48, 52]));
+check('VAL-3: at four lengths the 64 questions are past the rule\'s budget and the rule is refused, each question well inside it',
+    strpos($past, 'too complex to prove') !== false && 64 * $cost > CheckCharacter::OVERLAP_RULE_VISITS);
+check('VAL-3: validated again, with every answer in memory, the rule gets the same verdict',
+    $altErr($wideRule([40, 44, 48, 52])) === $past && $altErr($wideRule([40])) === '');
+// one pattern on four format-only alternates is one question per check-bearing sibling, not four
+$sameF = $wideRule([40, 44, 48, 52]);
+foreach ([4, 5, 6, 7] as $ix) $sameF[$ix]['pattern'] = $wideF(31);
+check('VAL-3: alternates that share a pattern share its questions (the reviewed 711-byte rule passes)', $altErr($sameF) === '');
 // ...and the guard now fires on all three shapes that bypassed it in round 1
 foreach (['(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]',
           'SK1-[0-9]{4}[0-9A-Z]|SK2-[0-9]{4}[0-9A-Z]',
@@ -1199,11 +1246,19 @@ check('H-1 a rule using them is still accepted when the shapes are disjoint',
 // A pooled parser only tries a format at its declared lengths, so alternates
 // with no length in common never compete and need no proof - an unanalysable
 // pattern is fine there...
+// (The unanalysable pattern was a backreference until the gate refused those
+// outright, review 2026-11-13 VAL-5; a quantifier past the reader's cap is one
+// the gate still admits.)
 check('H-1 pooled is not refused for an unanalysable pattern at a different length',
     $altErr([
         ['label' => 'GHIT',   'pattern' => 'FC[1-9]-[0-9]{4}', 'algorithm' => 'none', 'lengths' => [8]],
-        ['label' => 'MINTED', 'pattern' => '([A-Z])\1[1-9]-[0-9]{5}', 'algorithm' => $MOD, 'lengths' => [9]],
+        ['label' => 'MINTED', 'pattern' => '[A-Z]{2,300}[1-9]-[0-9]{5}', 'algorithm' => $MOD, 'lengths' => [9]],
     ]) === '');
+check('VAL-5: a backreference in an alternate is refused by the pattern gate',
+    strpos($altErr([
+        ['label' => 'GHIT',   'pattern' => 'FC[1-9]-[0-9]{4}', 'algorithm' => 'none', 'lengths' => [8]],
+        ['label' => 'MINTED', 'pattern' => '([A-Z])\1[1-9]-[0-9]{5}', 'algorithm' => $MOD, 'lengths' => [9]],
+    ]), 'MINTED: the format pattern uses PCRE syntax that a browser cannot run or reads as other characters') !== false);
 check('H-1 ... a pooled overlap at a shared length is refused by the probe',
     strpos($altErr([
         ['label' => 'GHIT',   'pattern' => '[0-9A-Z]{9}',      'algorithm' => 'none', 'lengths' => [9]],
@@ -1214,7 +1269,7 @@ check('H-1 ... a pooled overlap at a shared length is refused by the probe',
 check('H-1 pooled: an unanalysable pattern at a shared length is refused',
     strpos($altErr([
         ['label' => 'LEGACY', 'pattern' => '[0-9A-Z]{9}',          'algorithm' => 'none', 'lengths' => [9]],
-        ['label' => 'MINTED', 'pattern' => '([A-Z])\1[0-9A-Z]{7}', 'algorithm' => $MOD,   'lengths' => [9]],
+        ['label' => 'MINTED', 'pattern' => '[A-Z]{2,300}[0-9A-Z]{7}', 'algorithm' => $MOD, 'lengths' => [9]],
     ]), 'too complex to prove') !== false);
 // The reviewer's F2: a format-only family wholly inside a check-bearing one
 // would be dead - every legacy value owned, and failing, by the check.
@@ -1484,6 +1539,67 @@ check('AST-11: an assert that compares a field with itself is refused',
     is_array($r) && strpos($r[0]['error'] ?? '', 'compares "[h]" with itself') !== false);
 $r = AnnotationRules::parseAllTags('@UVREQUIRED={"when":"[a]<>[a]"}');
 check('AST-11: so is a "when" that does', is_array($r) && strpos($r[0]['error'] ?? '', 'with itself') !== false);
+
+// ---- review 2026-11-13: VAL-6, VAL-7, VAL-9, VAL-10 ----
+$uvErr = function ($json) {
+    $r = AnnotationRules::parseField('@UVALIDATE=' . $json);
+    return isset($r['error']) ? $r['error'] : '';
+};
+// VAL-6: the cap both runtimes enforce is on (format, length) pairs. Eight
+// formats of five lengths each are five distinct lengths and forty pairs.
+$pairAlts = function ($formats) {
+    $alts = [];
+    foreach (array_slice(str_split('ABCDEFGH'), 0, $formats) as $letter) {
+        $alts[] = ['label' => 'F' . $letter, 'pattern' => $letter . '[0-9]{9,13}', 'algorithm' => 'none',
+                   'lengths' => [10, 11, 12, 13, 14]];
+    }
+    return $alts;
+};
+check('VAL-6: more format-and-length pairs than the parser tries are refused when the rule is saved',
+    strpos($altErr($pairAlts(8)), '40 format-and-length combinations') !== false);
+check('VAL-6: a rule under the pair cap gets no such error',
+    strpos($altErr($pairAlts(6)), 'format-and-length') === false);
+// VAL-7: an exact pooled length too short to hold a check character and one more
+check('VAL-7: idLengths below the check character plus one is refused',
+    strpos($uvErr('{"type":"pooled","idLengths":[1]}'), 'leaves no room for an ID') !== false);
+check('VAL-7: an alternate length below it is refused too',
+    strpos($altErr([['label' => 'tiny', 'pattern' => '[0-9A-Z]', 'lengths' => [1]]]), 'leaves no room for an ID') !== false);
+check('VAL-7: a format-only alternate of one character is still allowed',
+    strpos($altErr([['label' => 'flag', 'pattern' => '[XYZ]', 'algorithm' => 'none', 'lengths' => [1]]]),
+        'leaves no room') === false);
+check('VAL-7: a usual exact length is accepted', $uvErr('{"type":"pooled","idLengths":[9]}') === '');
+// VAL-9: options that no part of the rule reads
+check('VAL-9: lower-case text in a pattern is refused',
+    strpos($uvErr('{"algorithm":"none","pattern":"fc[0-9]{4}"}'), 'lower-case "fc"') !== false);
+check('VAL-9: so is a class of lower-case letters only',
+    strpos($uvErr('{"algorithm":"none","pattern":"[a-z0-9]{4}"}'), 'lower-case "[a-z0-9]"') !== false);
+check('VAL-9: a lower-case alternate pattern is refused under its name',
+    strpos($altErr([['label' => 'low', 'pattern' => 'ab[0-9]{4}', 'algorithm' => 'none', 'lengths' => [6]]]),
+        'low: the format pattern has the lower-case "ab"') !== false);
+check('VAL-9: a class with both cases, a negated class and an escape letter are not lower-case text',
+    $uvErr('{"algorithm":"none","pattern":"[A-Za-z0-9]{4}"}') === ''
+    && $uvErr('{"algorithm":"none","pattern":"[^a-z]{4}"}') === ''
+    && $uvErr('{"algorithm":"none","pattern":"FC\\\\d{4}"}') === '');
+check('VAL-9: a pooled-only key on a single-value rule is refused',
+    strpos($uvErr('{"idLengths":[9]}'), '"idLengths" applies to a pooled field only') !== false
+    && strpos($uvErr('{"type":"single","expectedIds":2,"keepChars":"#"}'), '"expectedIds", "keepChars" apply') !== false);
+check('VAL-9: suggestFix on a pooled rule is refused',
+    strpos($uvErr('{"type":"pooled","suggestFix":true}'), '"suggestFix" does nothing on a pooled field') !== false);
+check('VAL-9: suggestFix on a format-only rule is refused',
+    strpos($uvErr('{"algorithm":"none","pattern":"A[0-9]{4}","suggestFix":true}'), 'has nothing to suggest') !== false);
+check('VAL-9: suggestFix on a rule with a check character is accepted',
+    $uvErr('{"suggestFix":true}') === '' && $uvErr('{"suggestFix":false,"type":"pooled"}') === '');
+// VAL-10: a single backslash in the tag's JSON
+$e = $uvErr('{"algorithm":"none","pattern":"FC\d{4}"}');
+check('VAL-10: a single backslash in the tag JSON is named in the error',
+    strpos($e, 'JSON does not parse') !== false && strpos($e, 'must be doubled') !== false
+    && strpos($e, 'write "\\\\d" where the pattern needs \d') !== false);
+$e = $uvErr('{"algorithm":"none" "pattern":"FC[0-9]{4}"}');
+check('VAL-10: another JSON mistake gets no backslash advice',
+    strpos($e, 'JSON does not parse') !== false && strpos($e, 'doubled') === false);
+$e = $uvErr('{"algorithm":"none","pattern":"FC\\\\d{4}" "x"}');
+check('VAL-10: a doubled backslash is not blamed for another mistake',
+    strpos($e, 'JSON does not parse') !== false && strpos($e, 'doubled') === false);
 
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);
