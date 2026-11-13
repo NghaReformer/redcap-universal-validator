@@ -27,7 +27,13 @@
  *     after the answer landed is not followed by the one kept back,
  *   - "lookupHoldMs": 0 never waits, and a value outside 0..10000 is ignored,
  *   - the line "Checking a value, then saving" shows only on a longer wait
- *     and is taken away when the save goes on.
+ *     and is taken away when the save goes on,
+ *   - whether the field can be edited is asked when Save is pressed (REQ-5): a
+ *     field read-only when its rule bound and editable later holds the save,
+ *     and a save never waits for a lookup on a field the person cannot edit,
+ *     unless the lookup fills fields,
+ *   - typing is watched in a "with" or "when" field that is a text box, not in
+ *     the text input REDCap 17 keeps behind a radio (CHO-2).
  *
  * Run:  node tests/lookup_save_hold_dom_js.cjs
  */
@@ -107,7 +113,7 @@ const HOLD_MS = 150;
 
 /* One form with one looked-up field and REDCap's save button. env.saves lists
    every call that reached REDCap's own dataEntrySubmit. */
-function boot(value, rule, extra) {
+function boot(value, rule, extra, prep) {
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
   delete require.cache[require.resolve(enginePath)];
   const stub = makeDeferredStub();
@@ -117,6 +123,15 @@ function boot(value, rule, extra) {
   const holder = makeEl('div');
   holder.appendChild(field); body.appendChild(holder);
   allEls.push(field, holder);
+  /* prep: what the page holds before the engine binds (a read-only field,
+     other fields of the form) */
+  const add = (tag, name, type) => {
+    const e = makeEl(tag); e.name = name; e.type = type || '';
+    const h = makeEl('div'); h.appendChild(e); body.appendChild(h);
+    allEls.push(e, h);
+    return e;
+  };
+  if (prep) prep(field, add);
   const doc = {
     body, readyState: 'complete', _handlers: {},
     createElement(t) { const e = makeEl(t); allEls.push(e); return e; },
@@ -361,6 +376,89 @@ function typeIn(env, value) { env.field.value = value; env.field.fire('input'); 
     const ev = env.btn.click();
     check('9 @UVEXISTS "return": an old "found" saves at once, and Save asks nothing',
       !ev._prevented && env.saves.length === 1 && env.stub.calls.length === 1, env.stub.calls.length);
+  }
+  // ---- 10) "can this field be edited" is asked at Save, not at bind (REQ-5) ---------
+  const NOT_FOUND = { state: 'not-found' };
+  for (const [name, rule, value, blocks] of [['@UVUNIQUE', UNIQUE(), 'AB100', USED], ['@UVEXISTS', EXISTS(), 'SP-1', NOT_FOUND]]) {
+    {
+      // read-only when the rule bound (REDCap enables it later, or a script does)
+      const env = boot(value, rule, null, (f) => { f.readOnly = true; });
+      env.stub.answer(blocks);
+      const ro = env.btn.click();
+      check('10 ' + name + ': a read-only field never holds the save', !ro._prevented && env.saves.length === 1 && env.win._alerts.length === 0, env.win._alerts);
+      env.field.readOnly = false;
+      const ev = env.btn.click();
+      check('10 ' + name + ': editable later, its hard block holds the save',
+        ev._prevented && env.saves.length === 1 && env.win._alerts.length === 1 && /fix the flagged/.test(env.win._alerts[0]), env.win._alerts);
+      env.field.readOnly = true;
+      const back = env.btn.click();
+      check('10 ' + name + ': read-only again, it lets the save through', !back._prevented && env.saves.length === 2);
+    }
+    {
+      // a lookup on its way on a read-only field: the save does not wait for it
+      const env = boot(value, rule, null, (f) => { f.readOnly = true; });
+      const ev = env.btn.click();
+      check('10 ' + name + ': a save does not wait for a lookup on a read-only field',
+        !ev._prevented && env.saves.length === 1 && env.win._alerts.length === 0 && env.stub.calls.length === 1, env.stub.calls.length);
+      await sleep(HOLD_MS + 60);
+      check('10 ' + name + ': ...and nothing is saved again later', env.saves.length === 1, env.saves.length);
+    }
+    {
+      // editable when the lookup went out, disabled before Save (REDCap locks the form)
+      const env = boot('', rule);
+      typeIn(env, value);
+      env.field.fire('change');
+      check('10 ' + name + ': the lookup is on its way', env.stub.calls.length === 1);
+      env.field.disabled = true;
+      const ev = env.btn.click();
+      check('10 ' + name + ': a field disabled since does not keep the save back', !ev._prevented && env.saves.length === 1 && env.win._alerts.length === 0);
+      env.field.disabled = false;
+      const again = env.btn.click();
+      check('10 ' + name + ': enabled again with the lookup still out, the save waits', again._prevented && env.saves.length === 1);
+      env.stub.answer(blocks);
+      await sleep(60);
+      check('10 ' + name + ': ...and the answer that blocks holds it', env.saves.length === 1 && env.win._alerts.length === 1, env.win._alerts);
+    }
+  }
+  {
+    // a lookup that fills fields is waited for on a read-only field too: the values come with the answer
+    const env = boot('SP-9', Object.assign(EXISTS('off'), { existsReturnFields: ['site'] }), null, (f) => { f.readOnly = true; });
+    const ev = env.btn.click();
+    check('10 @UVEXISTS "return" on a read-only field: the save waits for the values', ev._prevented && env.saves.length === 0 && env.win._alerts.length === 0);
+    for (let waited = 0; waited < 3000 && env.saves.length === 0; waited += 25) await sleep(25);
+    check('10 ...and no longer than lookupHoldMs', env.saves.length === 1, env.saves.length);
+  }
+  {
+    // "return" with a hard block on a read-only field: waited for, never held
+    const env = boot('SP-9', Object.assign(EXISTS(), { existsReturnFields: ['site'] }), null, (f) => { f.readOnly = true; });
+    const ev = env.btn.click();
+    check('10 @UVEXISTS "return", hard, read-only: kept back while the answer is out', ev._prevented && env.saves.length === 0);
+    env.stub.answer(NOT_FOUND);
+    await sleep(60);
+    check('10 ...and "not found" on a field nobody can edit does not hold the save', env.saves.length === 1 && env.win._alerts.length === 0, env.win._alerts);
+  }
+  // ---- 11) typing in a "with" or "when" field: a text box, not a radio's mirror (CHO-2) --
+  // (the blur listener is the typing watch's own; the condition registry listens for input and change on every field it reads)
+  {
+    let mirror, text, old;
+    boot('AB100', Object.assign(UNIQUE(), { uniqueWith: ['arm', 'ward', 'sex'] }), null, (f, add) => {
+      // REDCap 17: the input that carries a radio's answer is type "text", beside the buttons
+      mirror = add('input', 'arm', 'text'); add('input', 'arm___radio', 'radio');
+      text = add('input', 'ward', 'text');
+      old = add('input', 'sex', 'hidden'); add('input', 'sex___radio', 'radio');
+    });
+    check('11 @UVUNIQUE: typing is watched in a text "with" field', !!(text._handlers.blur && text._handlers.blur.length));
+    check('11 @UVUNIQUE: not in the text input behind a REDCap 17 radio', !mirror._handlers.blur, Object.keys(mirror._handlers));
+    check('11 @UVUNIQUE: nor in the hidden input of an older radio', !old._handlers.blur);
+  }
+  {
+    let mirror, text;
+    boot('SP-1', Object.assign(EXISTS(), { when: "[arm] = '1' and [ward] <> ''" }), null, (f, add) => {
+      mirror = add('input', 'arm', 'text'); add('input', 'arm___radio', 'radio');
+      text = add('input', 'ward', 'text');
+    });
+    check('11 @UVEXISTS: typing is watched in a text "when" field', !!(text._handlers.blur && text._handlers.blur.length));
+    check('11 @UVEXISTS: not in the text input behind a REDCap 17 radio', !mirror._handlers.blur, Object.keys(mirror._handlers));
   }
 
   console.log(`lookup_save_hold_dom_js: ${n} checks, ${fail} failure(s)`);
