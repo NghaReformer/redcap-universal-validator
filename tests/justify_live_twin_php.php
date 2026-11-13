@@ -49,17 +49,24 @@ namespace ExternalModules {
          * entry whose fingerprint the log holds is not written again.
          */
         public function queryLogs($sql, $params) {
-            if (!preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+            // one kind of entry, or the two kinds of a finding in one query (JUS-7)
+            $several = preg_match('/^select log_id, message, fingerprint, finding where message in \(\?, \?\) and (record|record_hmac|instrument) = \?$/', $sql, $mm);
+            if (!$several && !preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
                 throw new \Exception('unexpected log query: ' . $sql);
             }
+            self::$queries[] = $sql;
+            $scope = array_pop($params);
             $rows = [];
             foreach (self::$stored as $i => $c) {
-                if ($c[0] === $params[0] && isset($c[1][$mm[1]], $c[1]['fingerprint']) && (string) $c[1][$mm[1]] === (string) $params[1]) {
-                    $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null];
+                if (in_array($c[0], $params, true) && isset($c[1][$mm[1]], $c[1]['fingerprint']) && (string) $c[1][$mm[1]] === (string) $scope) {
+                    $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null]
+                        + ($several ? ['message' => $c[0]] : []);
                 }
             }
             return new LogRows($rows);
         }
+        /** Every query the module made of its log. */
+        public static $queries = [];
         public function initializeJavascriptModuleObject() { return '<script></script>'; }
         public function getJavascriptModuleObjectName() { return 'EM.T.UV'; }
         public function getUser() { return new TestUser('tester'); }
@@ -776,6 +783,8 @@ namespace {
     $step('K3b', $m, [$J('uj_off', 'constraint:assert:[uj_off]>=90')]);
     $m = $save('XE-1', [], '20261026115500');
     $step('K3c', $m);
+    $single = array_filter(\ExternalModules\AbstractExternalModule::$queries, function ($q) { return strpos($q, 'message = ?') !== false && strpos($q, 'record = ?') !== false; });
+    check('JUS-7: no save of the run read the two kinds of entry of a finding in two queries', $single === [], array_values(array_unique($single)));
 
     // The labels, field types and sections the engine replay builds its page from.
     $pages['labels'] = $LABELS;

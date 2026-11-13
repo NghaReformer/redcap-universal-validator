@@ -744,7 +744,7 @@ class UniversalValidator extends AbstractExternalModule
             $justified = !empty($v['justified']) && isset($v['justifiedBy']);
             if ($justified) $extra['justified_by'] = (string) $v['justifiedBy'];
             // A reason written for an earlier value released nothing (JUS-1): the entry names the reason field.
-            elseif (isset($v['reasonStale']) && is_string($v['reasonStale'])) $extra['reason_stale'] = $v['reasonStale'];
+            if (!$justified && isset($v['reasonStale']) && is_string($v['reasonStale'])) $extra['reason_stale'] = $v['reasonStale'];
             $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason'],
                 $extra, $justified ? 'uvalidate-justified' : 'invalid-id-saved');
             // The person who saved is told on the next page (a reason given with @UVJUSTIFY settles it).
@@ -4563,8 +4563,8 @@ class UniversalValidator extends AbstractExternalModule
         }
         // A Text field's choices hold "SERVICE:CATEGORY" when it searches an
         // ontology (BIOPORTAL:, FHIR: and any other service REDCap adds).
-        $enum = isset($dd[$reason]['select_choices_or_calculations']) ? ltrim((string) $dd[$reason]['select_choices_or_calculations']) : '';
-        if ($type === 'text' && preg_match('/^[A-Za-z][A-Za-z0-9_-]*:/', $enum)) {
+        $service = isset($dd[$reason]['select_choices_or_calculations']) ? ltrim((string) $dd[$reason]['select_choices_or_calculations']) : '';
+        if ($type === 'text' && preg_match('/^[A-Za-z][A-Za-z0-9_-]*:/', $service)) {
             return $err('"reason" names "[' . $reason . ']", which searches an ontology'
                 . ' — its search box keeps its own text and writes its pick into the field after the save was judged; name a plain Text or Notes field.');
         }
