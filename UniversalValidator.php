@@ -575,6 +575,8 @@ class UniversalValidator extends AbstractExternalModule
             foreach (ModeRegistry::returnFields($r) as $f) $readSet[$f] = true;
             // and what a required field's branching logic reads (REQ-1)
             foreach ($this->requiredBranchingRefs($project_id, $r) as $f) $readSet[$f] = true;
+            // and what a reason field's branching logic reads (JUS-3)
+            foreach ($this->justifyBranchingRefs($project_id, $r) as $f) $readSet[$f] = true;
         }
 
         // A survey response that is still open (REQ-5). REDCap saves each page
@@ -767,6 +769,8 @@ class UniversalValidator extends AbstractExternalModule
             // open ones, naming the reason field. The reason itself is never logged.
             $justified = !empty($v['justified']) && isset($v['justifiedBy']);
             if ($justified) $extra['justified_by'] = (string) $v['justifiedBy'];
+            // A reason written for an earlier value released nothing (JUS-1): the entry names the reason field.
+            if (!$justified && isset($v['reasonStale']) && is_string($v['reasonStale'])) $extra['reason_stale'] = $v['reasonStale'];
             $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason'],
                 $extra, $justified ? 'uvalidate-justified' : 'invalid-id-saved');
             // The person who saved is told on the next page (a reason given with @UVJUSTIFY settles it).
@@ -940,7 +944,8 @@ class UniversalValidator extends AbstractExternalModule
                 if ($returns) $out['returns'] = $returns;
             }
             // judged by the branch it picked, justified by the field's reason (justifyBy is the rule's, never a branch's)
-            return $this->markJustified($out, $rule, $values, $project_id);
+            return $this->markJustified($out, $rule, $values, $project_id, $resolution, $record, $event_id,
+                isset($meta['instance']) ? $meta['instance'] : 1);
         }
 
         $type    = isset($rule['type']) && $rule['type'] !== '' ? $rule['type'] : 'single';
@@ -1025,7 +1030,7 @@ class UniversalValidator extends AbstractExternalModule
         $evaluator = ModeRegistry::evaluator($mode);
         return $this->withReturned($this->markJustified(
             $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta),
-            $rule, $values, $project_id), $ret, $rule, $meta);
+            $rule, $values, $project_id, $resolution, $record, $event_id, isset($meta['instance']) ? $meta['instance'] : 1), $ret, $rule, $meta);
     }
 
     /**
@@ -1043,8 +1048,19 @@ class UniversalValidator extends AbstractExternalModule
      * sits on that same form (annotateJustifyDictionary; @UVJUSTIFY is an
      * annotation tag only), so resolveOne finds it wherever it finds the
      * field. Drop the same-form refusal and this needs the test again.
+     *
+     * A REASON THE PERSON CANNOT SEE GIVES NONE (JUS-3). The page takes no
+     * reason from a field REDCap's branching logic hides, so a value still
+     * stored in one releases nothing here either. Logic that cannot be read
+     * leaves the reason standing: the page shows such a field.
+     *
+     * A REASON STANDS FOR THE VALUE IT WAS SAVED WITH (JUS-1). A reason last
+     * saved before the field's value was last saved was written for an
+     * earlier value (reasonOlderThanValue): the finding stays open and
+     * carries the reason field as 'reasonStale', which the audit logs as
+     * reason_stale. The page asks the same (QRIDJustifyInit, pageJustify).
      */
-    private function markJustified(array $out, array $rule, array $values, $project_id)
+    private function markJustified(array $out, array $rule, array $values, $project_id, array $resolution, $record, $event_id, $instance)
     {
         if (empty($out['invalid']) || !isset($rule['justifyBy']) || !is_array($rule['justifyBy'])) return $out;
         $codes = null;
@@ -1059,10 +1075,51 @@ class UniversalValidator extends AbstractExternalModule
                 if (isset($unread['the missing data codes']) || isset($unread['the project\'s design'])) return $out;
             }
             if (!Logic::reasonGiven($values[$reason], $codes)) continue;
+            if ($this->branchingShows($project_id, $reason, $values, $resolution) === false) continue;
+            if ($this->reasonOlderThanValue($project_id, $record, $event_id, $instance, $f, $reason)) {
+                $out['invalid'][$k]['reasonStale'] = $reason;
+                continue;
+            }
             $out['invalid'][$k]['justified'] = true;
             $out['invalid'][$k]['justifiedBy'] = $reason;
         }
         return $out;
+    }
+
+    /**
+     * Whether the reason in $reason was last saved before the value of
+     * $field, on this record, event and instance (JUS-1): REDCap's log holds
+     * a save of the field that is newer than the newest save of the reason
+     * field. REDCap logs a field only in a save that changes it, so a value
+     * and a reason written in one save carry one time and the reason stands;
+     * a value changed alone afterwards makes the reason older. Times are the
+     * log's, to the second.
+     *
+     * When the log cannot say (it cannot be read, runs past the reader's
+     * cap, does not hold the record's start, or shows no save of either
+     * field, as for a checkbox, whose options it logs one by one) the answer
+     * is no and the reason stands as given: what cannot be told is only its
+     * age, and the reason itself is on record.
+     */
+    private function reasonOlderThanValue($pid, $record, $event_id, $instance, $field, $reason)
+    {
+        if ($record === null || (string) $record === '' || $pid === null) return false;
+        try {
+            $history = $this->valueHistory($pid);
+            if (!is_object($history)) return false;
+            $newest = function ($f) use ($history, $record, $event_id, $instance) {
+                $h = $history->saves($record, $event_id, max(1, (int) $instance), $f);
+                if ($h['state'] !== 'read' || !$h['saves']) return null;
+                $ts = (string) $h['saves'][count($h['saves']) - 1]['ts'];
+                return preg_match('/^\d{14}$/D', $ts) ? $ts : null;
+            };
+            $valueAt = $newest($field);
+            if ($valueAt === null) return false;
+            $reasonAt = $newest($reason);
+            return $reasonAt !== null && strcmp($reasonAt, $valueAt) < 0;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**
@@ -3779,6 +3836,25 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * The fields the branching logic of a rule's reason fields reads
+     * (justifyBy, @UVJUSTIFY), for the audit's and the scan's read sets: a
+     * reason REDCap hides gives none (markJustified, JUS-3).
+     *
+     * @return string[]
+     */
+    private function justifyBranchingRefs($pid, array $r)
+    {
+        if (!empty($r['configError'])) return [];
+        $out = [];
+        foreach (ModeRegistry::justifyFields($r) as $f) {
+            $b = $this->branchingOf($pid, $f);
+            if ($b === null || !is_array($b['ast'])) continue;
+            foreach (Logic::referencedFields($b['ast']) as $ref) $out[(string) $ref[0]] = true;
+        }
+        return array_keys($out);
+    }
+
+    /**
      * Choices mode (@UVCHOICES): a saved value that is a currently-hidden
      * choice is the violation. The "when" gate above already skipped the
      * rule while its condition is false, so reaching here means the filter
@@ -4662,10 +4738,22 @@ class UniversalValidator extends AbstractExternalModule
      * a survey, since a hidden row gives no reason on the page (@HIDDEN-APP
      * and -PDF are allowed), not one with a @UVJUSTIFY of its own, which would let two
      * fields stand for each other, and not a write-once one, since a reason
-     * must be cleared when the value changes for another reason. A tag name
-     * inside another tag's value is text (AnnotationRules::maskValues). A
-     * field another rule returns a value to is refused in applyJustify, which
-     * sees every rule.
+     * must be cleared when the value changes for another reason. On a survey
+     * that shows one section per page it must be on the page of the field
+     * (justifyAcrossPages, which runs after every other refusal). Nor a field
+     * whose widget keeps its own copy of the text (JUS-2): the rich text
+     * editor (@RICHTEXT) writes its copy into the field after the save guard
+     * has read it, and saves markup such as "<p>&nbsp;</p>" for an empty box,
+     * which would count as a reason; an ontology search box (BioPortal, FHIR)
+     * does the same with its pick.
+     *
+     * The module's own tags are read as its parser reads them: a tag name
+     * inside another tag's value is text (AnnotationRules::maskValues).
+     * REDCap's tags are looked for in the annotation as written (JUS-4):
+     * REDCap finds an action tag wherever its name stands, also inside
+     * another tag's quoted value or an @IF, so "@CHARLIMIT=' @DEFAULT=..'"
+     * may still fill the field. A field another rule returns a value to is
+     * refused in applyJustify, which sees every rule.
      */
     private function annotateJustifyDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
@@ -4687,24 +4775,43 @@ class UniversalValidator extends AbstractExternalModule
         if ($reason === $this->recordIdFieldOf($pid)) {
             return $err('"reason" names "[' . $reason . ']", the record ID field — it is never blank, so it would release every broken value; name a field the person fills in.');
         }
-        $ann = AnnotationRules::maskValues(isset($dd[$reason]['field_annotation']) ? (string) $dd[$reason]['field_annotation'] : '');
+        $raw = isset($dd[$reason]['field_annotation']) ? (string) $dd[$reason]['field_annotation'] : '';
+        $ann = AnnotationRules::maskValues($raw);
+        // a REDCap tag found only inside another tag's value is named as such
+        $inValue = function ($tag) use ($ann) {
+            return preg_match('/@' . preg_quote($tag, '/') . '(?![\w-])/i', $ann) ? ''
+                : ' (inside another tag\'s value, where REDCap may still read it)';
+        };
         $filled = implode('|', array_map(function ($t) { return preg_quote($t, '/'); }, self::JUSTIFY_FILLED_TAGS));
-        if (preg_match('/@(' . $filled . ')(?![\w-])/i', $ann, $m)) {
-            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
+        $families = implode('|', array_map(function ($t) { return preg_quote($t, '/') . '[A-Z0-9-]*[A-Z0-9]'; }, self::JUSTIFY_FILLED_FAMILIES));
+        if (preg_match('/@(' . $families . '|' . $filled . ')(?![\w-])/i', $raw, $m)) {
+            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1]) . $inValue($m[1])
                 . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.');
         }
-        if (preg_match('/@(READONLY(?:-[A-Z]+)?)(?![\w-])/i', $ann, $m)) {
-            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1])
+        if (preg_match('/@(READONLY(?:-[A-Z]+)?)(?![\w-])/i', $raw, $m)) {
+            return $err('"reason" names "[' . $reason . ']", which has @' . strtoupper($m[1]) . $inValue($m[1])
                 . ' — the person cannot write a reason there; name a field the person fills in.');
+        }
+        if (preg_match('/@RICHTEXT(?![\w-])/i', $raw)) {
+            return $err('"reason" names "[' . $reason . ']", which has @RICHTEXT' . $inValue('RICHTEXT')
+                . ' — the rich text editor keeps its own copy of the text and saves markup for an empty box, which would count as a reason; name a plain Text or Notes field.');
+        }
+        // A Text field's choices hold "SERVICE:CATEGORY" when it searches an
+        // ontology (BIOPORTAL:, FHIR: and any other service REDCap adds).
+        $service = isset($dd[$reason]['select_choices_or_calculations']) ? ltrim((string) $dd[$reason]['select_choices_or_calculations']) : '';
+        if ($type === 'text' && preg_match('/^[A-Za-z][A-Za-z0-9_-]*:/', $service)) {
+            return $err('"reason" names "[' . $reason . ']", which searches an ontology'
+                . ' — its search box keeps its own text and writes its pick into the field after the save was judged; name a plain Text or Notes field.');
         }
         /* @HIDDEN-FORM and @HIDDEN-SURVEY too (J3A-6): where the row is
            hidden the note and the save would ask for a reason the person
            cannot write, and a reason saved elsewhere gives none there, since
            a hidden row gives no reason on the page. @HIDDEN-APP and
            @HIDDEN-PDF hide nothing on a form or a survey. */
-        if (preg_match('/@HIDDEN(-FORM|-SURVEY)?(?![\w-])/i', $ann, $m)) {
+        if (preg_match('/@HIDDEN(-FORM|-SURVEY)?(?![\w-])/i', $raw, $m)) {
             $where = !isset($m[1]) || $m[1] === '' ? 'on every page' : (strtoupper($m[1]) === '-FORM' ? 'on the data entry form' : 'on the survey');
-            return $err('"reason" names "[' . $reason . ']", which has @HIDDEN' . (isset($m[1]) ? strtoupper($m[1]) : '')
+            $tag = 'HIDDEN' . (isset($m[1]) ? strtoupper($m[1]) : '');
+            return $err('"reason" names "[' . $reason . ']", which has @' . $tag . $inValue($tag)
                 . ' — the field is hidden ' . $where . ', so the person cannot write a reason there; name a field the person fills in.');
         }
         if (preg_match('/' . preg_quote(AnnotationRules::TAG_JUSTIFY, '/') . '(?![\w-])/i', $ann)) {
@@ -4716,6 +4823,46 @@ class UniversalValidator extends AbstractExternalModule
                 . ' — a saved reason could not be cleared when the value changes for another reason; name a field the person can clear.');
         }
         return $frag;
+    }
+
+    /**
+     * @UVJUSTIFY "page" hook (JUS-1): the fields whose saved reason is older
+     * than their saved value (reasonOlderThanValue) go to the page as the
+     * rule's justifyStale, so the page asks for a new reason where the audit
+     * and the scan call the finding open. The log is read only for a saved
+     * record whose reason field holds a reason. Values that cannot be read
+     * add nothing: the page then goes by what it sees.
+     */
+    private function pageJustify(array $rules, $pid, $context, $record, $instrument, $event_id, $repeat_instance)
+    {
+        if ($record === null || $record === '' || $pid === null) return $rules;   // a new record: no reason saved yet
+        $mine = [];
+        $read = [];
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'justify') continue;
+            if (!isset($r['justifyReason']) || !is_string($r['justifyReason']) || $r['justifyReason'] === '') continue;
+            $mine[] = $i;
+            $read[$r['justifyReason']] = true;
+        }
+        if (!$mine) return $rules;
+        $resolution = [];
+        try {
+            $values = $this->readValues($pid, $record, array_keys($read), $event_id, $instrument, $repeat_instance, true, $resolution);
+            $codes = $this->missingDataCodes($pid);
+        } catch (\Throwable $e) {
+            return $rules;
+        }
+        foreach ($mine as $i) {
+            $why = $rules[$i]['justifyReason'];
+            if ((isset($resolution[$why]) ? $resolution[$why] : 'ok') !== 'ok') continue;
+            if (!isset($values[$why]) || !Logic::reasonGiven($values[$why], $codes)) continue;
+            $stale = [];
+            foreach ((isset($rules[$i]['fields']) && is_array($rules[$i]['fields'])) ? $rules[$i]['fields'] : [] as $f) {
+                if ($this->reasonOlderThanValue($pid, $record, $event_id, $repeat_instance ?: 1, (string) $f, $why)) $stale[] = (string) $f;
+            }
+            if ($stale) $rules[$i]['justifyStale'] = $stale;
+        }
+        return $rules;
     }
 
     /** The field types a @UVJUSTIFY reason may be (annotateJustifyDictionary). */
@@ -4732,6 +4879,15 @@ class UniversalValidator extends AbstractExternalModule
         'NOW-SERVER', 'NOW-UTC', 'NOW', 'TODAY-SERVER', 'TODAY-UTC', 'TODAY',
         'APPUSERNAME-APP', 'USERNAME', 'LATITUDE', 'LONGITUDE', 'DOWNLOAD-COUNT',
         'LANGUAGE-CURRENT-FORM', 'LANGUAGE-CURRENT-SURVEY'];
+
+    /**
+     * Families of such tags, by the start of their name: every tag of the
+     * family is refused, also one a later REDCap adds. MyCap writes the
+     * participant's code, join date and time zone into @MC-PARTICIPANT-*
+     * fields and a task's dates, status and result into @MC-TASK-* fields
+     * (JUS-4). The @MC-FIELD-* tags only pick how MyCap draws a field.
+     */
+    const JUSTIFY_FILLED_FAMILIES = ['MC-PARTICIPANT-', 'MC-TASK-'];
 
     /**
      * Justify mode (@UVJUSTIFY) finds nothing of its own: it marks the
@@ -4777,19 +4933,16 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * The project's log reader for @UVWRITEONCE (ValueHistory), once per
-     * request, keeping the fields the project's write-once rules lock; false
-     * when the log cannot be resolved.
+     * request, keeping the fields the project's write-once rules lock, and
+     * each field a reason stands for with its reason field (@UVJUSTIFY,
+     * reasonOlderThanValue); false when the log cannot be resolved.
      */
     private function valueHistory($pid)
     {
         if ($this->valueHistoryOverride !== null) return $this->valueHistoryOverride;
         $key = (string) (int) $pid;
         if (!array_key_exists($key, $this->valueHistoryMemo)) {
-            $fields = [];
-            foreach ($this->getRules($pid) as $r) {
-                if (!is_array($r) || (isset($r['type']) ? $r['type'] : '') !== 'writeonce') continue;
-                foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $fields[] = (string) $f;
-            }
+            $fields = $this->valueHistoryFields($pid);
             $server = new \DateTimeZone(date_default_timezone_get());
             $zone = $this->clockZone($pid);
             $h = ValueHistory::forProject(new Scan\ModuleDb($this), $pid, $fields, $server, $zone === null ? $server : $zone,
@@ -4797,6 +4950,30 @@ class UniversalValidator extends AbstractExternalModule
             $this->valueHistoryMemo[$key] = $h === null ? false : $h;
         }
         return $this->valueHistoryMemo[$key];
+    }
+
+    /**
+     * The fields the project's log reader keeps: those its write-once rules
+     * lock, and each field a reason stands for with its reason field
+     * (justifyBy, JUS-1).
+     *
+     * @return string[]
+     */
+    private function valueHistoryFields($pid)
+    {
+        $fields = [];
+        foreach ($this->getRules($pid) as $r) {
+            if (!is_array($r)) continue;
+            if (isset($r['justifyBy']) && is_array($r['justifyBy'])) {
+                foreach ($r['justifyBy'] as $f => $why) {
+                    $fields[(string) $f] = true;
+                    if (is_string($why) && $why !== '') $fields[$why] = true;
+                }
+            }
+            if ((isset($r['type']) ? $r['type'] : '') !== 'writeonce') continue;
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) $fields[(string) $f] = true;
+        }
+        return array_map('strval', array_keys($fields));
     }
 
     /**
@@ -5343,14 +5520,22 @@ class UniversalValidator extends AbstractExternalModule
         return $read !== false && isset($read['fps'][$fp]);
     }
 
-    /** What the log holds for one kind of entry and one record or instrument, read once per request. */
+    /**
+     * What the log holds for one kind of entry and one record or instrument,
+     * read once per request. The two kinds of entry of a finding
+     * (FINDING_MESSAGES) are read together, in one query (JUS-7): a save
+     * that logs a finding asks the log once for the record, as it did before
+     * @UVJUSTIFY, whether or not the project uses the tag.
+     */
     private function fingerprintsOf($message, $where, $value)
     {
-        $k = $message . "\0" . $where . "\0" . $value;
-        if (!array_key_exists($k, $this->loggedBefore)) {
-            $this->loggedBefore[$k] = $this->readFingerprints($message, $where, $value);
+        $key = function ($m) use ($where, $value) { return $m . "\0" . $where . "\0" . $value; };
+        if (!array_key_exists($key($message), $this->loggedBefore)) {
+            $together = in_array($message, self::FINDING_MESSAGES, true) ? self::FINDING_MESSAGES : [$message];
+            $read = $this->readFingerprints($together, $where, $value);
+            foreach ($together as $m) $this->loggedBefore[$key($m)] = $read === false ? false : $read[$m];
         }
-        return $this->loggedBefore[$k];
+        return $this->loggedBefore[$key($message)];
     }
 
     /** Count an entry just written, so a second save in this request skips it. */
@@ -5365,30 +5550,56 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * @return array|false ['fps' => fingerprint => true, 'newest' => finding =>
-     *         [log id, fingerprint] of its newest entry], or false when the log
-     *         cannot be read
+     * What the log holds for each of $messages, in one query when there are
+     * several ("message in (?, ?)"). A framework that refuses that query is
+     * asked once per message instead, as before JUS-7.
+     *
+     * @param string[] $messages
+     * @return array|false message => ['fps' => fingerprint => true, 'newest' =>
+     *         finding => [log id, fingerprint] of its newest entry], or false
+     *         when the log cannot be read
      */
-    private function readFingerprints($message, $where, $value)
+    private function readFingerprints(array $messages, $where, $value)
     {
-        if (!in_array($where, ['record', 'record_hmac', 'instrument'], true)) return false;
+        if (!$messages || !in_array($where, ['record', 'record_hmac', 'instrument'], true)) return false;
         if (!is_callable([$this, 'queryLogs'])) return false;
-        try {
-            $res = $this->queryLogs('select log_id, fingerprint, finding where message = ? and ' . $where . ' = ?',
-                [(string) $message, (string) $value]);
+        $messages = array_values(array_map('strval', $messages));
+        $out = [];
+        foreach ($messages as $m) $out[$m] = ['fps' => [], 'newest' => []];
+        $take = function ($res, $only) use (&$out) {
             if (!is_object($res) || !is_callable([$res, 'fetch_assoc'])) return false;
-            $out = ['fps' => [], 'newest' => []];
             $i = 0;
             while ($row = $res->fetch_assoc()) {
                 $i++;
+                $m = $only !== null ? $only : (isset($row['message']) && is_string($row['message']) ? $row['message'] : '');
+                if (!isset($out[$m])) continue;
                 if (!isset($row['fingerprint']) || !is_string($row['fingerprint']) || $row['fingerprint'] === '') continue;
                 $fp = $row['fingerprint'];
-                $out['fps'][$fp] = true;
+                $out[$m]['fps'][$fp] = true;
                 if (isset($row['finding']) && is_string($row['finding']) && $row['finding'] !== '') {
                     $order = isset($row['log_id']) && is_numeric($row['log_id']) ? (int) $row['log_id'] : $i;
                     $f = $row['finding'];
-                    if (!isset($out['newest'][$f]) || $order > $out['newest'][$f][0]) $out['newest'][$f] = [$order, $fp];
+                    if (!isset($out[$m]['newest'][$f]) || $order > $out[$m]['newest'][$f][0]) $out[$m]['newest'][$f] = [$order, $fp];
                 }
+            }
+            return true;
+        };
+        if (count($messages) > 1) {
+            try {
+                $marks = implode(', ', array_fill(0, count($messages), '?'));
+                $res = $this->queryLogs('select log_id, message, fingerprint, finding where message in (' . $marks . ') and ' . $where . ' = ?',
+                    array_merge($messages, [(string) $value]));
+                if ($take($res, null)) return $out;
+            } catch (\Throwable $e) {
+                // asked one message at a time below
+                Faults::swallow($e, 'UniversalValidator::readFingerprints');
+            }
+            foreach ($messages as $m) $out[$m] = ['fps' => [], 'newest' => []];
+        }
+        try {
+            foreach ($messages as $m) {
+                $res = $this->queryLogs('select log_id, fingerprint, finding where message = ? and ' . $where . ' = ?', [$m, (string) $value]);
+                if (!$take($res, $m)) return false;
             }
             return $out;
         } catch (\Throwable $e) {
@@ -5484,8 +5695,12 @@ class UniversalValidator extends AbstractExternalModule
      *
      * ONE ENTRY PER PROBLEM, NOT PER SAVE (PRF-9). Each entry carries a keyed
      * "fingerprint" of the record, field, event, instance, rule kind, reason
-     * and value (no value in the none mode), and an entry whose fingerprint the
-     * log already holds for the record is not written again. A standing
+     * and value, and an entry whose fingerprint the log already holds for the
+     * record is not written again. The none mode stores no value, but its
+     * fingerprint is worked out from the value too (JUS-1): another broken
+     * value at a place already logged is a new problem and gets its entry,
+     * with or without a reason. The fingerprint is keyed, so it tells a
+     * reader of the log only that the value changed. A standing
      * violation was logged on every save: one save of a 500-tag form wrote
      * 249 rows, and the next save of the same values 249 more.
      */
@@ -5520,8 +5735,7 @@ class UniversalValidator extends AbstractExternalModule
             else $entry['hmac_unavailable'] = '1';
         }
         list($where, $scope) = self::logScope($mode, $entry);
-        $parts = [$message, $record, $field, $event_id, $entry['instance'], $type, $algo, $reason,
-                  $mode === 'none' ? '' : (string) $value];
+        $parts = [$message, $record, $field, $event_id, $entry['instance'], $type, $algo, $reason, (string) $value];
         ksort($extra);
         foreach ($extra as $k => $v) { $parts[] = (string) $k; $parts[] = (string) $v; }
         $fp = $this->logFingerprint($pid, $parts);
@@ -7226,7 +7440,7 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         unset($candidate);
-        $resolved = self::applyJustify(self::markReturnClashes(Branching::resolve($out)));
+        $resolved = $this->justifyAcrossPages(self::applyJustify(self::markReturnClashes(Branching::resolve($out))), $pid);
         if ($this->dataDictionary($pid)) $this->rulesMemo[$key] = $resolved;
         return $resolved;
     }
@@ -7443,6 +7657,59 @@ class UniversalValidator extends AbstractExternalModule
             }
             if ($marks) $rules[$i]['lockReads'] = $marks;
         }
+        return $rules;
+    }
+
+    /**
+     * @UVJUSTIFY on a survey that shows one section per page (JUS-5): REDCap
+     * draws only the current page's fields, so a reason field on another
+     * page cannot be written where the value is, and the rule would hold
+     * that page with no way on. A live justify rule is refused on each field
+     * whose reason field is on another page, the field split off as
+     * applyJustify splits one, and the rules of that field lose its
+     * justifyBy entry, so the audit and the scan release nothing either. It
+     * runs last: a pair refused for another cause keeps that cause's words.
+     * The same instrument opened as a data entry form shows the error to
+     * the designer.
+     */
+    private function justifyAcrossPages(array $rules, $pid)
+    {
+        $dd = $this->dataDictionary($pid) ?: [];
+        if (!$dd) return $rules;
+        $pagesOf = [];      // form => field => page
+        $refused = [];      // field => true
+        $split = [];
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !empty($r['configError']) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'justify') continue;
+            $reason = isset($r['justifyReason']) && is_string($r['justifyReason']) ? $r['justifyReason'] : '';
+            if ($reason === '') continue;
+            $fields = isset($r['fields']) && is_array($r['fields']) ? $r['fields'] : [];
+            $keep = [];
+            $mine = [];
+            foreach ($fields as $f) {
+                $form = isset($dd[$f]['form_name']) ? (string) $dd[$f]['form_name'] : '';
+                if ($form !== '' && !isset($pagesOf[$form])) $pagesOf[$form] = $this->surveyPageNumbers($pid, $form);
+                $p = $form === '' ? [] : $pagesOf[$form];
+                if (!isset($p[(string) $f], $p[$reason]) || $p[(string) $f] === $p[$reason]) { $keep[] = $f; continue; }
+                $refused[(string) $f] = true;
+                $mine[] = array_merge($r, ['fields' => [$f], 'configError' => AnnotationRules::TAG_JUSTIFY . ' on "' . $f . '": "reason" names "[' . $reason
+                    . ']", which is on page ' . $p[$reason] . ' of the survey "' . $form . '", not on page ' . $p[(string) $f]
+                    . ' with this field — the survey shows one section per page, and the reason is given on the page where the value is entered;'
+                    . ' put both fields in one section.']);
+            }
+            if (!$mine) continue;
+            if ($keep) $rules[$i]['fields'] = $keep;
+            else $rules[$i] = array_shift($mine);
+            foreach ($mine as $x) $split[] = $x;
+        }
+        if (!$refused) return $rules;
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !isset($r['justifyBy']) || !is_array($r['justifyBy'])) continue;
+            $by = array_diff_key($r['justifyBy'], $refused);
+            if ($by) $rules[$i]['justifyBy'] = $by;
+            else unset($rules[$i]['justifyBy']);
+        }
+        foreach ($split as $r) $rules[] = $r;
         return $rules;
     }
 
@@ -11127,6 +11394,29 @@ class UniversalValidator extends AbstractExternalModule
                 . implode(', ', $other) . ' on another page than the field it checks. The survey page then shows no verdict, or shows one '
                 . 'that does not hold the save, whatever "blockSave" says; the audit after a save still checks the value. '
                 . 'Put the fields in one section to check and hold the save on the page.'];
+        }
+        return $out;
+    }
+
+    /**
+     * The survey page each field of $instrument is on (field => page, from
+     * 1), or [] when the instrument is no survey that shows one section per
+     * page or the dictionary cannot be read. Split as surveyPageFields
+     * splits: each field with a section header starts a new page, except
+     * the first field, and the record id field is on none.
+     */
+    private function surveyPageNumbers($pid, $instrument)
+    {
+        if (!$instrument || !$this->surveyBySection($pid, $instrument)) return [];
+        $dd = $this->dataDictionary($pid);
+        if (!$dd) return [];
+        $pk = (string) array_key_first($dd);
+        $out = [];
+        $n = 1;
+        foreach ($dd as $name => $meta) {
+            if (!isset($meta['form_name']) || $meta['form_name'] !== $instrument || (string) $name === $pk) continue;
+            if ($out && isset($meta['section_header']) && (string) $meta['section_header'] !== '') $n++;
+            $out[(string) $name] = $n;
         }
         return $out;
     }

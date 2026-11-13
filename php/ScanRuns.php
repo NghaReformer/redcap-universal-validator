@@ -1246,6 +1246,8 @@ trait ScanRuns
             foreach ($r['fields'] as $f) $readSet[$f] = true;
             foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
             foreach ($this->requiredBranchingRefs($pid, $r) as $f) $readSet[$f] = true;
+            // and what a reason field's branching logic reads (JUS-3)
+            foreach ($this->justifyBranchingRefs($pid, $r) as $f) $readSet[$f] = true;
             // the fields a rule returns to, when the scan compares them (RNG-1)
             if ($this->returnsComparedByScan($r, $pid)) {
                 foreach (ModeRegistry::returnFields($r) as $f) $readSet[$f] = true;

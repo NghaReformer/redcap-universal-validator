@@ -22,7 +22,15 @@
  *     refused @UVJUSTIFY on a save of its field's form only (VAL-15),
  *   - the scan marks the same findings, counts them apart from the open ones,
  *     shows the "Saved with a reason" column and sentence, and the durable
- *     rows carry the flag.
+ *     rows carry the flag,
+ *   - the review of 2026-11-13: a reason field with the rich text editor, an
+ *     ontology search or a MyCap fill tag is refused, and so is one of
+ *     REDCap's tags inside another tag's value (JUS-2, JUS-4); a reason in a
+ *     field branching logic hides gives none in the audit and the scan
+ *     (JUS-3); a reason last saved before its field's value, by REDCap's
+ *     log, leaves the finding open with reason_stale, and the page gets
+ *     justifyStale (JUS-1); a reason field on another page of a survey shown
+ *     one section per page is refused (JUS-5).
  *
  * Run:  php tests/justify_module_php.php
  */
@@ -122,6 +130,11 @@ namespace {
         public static $eventsFormsAll = [];
         public static $repeats = [];
         public static $unreadable = false;
+        /** form => ['survey_id' => id], and survey id => its settings (JUS-5) */
+        public static $formsAll = [];
+        public static $surveysAll = [];
+        public $forms;
+        public $surveys;
         public $project;
         public $longitudinal;
         public $eventInfo;
@@ -132,6 +145,8 @@ namespace {
             $this->longitudinal = self::$isLongitudinal;
             $this->eventInfo = self::$eventInfoAll;
             $this->eventsForms = self::$eventsFormsAll;
+            $this->forms = self::$formsAll;
+            $this->surveys = self::$surveysAll;
         }
         public function getRepeatingFormsEvents() { return self::$repeats; }
         public function getUniqueEventNames() {
@@ -144,6 +159,7 @@ namespace {
     require_once __DIR__ . '/../UniversalValidator.php';
     require_once __DIR__ . '/support/scan_facade.php';
     require_once __DIR__ . '/support/ArrayScanStore.php';
+    require_once __DIR__ . '/writeonce_fake_log.php';
 
     use INSPIRE\UniversalValidator\ScanColumns;
     use INSPIRE\UniversalValidator\UniversalValidator;
@@ -374,8 +390,11 @@ namespace {
     // the record ID field, a field REDCap fills in itself, a read-only field, a
     // field @HIDDEN, @HIDDEN-FORM or @HIDDEN-SURVEY hides, a field with a
     // @UVJUSTIFY of its own and a write-once field are refused, word for
-    // word, in any letter case. A tag
-    // name inside another tag's value is text (AnnotationRules::maskValues).
+    // word, in any letter case. So are a field MyCap fills in (@MC-PARTICIPANT-*,
+    // @MC-TASK-*, JUS-4) and one with the rich text editor (JUS-2). The name of
+    // one of REDCap's tags inside another tag's value is refused too, and the
+    // refusal says where it stands (JUS-4): REDCap reads an action tag wherever
+    // it is written. The module's own tags are read as its parser reads them.
     $R = function ($reason) use ($J) { return '@UVRANGE={"hard":[0,10]} ' . $J($reason); };
     $FILLED = ['ct_why' => '@CALCTEXT(if([r_ct]>10,"auto","auto"))', 'cd_why' => '@CALCDATE([r_cd],1,"d")', 'df_why' => '@DEFAULT="n/a"',
         'sv_why' => '@SETVALUE="checked"', 'pf_why' => '@PREFILL="checked"', 'now_why' => '@NOW', 'nows_why' => '@NOW-SERVER',
@@ -388,16 +407,30 @@ namespace {
         // lower case, as REDCap reads its own tags
         'dfl_why' => '@default="n/a"', 'rol_why' => '@readonly-survey', 'hdl_why' => '@hidden', 'wol_why' => '@uvwriteonce', 'hfl_why' => '@hidden-form',
         // a real tag after a value that holds a tag name
-        'tv_why' => "@PLACEHOLDER='not @DEFAULT' @DEFAULT='n/a'"];
-    // reason fields that stay: the forms of @HIDDEN that hide nothing on a form or a survey, and tag names inside another tag's value
-    $KEPT = ['ha_why' => '@HIDDEN-APP', 'hp_why' => '@HIDDEN-PDF',
-        'tm_why' => '@UVREQUIRED={"message":"Say why; this field is the @UVJUSTIFY reason of [r_tm]. Not @UVWRITEONCE, not @HIDDEN."}',
-        'tp_why' => "@PLACEHOLDER='e.g. scale reset, not @DEFAULT settings'"];
+        'tv_why' => "@PLACEHOLDER='not @DEFAULT' @DEFAULT='n/a'",
+        // MyCap writes these itself (JUS-4), and the rich text editor saves markup for an empty box (JUS-2)
+        'mcp_why' => '@MC-PARTICIPANT-CODE', 'mcj_why' => '@PLACEHOLDER="x" @MC-PARTICIPANT-JOINDATE-UTC', 'mct_why' => '@mc-task-status',
+        'rt_why' => '@RICHTEXT', 'rtl_why' => '@CHARLIMIT=200 @richtext',
+        // a tag an @IF may pick
+        'ifr_why' => "@IF([r_ok]='1', '@READONLY', '')"];
+    // one of REDCap's tags inside another tag's value: REDCap may still read it there (JUS-4)
+    $INVALUE = ['tm_why' => '@UVREQUIRED={"message":"Say why; this field is the @UVJUSTIFY reason of [r_tm]. Not @UVWRITEONCE, not @HIDDEN."}',
+        'tp_why' => "@PLACEHOLDER='e.g. scale reset, not @DEFAULT settings'",
+        'cl_why' => "@CHARLIMIT=' @DEFAULT=\"auto\" '",
+        'ph_why' => '@PLACEHOLDER="x @HIDDEN-SURVEY y"', 'prt_why' => "@PLACEHOLDER='@RICHTEXT'", 'pmc_why' => "@PLACEHOLDER='@MC-TASK-UUID'"];
+    // reason fields that stay: the forms of @HIDDEN that hide nothing on a form or a survey, a MyCap tag that only
+    // picks how a field is drawn, and the module's own tag names inside another tag's value
+    $KEPT = ['ha_why' => '@HIDDEN-APP', 'hp_why' => '@HIDDEN-PDF', 'mcf_why' => '@MC-FIELD-TEXT-BARCODE', 'bc_why' => '@BARCODE-APP',
+        'tu_why' => '@UVREQUIRED={"message":"Say why; this field is the @UVJUSTIFY reason of [r_tu], not a @UVWRITEONCE field."}'];
     $BADR = ['record_id' => f('visit_form'), 'r_rid' => f('visit_form', $R('record_id'), 'integer')];
-    foreach ($FILLED + $KEPT as $why => $tag) {
+    foreach ($FILLED + $INVALUE + $KEPT as $why => $tag) {
         $BADR['r_' . substr($why, 0, -4)] = f('visit_form', $R($why), 'integer');
-        $BADR[$why] = f('visit_form', $tag);
+        $BADR[$why] = f('visit_form', $tag, '', strpos($why, 'rt') === 0 ? 'notes' : 'text');
     }
+    // a Text field that searches an ontology keeps its own text (JUS-2); a dropdown's choices are no ontology
+    $BADR += ['r_on' => f('visit_form', $R('on_why'), 'integer'), 'on_why' => f('visit_form', '', '', 'text', 'BIOPORTAL:ICD10'),
+        'r_fh' => f('visit_form', $R('fh_why'), 'integer'), 'fh_why' => f('visit_form', '', '', 'text', ' FHIR:condition'),
+        'r_dd' => f('visit_form', $R('dd_why'), 'integer'), 'dd_why' => f('visit_form', '', '', 'dropdown', 'a:1, Scale reset | b, Other')];
     $BADR += [
         // each the other's reason; and a chain: ca's reason cb is itself paired with cc
         'ma' => f('visit_form', $R('mb'), 'integer'), 'mb' => f('visit_form', $R('ma'), 'integer'),
@@ -416,23 +449,31 @@ namespace {
     };
     check('the record ID field is no reason field (got ' . $berr('r_rid') . ')', $berr('r_rid') === '@UVJUSTIFY on "r_rid": "reason" names "[record_id]", the record ID field'
         . ' — it is never blank, so it would release every broken value; name a field the person fills in.');
-    foreach ($FILLED as $why => $tag) {
+    foreach ($FILLED + $INVALUE as $why => $tag) {
         $f = 'r_' . substr($why, 0, -4);
         // the last tag the annotation holds is the one refused (tv_why: the real @DEFAULT after the placeholder)
         $name = strtoupper(preg_replace('/^.*@([A-Z-]+).*$/si', '$1', $tag));
         $head = '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why . ']", ';
+        $has = 'which has @' . $name . (isset($INVALUE[$why]) ? ' (inside another tag\'s value, where REDCap may still read it)' : '');
         if (strpos($name, 'READONLY') === 0) {
-            $want = $head . 'which has @' . $name . ' — the person cannot write a reason there; name a field the person fills in.';
+            $want = $head . $has . ' — the person cannot write a reason there; name a field the person fills in.';
         } elseif (strpos($name, 'HIDDEN') === 0) {
             $where = ['HIDDEN' => 'on every page', 'HIDDEN-FORM' => 'on the data entry form', 'HIDDEN-SURVEY' => 'on the survey'][$name];
-            $want = $head . 'which has @' . $name . ' — the field is hidden ' . $where . ', so the person cannot write a reason there; name a field the person fills in.';
+            $want = $head . $has . ' — the field is hidden ' . $where . ', so the person cannot write a reason there; name a field the person fills in.';
         } elseif ($name === 'UVWRITEONCE') {
             $want = $head . 'which carries @UVWRITEONCE — a saved reason could not be cleared when the value changes for another reason; name a field the person can clear.';
+        } elseif ($name === 'RICHTEXT') {
+            $want = $head . $has . ' — the rich text editor keeps its own copy of the text and saves markup for an empty box, which would count as a reason; name a plain Text or Notes field.';
         } else {
-            $want = $head . 'which has @' . $name . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.';
+            $want = $head . $has . ' — REDCap fills it in, so it would hold a reason nobody wrote; name a field the person fills in.';
         }
         check('a reason field with ' . $tag . ' is refused (got ' . $berr($f) . ')', $berr($f) === $want);
     }
+    foreach (['r_on' => 'on_why', 'r_fh' => 'fh_why'] as $f => $why) {
+        check('a reason field that searches an ontology is refused (got ' . $berr($f) . ')', $berr($f) === '@UVJUSTIFY on "' . $f . '": "reason" names "[' . $why
+            . ']", which searches an ontology — its search box keeps its own text and writes its pick into the field after the save was judged; name a plain Text or Notes field.');
+    }
+    check('a dropdown whose first choice holds a colon is no ontology (got ' . $berr('r_dd') . ')', justifyOn($bp, 'r_dd') !== null && $berr('r_dd') === '');
     foreach ($KEPT as $why => $tag) {
         $f = 'r_' . substr($why, 0, -4);
         check('a reason field with ' . $tag . ' is kept (got ' . $berr($f) . ')', justifyOn($bp, $f) !== null && $berr($f) === '');
@@ -446,10 +487,12 @@ namespace {
     // the audit: a broken value with a refused reason field stays open, whatever the field holds
     $brow = ['record_id' => '2', 'r_rid' => '99', 'ma' => '99', 'mb' => '99', 'ca' => '99', 'cb' => '99', 'cc' => 'scale reads high',
         'la' => '99', 'lb' => '99', 'r_ok' => '99', 'ok_why' => 'scale reads high'];
-    foreach ($FILLED + $KEPT as $why => $tag) { $brow['r_' . substr($why, 0, -4)] = '99'; $brow[$why] = 'auto'; }
+    foreach ($FILLED + $INVALUE + $KEPT as $why => $tag) { $brow['r_' . substr($why, 0, -4)] = '99'; $brow[$why] = 'auto'; }
+    // the markup the rich text editor saves for an empty box, and an ontology pick
+    $brow = array_merge($brow, ['rt_why' => '<p>&nbsp;</p>', 'r_on' => '99', 'on_why' => 'A00', 'r_fh' => '99', 'fh_why' => 'A00']);
     $m = save($BADR, ['2' => [351 => $brow]], 'visit_form');
     $open = [];
-    foreach (array_merge(['r_rid', 'ma', 'mb', 'ca', 'la', 'lb'], array_map(function ($w) { return 'r_' . substr($w, 0, -4); }, array_keys($FILLED))) as $f) {
+    foreach (array_merge(['r_rid', 'ma', 'mb', 'ca', 'la', 'lb', 'r_on', 'r_fh'], array_map(function ($w) { return 'r_' . substr($w, 0, -4); }, array_keys($FILLED + $INVALUE))) as $f) {
         if (audit($m, $f) !== ['invalid-id-saved:range:hard-high']) $open[$f] = audit($m, $f);
     }
     check('a refused reason field releases nothing in the audit (got ' . json_encode($open) . ')', $open === []);
@@ -670,6 +713,128 @@ namespace {
     foreach ($res['violations'] as $v) $hits[] = ($v['instance'] ?? '?') . ':' . (empty($v['justified']) ? 'open' : 'justified');
     sort($hits);
     check('scan: each instance with its own reason (got ' . json_encode($hits) . ')', $hits === ['1:justified', '2:open']);
+
+    // ---- a reason the person cannot see gives none (JUS-3) ---------------------------------
+    // The page takes no reason from a row REDCap's branching logic hides, so the
+    // audit and the scan take none from the value still stored there.
+    classic();
+    \Project::$codes = "UNK, Unknown";
+    $HD = ['record_id' => f('enrol_form'), 'ask' => f('visit_form', '', '', 'yesno'), 'site' => f('enrol_form'),
+        'wt' => f('visit_form', '@UVRANGE={"hard":[40,200]} ' . $J('wt_why'), 'number'),
+        'wt_why' => f('visit_form') + ['branching_logic' => '[ask] = "1"']];
+    $hrow = function ($ask) { return ['2' => [351 => ['record_id' => '2', 'ask' => $ask, 'wt' => '30', 'wt_why' => 'child, not adult']]]; };
+    $m = save($HD, $hrow('1'), 'visit_form');
+    check('JUS-3: a reason whose row branching logic shows stands (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['uvalidate-justified:range:hard-low:wt_why']);
+    $m = save($HD, $hrow('0'), 'visit_form');
+    check('JUS-3: a reason whose row branching logic hides gives none in the audit (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['invalid-id-saved:range:hard-low']);
+    $m = save($HD, $hrow(''), 'visit_form');
+    check('JUS-3: ... nor while the field the logic reads is blank (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['invalid-id-saved:range:hard-low']);
+    $hscan = function ($dict, $data) use ($FULL) {
+        $out = [];
+        foreach (mod($dict, $data, $FULL)->scanProject(PID)['violations'] as $v) if ($v['field'] === 'wt') $out[] = empty($v['justified']) ? 'open' : 'justified';
+        return $out;
+    };
+    check('JUS-3: the scan reads the logic\'s field and says the same (got ' . json_encode([$hscan($HD, $hrow('1')), $hscan($HD, $hrow('0'))]) . ')',
+        $hscan($HD, $hrow('1')) === ['justified'] && $hscan($HD, $hrow('0')) === ['open']);
+    // logic the module cannot read: the page shows the field, so the reason stands
+    $HU = $HD;
+    $HU['wt_why']['branching_logic'] = '[ask] = ';
+    $m = save($HU, $hrow('0'), 'visit_form');
+    check('JUS-3: branching logic that cannot be read leaves the reason standing (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['uvalidate-justified:range:hard-low:wt_why']);
+
+    // ---- a reason stands for the value it was saved with (JUS-1) ----------------------------
+    // REDCap's log holds a save of the field newer than the newest save of its
+    // reason field: the reason was written for an earlier value. The finding
+    // stays open, the entry names the reason field as reason_stale, the scan
+    // counts it open and the page is told (justifyStale).
+    $JD = ['record_id' => f('enrol_form'), 'wt' => f('visit_form', '@UVRANGE={"hard":[40,200]} ' . $J('wt_why'), 'number'), 'wt_why' => f('visit_form'),
+        'ht' => f('visit_form', '@UVRANGE={"hard":[40,200]} ' . $J('wt_why'), 'number')];
+    $withLog = function (array $data, array $rows) use ($JD, $FULL) {
+        $m = mod($JD, $data, $FULL);
+        $call = function ($name) use ($m) { $r = new \ReflectionMethod(get_class($m), $name); $r->setAccessible(true); return $r->invoke($m, PID); };
+        $db = new \FakeHistoryLog();
+        foreach ($rows as $r) $db->rows[] = [$r[0], PID, '2', 351, $r[1], $r[2], 'redcap_data', isset($r[3]) ? $r[3] : 'UPDATE', 'nurse'];
+        $utc = new \DateTimeZone('UTC');
+        $p = new \ReflectionProperty(get_class($m), 'valueHistoryOverride');
+        $p->setAccessible(true);
+        $p->setValue($m, \INSPIRE\UniversalValidator\ValueHistory::forProject($db, PID, $call('valueHistoryFields'), $utc, $utc, $call('valueHistoryOptions')));
+        return $m;
+    };
+    $kept = (function () use ($JD, $FULL) {
+        $m = mod($JD, [], $FULL);
+        $r = new \ReflectionMethod(get_class($m), 'valueHistoryFields');
+        $r->setAccessible(true);
+        $f = $r->invoke($m, PID);
+        sort($f);
+        return $f;
+    })();
+    check('JUS-1: the log reader keeps each field a reason stands for and its reason field (got ' . json_encode($kept) . ')', $kept === ['ht', 'wt', 'wt_why']);
+    $A = [1, '20261001090000', "record_id = '2',\nwt = '30',\nwt_why = 'child, not adult'", 'INSERT'];
+    $B = [2, '20261002090000', "wt = '20'"];
+    $C = [3, '20261003090000', "wt_why = 'weighed again, still a child'"];
+    $jrow = function ($wt, $why) { return ['2' => [351 => ['record_id' => '2', 'wt' => $wt, 'wt_why' => $why]]]; };
+    $jsave = function ($m) { $m->redcap_save_record(PID, '2', 'visit_form', 351, null, null, null, 1); return $m; };
+    $m = $jsave($withLog($jrow('30', 'child, not adult'), [$A]));
+    check('JUS-1: a value and a reason saved together: the reason stands (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['uvalidate-justified:range:hard-low:wt_why']);
+    $m = $jsave($withLog($jrow('20', 'child, not adult'), [$A, $B]));
+    check('JUS-1: another broken value saved under the old reason stays open (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['invalid-id-saved:range:hard-low']);
+    $e = logged($m, 'invalid-id-saved');
+    check('JUS-1: ... and its entry names the reason field as reason_stale, never as justified_by (got ' . json_encode($e) . ')',
+        count($e) === 1 && ($e[0]['reason_stale'] ?? null) === 'wt_why' && !isset($e[0]['justified_by']) && strpos(json_encode($e), 'child') === false);
+    $sv = [];
+    foreach ($withLog($jrow('20', 'child, not adult'), [$A, $B])->scanProject(PID)['violations'] as $v) $sv[] = $v['field'] . ':' . (empty($v['justified']) ? 'open' : 'justified');
+    check('JUS-1: the scan counts it open (got ' . json_encode($sv) . ')', $sv === ['wt:open']);
+    $m = $jsave($withLog($jrow('20', 'weighed again, still a child'), [$A, $B, $C]));
+    check('JUS-1: a reason saved after the value stands again (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['uvalidate-justified:range:hard-low:wt_why']);
+    check('JUS-1: ... with no reason_stale in its entry', !isset(logged($m, 'uvalidate-justified')[0]['reason_stale']));
+    // one reason field for two fields: each field goes by its own newest save
+    $D = [4, '20261004090000', "ht = '10'"];
+    $m = $jsave($withLog(['2' => [351 => ['record_id' => '2', 'wt' => '20', 'wt_why' => 'weighed again, still a child', 'ht' => '10']]], [$A, $B, $C, $D]));
+    check('JUS-1: a shared reason stands for the field saved before it, not for the one saved after (got ' . json_encode([audit($m, 'wt'), audit($m, 'ht')]) . ')',
+        audit($m, 'wt') === ['uvalidate-justified:range:hard-low:wt_why'] && audit($m, 'ht') === ['invalid-id-saved:range:hard-low']);
+    // what the log cannot say leaves the reason standing: no start of the record, no save of the reason field, no log at all
+    $m = $jsave($withLog($jrow('20', 'child, not adult'), [$B]));
+    check('JUS-1: a log without the record\'s start leaves the reason standing (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['uvalidate-justified:range:hard-low:wt_why']);
+    $m = $jsave($withLog($jrow('20', 'child, not adult'), [[1, '20261001090000', "record_id = '2',\nwt = '30'", 'INSERT'], $B]));
+    check('JUS-1: ... and so does a log that shows no save of the reason field (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['uvalidate-justified:range:hard-low:wt_why']);
+    $m = save($JD, $jrow('20', 'child, not adult'), 'visit_form');
+    check('JUS-1: ... and a log that cannot be opened (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['uvalidate-justified:range:hard-low:wt_why']);
+    // the page is told which fields' saved reason is older than their saved value
+    $stale = function ($m) { $j = justifyOn(page($m, '2', 'visit_form'), 'wt'); return $j === null ? 'no rule' : ($j['justifyStale'] ?? null); };
+    check('JUS-1: the page gets justifyStale for the field saved after its reason (got ' . json_encode($stale($withLog($jrow('20', 'child, not adult'), [$A, $B]))) . ')',
+        $stale($withLog($jrow('20', 'child, not adult'), [$A, $B])) === ['wt']);
+    check('JUS-1: ... and none while the reason is as new as the value, or newer',
+        $stale($withLog($jrow('30', 'child, not adult'), [$A])) === null && $stale($withLog($jrow('20', 'weighed again, still a child'), [$A, $B, $C])) === null);
+    check('JUS-1: ... none for a blank reason or a Missing Data Code, which the page asks for anyway',
+        $stale($withLog($jrow('20', ''), [$A, $B])) === null && $stale($withLog($jrow('20', 'UNK'), [$A, $B])) === null);
+    $pn = page($withLog($jrow('20', 'child, not adult'), [$A, $B]), null, 'visit_form');
+    check('JUS-1: ... and none on a new record', ($j = justifyOn($pn, 'wt')) !== null && !isset($j['justifyStale']));
+
+    // ---- a reason field on another page of a survey (JUS-5) ---------------------------------
+    // A survey that shows one section per page draws only the current page's
+    // fields, so a reason field in a later section cannot be written where the
+    // value is: the rule would hold that page with no way on.
+    $SD = ['record_id' => f('enrol_form'), 'wt' => f('visit_form', '@UVRANGE={"hard":[40,200]} ' . $J('wt_why'), 'number'),
+        'note1' => f('visit_form'), 'wt_why' => f('visit_form') + ['section_header' => 'Reasons'],
+        'ht' => f('visit_form', '@UVRANGE={"hard":[40,200]} ' . $J('ht_why'), 'number') + ['section_header' => 'Height'], 'ht_why' => f('visit_form')];
+    $serr = function ($field) use ($SD, $FULL) {
+        $p = page(mod($SD, ['2' => [351 => ['record_id' => '2']]], $FULL), '2', 'visit_form');
+        foreach (rulesOn($p, $field) as $r) if (!empty($r['configError'])) return (string) $r['configError'];
+        return justifyOn($p, $field) === null ? 'no rule' : '';
+    };
+    \Project::$formsAll = ['visit_form' => ['survey_id' => 7]];
+    \Project::$surveysAll = [7 => ['question_by_section' => 1]];
+    check('JUS-5: a reason field on another page of a survey shown one section per page is refused (got ' . $serr('wt') . ')',
+        $serr('wt') === '@UVJUSTIFY on "wt": "reason" names "[wt_why]", which is on page 2 of the survey "visit_form", not on page 1 with this field'
+            . ' — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section.');
+    check('JUS-5: ... a pair in one section is kept (got ' . $serr('ht') . ')', $serr('ht') === '');
+    $m = save($SD, ['2' => [351 => ['record_id' => '2', 'wt' => '30', 'wt_why' => 'child, not adult']]], 'visit_form');
+    check('JUS-5: ... and the refused pair releases nothing in the audit (got ' . json_encode(audit($m, 'wt')) . ')', audit($m, 'wt') === ['invalid-id-saved:range:hard-low']);
+    \Project::$surveysAll = [7 => ['question_by_section' => 0]];
+    check('JUS-5: a survey shown on one page keeps the pair (got ' . $serr('wt') . ')', $serr('wt') === '');
+    \Project::$formsAll = [];
+    \Project::$surveysAll = [];
+    check('JUS-5: a form that is no survey keeps the pair (got ' . $serr('wt') . ')', $serr('wt') === '');
 
     fwrite(STDOUT, "justify_module_php: $n checks, $fail failure(s)\n");
     exit($fail ? 1 : 0);

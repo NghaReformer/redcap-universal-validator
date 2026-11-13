@@ -34,7 +34,12 @@
  *   - a reason label holding "$&" or "$$" shows as written, and the note
  *     under an autocomplete dropdown sits after its text box;
  *   - the reason label leaves out REDCap's icons cell (.rc-field-icons),
- *     where the Missing Data Code menu sits (LIVE-D3).
+ *     where the Missing Data Code menu sits (LIVE-D3);
+ *   - a reason stands for the value it was saved with (JUS-1): while the
+ *     reason is the one the page opened with, a field whose value was
+ *     changed here, or that the server names in justifyStale, is held again
+ *     and its note and save message ask for a new reason; a reason changed
+ *     on this page releases every field paired with it.
  *
  * Run:  node tests/justify_dom_js.cjs
  */
@@ -671,6 +676,78 @@ function checkboxOption(field, code) {
     save(env) === 'held' && /• wt \(or give a reason in “wt_why”\)/.test(said(env)), said(env));
   type(env, why, 'scale recalibrated');
   check('... and the reason releases it', save(env) === 'saved', said(env));
+}
+
+// ---- 19) a reason stands for the value it was saved with (JUS-1) ----------------------------
+// REDCap logs a field only when a save changes it, so the audit and the scan
+// call a reason older than its value no reason (reasonOlderThanValue). The
+// page asks the same of what it is about to save.
+const NOTE_STALE = (label) => 'The reason in “' + label + '” was given for an earlier value. Fix this value, or change the reason to say why this value is right.';
+{
+  const wt = text('wt', '30'), why = text('wt_why', 'patient on steroids');
+  const env = boot([wt, why], { rules: [J(['wt'], 'wt_why'), LIGHT('hard')] });
+  check('JUS-1 the saved value with its saved reason: the save goes through', save(env) === 'saved' && shown(env, 'wt', 'j') === '');
+  type(env, wt, '3');
+  check('JUS-1 another broken value under the saved reason: held', save(env) === 'held');
+  check('JUS-1 ... the message asks for a new reason', /• wt \(or give a new reason in “wt_why”\)/.test(said(env)), said(env));
+  check('JUS-1 ... and the note says whose reason that was', shown(env, 'wt', 'j') === NOTE_STALE('wt_why'), shown(env, 'wt', 'j'));
+  type(env, why, 'patient on steroids ');
+  check('JUS-1 a space after the saved reason is the saved reason still: held', save(env) === 'held' && shown(env, 'wt', 'j') === NOTE_STALE('wt_why'));
+  type(env, why, 'weighed with the cast off');
+  check('JUS-1 a new reason releases the new value', save(env) === 'saved' && shown(env, 'wt', 'j') === '');
+  type(env, why, 'patient on steroids');
+  check('JUS-1 the saved reason typed back is the old reason again: held', save(env) === 'held' && shown(env, 'wt', 'j') === NOTE_STALE('wt_why'));
+  type(env, wt, '30');
+  check('JUS-1 the saved value put back stands with its saved reason', save(env) === 'saved' && shown(env, 'wt', 'j') === '');
+  type(env, wt, '3');
+  type(env, why, '');
+  check('JUS-1 the reason cleared: the plain note, not the stale one', save(env) === 'held' && shown(env, 'wt', 'j') === NOTE('wt_why')
+    && /\(or give a reason in “wt_why”\)/.test(said(env)), said(env));
+}
+{
+  // the rule's own message asks for a reason the person sees written: the stale note takes its place
+  const wt = text('wt', '30'), why = text('wt_why', 'patient on steroids');
+  const env = boot([wt, why], { rules: [J(['wt'], 'wt_why', { message: 'Say why this weight is right.' }), LIGHT('confirm')] });
+  type(env, wt, '3');
+  check('JUS-1 "confirm": asked again for the new value', save(env) === 'asked' && /give a new reason in/.test(said(env)), said(env));
+  check('JUS-1 ... the stale note, not the rule\'s message', shown(env, 'wt', 'j') === NOTE_STALE('wt_why'), shown(env, 'wt', 'j'));
+}
+{
+  const wt = text('wt', '30'), why = text('wt_why', '');
+  const env = boot([wt, why], { rules: [J(['wt'], 'wt_why'), LIGHT('hard')] });
+  type(env, why, 'scale recalibrated');
+  type(env, wt, '3');
+  check('JUS-1 a reason written on this page stands for the value saved with it', save(env) === 'saved' && shown(env, 'wt', 'j') === '');
+}
+{
+  const wt = text('wt', '30'), why = text('wt_why', 'UNK');
+  const env = boot([wt, why], { missingCodes: ['UNK'], rules: [J(['wt'], 'wt_why'), LIGHT('hard')] });
+  type(env, wt, '3');
+  check('JUS-1 a saved Missing Data Code was no reason: the plain note', save(env) === 'held' && shown(env, 'wt', 'j') === NOTE('wt_why'));
+  type(env, why, 'weighed with the cast off');
+  check('JUS-1 ... and a reason written over it stands', save(env) === 'saved');
+}
+{
+  // the server found the saved reason older than the saved value (pageJustify)
+  const wt = text('wt', '30'), ht = text('ht', '30'), why = text('why', 'patient on steroids');
+  const env = boot([wt, ht, why], { rules: [LIGHT('hard'), { type: 'constraint', fields: ['ht'], assert: '[ht]>40', blockSave: 'hard' },
+    J(['wt', 'ht'], 'why', { justifyStale: ['wt'] })] });
+  check('JUS-1 a saved reason older than the saved value: held as the page opens', save(env) === 'held');
+  check('JUS-1 ... for that field only', /• wt \(or give a new reason in “why”\)/.test(said(env)) && !/• ht/.test(said(env)), said(env));
+  check('JUS-1 ... and the note is shown at once', shown(env, 'wt', 'j') === NOTE_STALE('why') && shown(env, 'ht', 'j') === '');
+  type(env, ht, '3');
+  check('JUS-1 the other field changed under the shared reason: both held', save(env) === 'held' && (said(env).match(/give a new reason in/g) || []).length === 2, said(env));
+  type(env, why, 'both measured after dialysis');
+  check('JUS-1 one new reason releases both', save(env) === 'saved' && shown(env, 'wt', 'j') === '' && shown(env, 'ht', 'j') === '');
+}
+{
+  // a reason picked in a dropdown: the same pick is the saved reason
+  const wt = text('wt', '30'), why = select('wt_why', ['', '1', '2'], '1');
+  const env = boot([wt, why], { rules: [LIGHT('hard'), J(['wt'], 'wt_why')] });
+  type(env, wt, '3');
+  check('JUS-1 a dropdown reason: the saved pick is held for a new value', save(env) === 'held');
+  why.value = '2'; why.fire('change'); flush();
+  check('JUS-1 ... another pick releases it', save(env) === 'saved');
 }
 
 console.log('justify_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

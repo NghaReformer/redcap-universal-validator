@@ -55,17 +55,24 @@ namespace ExternalModules {
          * entry whose fingerprint the log holds is not written again.
          */
         public function queryLogs($sql, $params) {
-            if (!preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
+            // one kind of entry, or the two kinds of a finding in one query (JUS-7)
+            $several = preg_match('/^select log_id, message, fingerprint, finding where message in \(\?, \?\) and (record|record_hmac|instrument) = \?$/', $sql, $mm);
+            if (!$several && !preg_match('/^select log_id, fingerprint, finding where message = \? and (record|record_hmac|instrument) = \?$/', $sql, $mm)) {
                 throw new \Exception('unexpected log query: ' . $sql);
             }
+            self::$queries[] = $sql;
+            $scope = array_pop($params);
             $rows = [];
             foreach (self::$stored as $i => $c) {
-                if ($c[0] === $params[0] && isset($c[1][$mm[1]], $c[1]['fingerprint']) && (string) $c[1][$mm[1]] === (string) $params[1]) {
-                    $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null];
+                if (in_array($c[0], $params, true) && isset($c[1][$mm[1]], $c[1]['fingerprint']) && (string) $c[1][$mm[1]] === (string) $scope) {
+                    $rows[] = ['log_id' => $i + 1, 'fingerprint' => $c[1]['fingerprint'], 'finding' => $c[1]['finding'] ?? null]
+                        + ($several ? ['message' => $c[0]] : []);
                 }
             }
             return new LogRows($rows);
         }
+        /** Every query the module made of its log. */
+        public static $queries = [];
         public function initializeJavascriptModuleObject() { return '<script></script>'; }
         public function getJavascriptModuleObjectName() { return 'EM.T.UV'; }
         public function getUser() { return new TestUser('tester'); }
@@ -126,8 +133,13 @@ namespace {
             382 => ['xe_unsched'],
             383 => ['xe_visit', 'xe_close'],
         ];
+        /** The instrument is a survey that shows one section per page (Setup 3): surveyBySection reads these. */
+        public $forms = ['uv_justify_test' => ['survey_id' => 77]];
+        public $surveys = [77 => ['question_by_section' => 1]];
         public function __construct($pid) {
             if (self::$scratch) {
+                $this->forms = [];
+                $this->surveys = [];
                 $this->project = ['missing_data_codes' => ''];
                 $this->longitudinal = false;
                 $this->eventInfo = [900 => ['unique_event_name' => 'event_1_arm_1', 'arm_num' => 1]];
@@ -175,7 +187,9 @@ namespace {
         $FIX[$f] = ['form_name' => $r['Form Name'], 'field_type' => $r['Field Type'],
             'field_annotation' => $r['Field Annotation'], 'select_choices_or_calculations' => $r['Choices, Calculations, OR Slider Labels'],
             'text_validation_type_or_show_slider_number' => $r['Text Validation Type OR Show Slider Number'],
-            'branching_logic' => $r['Branching Logic (Show field only if...)']];
+            'branching_logic' => $r['Branching Logic (Show field only if...)'],
+            // each section header starts a survey page (JUS-5)
+            'section_header' => $r['Section Header']];
         $LABELS[$f] = $r['Field Label'];
         if ($r['Section Header'] !== '') $section = $r['Section Header'];
         $SECTIONS[$f] = $section;
@@ -226,7 +240,13 @@ namespace {
             $utc = new \DateTimeZone('UTC');
             $vo = new \ReflectionMethod(get_class($m), 'valueHistoryOptions');
             $vo->setAccessible(true);
-            setPrivate($m, 'valueHistoryOverride', ValueHistory::forProject($db, 149, $WO, $utc, $utc, $vo->invoke($m, 149)));
+            // the fields the module itself keeps: the write-once field, and each field a
+            // reason stands for with its reason field (JUS-1)
+            $vf = new \ReflectionMethod(get_class($m), 'valueHistoryFields');
+            $vf->setAccessible(true);
+            $kept = $vf->invoke($m, 149);
+            if (array_diff($WO, $kept)) throw new \RuntimeException('the log reader does not keep ' . implode(', ', array_diff($WO, $kept)));
+            setPrivate($m, 'valueHistoryOverride', ValueHistory::forProject($db, 149, $kept, $utc, $utc, $vo->invoke($m, 149)));
             setPrivate($m, 'roleBookOverride', ['roles' => [], 'users' => []]);
             setPrivate($m, 'clockOverride', \INSPIRE\UniversalValidator\UniversalValidator::clockStamp(new \DateTimeImmutable('2026-10-26 12:00:00', $utc)));
         }
@@ -275,10 +295,10 @@ namespace {
         sort($out);
         return $out;
     }
-    /** The rule problems a save logged for the good fields (the uj_bad_* and uj_rr ones are configuration errors). */
+    /** The rule problems a save logged for the good fields (the uj_bad_*, uj_rr and uj_far ones are configuration errors). */
     function problems($m) {
         $out = [];
-        foreach ($m->logCalls as $c) if ($c[0] === 'uvalidate-unconfigurable' && !preg_match('/uj_bad_|uj_rr/', (string) $c[1]['fields'])) $out[] = $c[1];
+        foreach ($m->logCalls as $c) if ($c[0] === 'uvalidate-unconfigurable' && !preg_match('/uj_bad_|uj_rr|uj_far/', (string) $c[1]['fields'])) $out[] = $c[1];
         return $out;
     }
     /** Whether any log entry of the save holds $text: a reason is never logged. */
@@ -345,13 +365,16 @@ namespace {
         'uj_bad_self' => '@UVJUSTIFY on "uj_bad_self": "reason" names this field itself — name the field where the reason is written, e.g. "[uj_bad_self_reason]".',
         'uj_bad_none' => '@UVJUSTIFY on "uj_bad_none": no rule a reason can stand for checks this field — give it a rule of @UVALIDATE, @UVASSERT, @UVREQUIRED, @UVCHOICES, @UVWINDOW, @UVEXISTS, @UVRANGE or @UVDELTA (a reason does not stand for @UVUNIQUE or @UVWRITEONCE).',
         'uj_bad_twice' => 'field "uj_bad_twice" is given @UVJUSTIFY 2 times — this tag takes no "when" condition, so keep one.',
+        // its reason field is in the next section, which the survey of Setup 5 shows on another page (JUS-5)
+        'uj_far' => '@UVJUSTIFY on "uj_far": "reason" names "[uj_far_why]", which is on page 4 of the survey "uv_justify_test", not on page 3 with this field'
+            . ' — the survey shows one section per page, and the reason is given on the page where the value is entered; put both fields in one section.',
     ];
     foreach ($ERR as $f => $text) check("A1: $f refused word for word", errOf($p, $f) === $text, errOf($p, $f));
     $others = [];
     foreach (array_keys($FIX) as $f) if (!isset($ERR[$f]) && errOf($p, $f) !== '') $others[$f] = errOf($p, $f);
     check('A1: no other field of the form shows an error', $others === [], $others);
     // a refused @UVJUSTIFY leaves the field's other rules running
-    foreach (['uj_rr', 'uj_bad_bare', 'uj_bad_form', 'uj_bad_type', 'uj_bad_self', 'uj_bad_twice'] as $f) {
+    foreach (['uj_rr', 'uj_bad_bare', 'uj_bad_form', 'uj_bad_type', 'uj_bad_self', 'uj_bad_twice', 'uj_far'] as $f) {
         $live = array_filter(rulesOn($p, $f, 'range'), function ($r) { return empty($r['configError']); });
         check("A1: $f keeps its live @UVRANGE", (bool) $live, rulesOn($p, $f));
     }
@@ -359,7 +382,7 @@ namespace {
     foreach (array_keys($ERR) as $f) $pages['errors'][$f] = errOf($p, $f);
     $REASON = ['uj_req' => 'uj_req_why', 'uj_wt' => 'uj_wt_why', 'uj_id' => 'uj_id_why', 'uj_pool' => 'uj_pool_why', 'uj_dia' => 'uj_dia_why',
         'uj_dose' => 'uj_dose_why', 'uj_visit' => 'uj_visit_why', 'uj_wt2' => 'uj_wt2_why', 'uj_mother' => 'uj_mother_why', 'uj_temp' => 'uj_temp_why',
-        'uj_off' => 'uj_off_why', 'uj_hr' => 'uj_hr_why', 'uj_ro' => 'uj_ro_why', 'uj_emb' => 'uj_emb_why', 'uj_code' => 'uj_code_why', 'uj_lock' => 'uj_lock_why', 'uj_far' => 'uj_far_why'];
+        'uj_off' => 'uj_off_why', 'uj_hr' => 'uj_hr_why', 'uj_ro' => 'uj_ro_why', 'uj_emb' => 'uj_emb_why', 'uj_code' => 'uj_code_why', 'uj_lock' => 'uj_lock_why'];
     foreach ($REASON as $f => $why) {
         $j = rulesOn($p, $f, 'justify');
         check("A2: $f carries its justify rule, naming $why", count($j) === 1 && ($j[0]['justifyReason'] ?? '') === $why && empty($j[0]['configError']), $j);
@@ -374,7 +397,7 @@ namespace {
     check('A2: one field per mode a reason stands for, plus the duplicate and the lock (which come in F)', $modes === [
         'uj_req' => ['required'], 'uj_wt' => ['range'], 'uj_id' => ['single'], 'uj_pool' => ['pooled'], 'uj_dia' => ['constraint'], 'uj_dose' => ['choices'],
         'uj_visit' => ['window'], 'uj_wt2' => ['delta'], 'uj_mother' => ['exists'], 'uj_temp' => ['range'], 'uj_off' => ['constraint'], 'uj_hr' => ['range'],
-        'uj_ro' => ['range'], 'uj_emb' => ['range'], 'uj_code' => ['single', 'unique'], 'uj_lock' => ['range'], 'uj_far' => ['range']], $modes);
+        'uj_ro' => ['range'], 'uj_emb' => ['range'], 'uj_code' => ['single', 'unique'], 'uj_lock' => ['range']], $modes);
 
     // ---- Section B: each rule a reason stands for, on XE-1 ------------------------------------------
     // The log entries of each save. Every save audits every rule of the form
@@ -402,7 +425,7 @@ namespace {
         if (strpos((string) ($c[1]['why'] ?? ''), 'configuration error:') !== 0) $configOnly = false;
     }
     sort($named);
-    $refused = ['uj_bad_bare', 'uj_bad_form', 'uj_bad_none', 'uj_bad_self', 'uj_bad_twice', 'uj_bad_type', 'uj_rr'];
+    $refused = ['uj_bad_bare', 'uj_bad_form', 'uj_bad_none', 'uj_bad_self', 'uj_bad_twice', 'uj_bad_type', 'uj_far', 'uj_rr'];
     check('B1b: the save\'s only rule problems are the refused tags of A1, one "configuration error:" entry each (VAL-15)',
         $named === $refused && $configOnly, $named);
     // A rule problem is logged once for each place of the form (PRF-9): no later save logs one.
@@ -531,7 +554,12 @@ namespace {
     check('F3: on XE-2 the duplicate check finds UJ-001 used, by XE-1 (staff see the record)', $ask('F3', 'unique-check', 'uj_code', 'UJ-001', 'XE-2') === ['used' => true, 'record' => 'XE-1']);
     $m = $save('XE-2', ['uj_req_why' => '1'], '20261026102500');
     check('F3c: XE-2 saves with its required reason only', entries($m) === [$J('uj_req', 'required:required-blank')], entries($m));
-    $open('F4', 'form');
+    // F2 saved a new code under F1b's reason, so the page is now told that this
+    // reason is older than its value (justifyStale, JUS-1); the code breaks nothing.
+    $p = $open('F4', 'form2');
+    $stale = [];
+    foreach ($p['cfg']['rules'] as $r) if (isset($r['justifyStale'])) $stale[] = $r['justifyStale'];
+    check('F4: the page is told that the code\'s reason is older than the code, and of no other field', $stale === [['uj_code']], $stale);
     $m = $save('XE-1', ['uj_lock' => '300.0', 'uj_lock_why' => 'Weighed in a cast'], '20261026103000');
     $step('F4b', $m, [$J('uj_lock', 'range:hard-high')]);
     $quiet('F4b', $m, ['Weighed in a cast']);
@@ -659,12 +687,12 @@ namespace {
     check('H1: the durable rows carry the flag: 1 for uj_wt and for the range on the lock, 0 for the lock itself', $flags === ['XE-1 uj_lock range 1', 'XE-1 uj_lock writeonce 0',
         'XE-1 uj_wt range 1'], $flags);
     check('H1: the durable rows of XE-3, never opened: none', !array_filter($du['rows'], function ($r) { return strpos($r, 'XE-3 ') === 0; }));
-    check('H1: the durable tally: 1 finding, 17 saved with a reason, 7 rule problems (the refused tags of A1)',
+    check('H1: the durable tally: 1 finding, 17 saved with a reason, 8 rule problems (the refused tags of A1)',
         $du['tally'] === ['violations' => 1, 'justified' => 17, 'stored' => 18, 'unstored' => 0,
-            'unstoredJustified' => 0, 'ruleProblems' => 7, 'gaps' => 0], $du['tally']);
+            'unstoredJustified' => 0, 'ruleProblems' => 8, 'gaps' => 0], $du['tally']);
     check('H1: the panel line', $du['found'] === '1 finding so far, and 17 saved with a reason', $du['found']);
     check('H1: not certified, for the rule problems', $du['outcome']['clean'] === false
-        && $du['verdict'] === '7 rules could not be evaluated, so this result does not certify the project.', [$du['outcome'], $du['verdict']]);
+        && $du['verdict'] === '8 rules could not be evaluated, so this result does not certify the project.', [$du['outcome'], $du['verdict']]);
 
     // H2: a Missing Data Code imported as the reason
     $import('XE-1', ['uj_wt_why' => 'UNK'], '20261026110000');
@@ -701,16 +729,27 @@ namespace {
     \Project::$scratch = false; \Project::$pid = 149;
 
     // ---- Section J: what REDCap does that the code depends on -------------------------------------------
-    // J2: a reason in a row branching logic hides, written by an import: the page asks (JS replay), the scans read it
+    // J2: a reason in a row branching logic hides, written by an import: the page asks (JS replay), and the scans
+    // work the branching logic out and take no reason from the hidden row either (JUS-3)
     $import('XE-1', ['uj_hr_show' => '0'], '20261026111500');
     $open('J2', 'locked310');
-    check('J2: the scans read the saved reason, as REDCap\'s branching never reaches them', in_array('XE-1 uj_hr range:hard-high justified by uj_hr_why', $legacy($D), true));
+    $l = $legacy($D);
+    check('J2: the scan takes no reason from a row branching logic hides', in_array('XE-1 uj_hr range:hard-high open', $l, true)
+        && !in_array('XE-1 uj_hr range:hard-high justified by uj_hr_why', $l, true), $l);
     $du = $durable($D);
-    check('J2: the durable scan keeps the counts of H1', $du['found'] === '1 finding so far, and 17 saved with a reason', $du['found']);
+    check('J2: the durable scan counts the heart rate open', $du['found'] === '2 findings so far, and 16 saved with a reason', $du['found']);
     $import('XE-1', ['uj_hr_show' => '1'], '20261026112000');
+    $du = $durable($D);
+    check('J2: with the row shown again the counts are those of H1', $du['found'] === '1 finding so far, and 17 saved with a reason', $du['found']);
     // J4: an administrator adds the SQL reason field
-    $DICT = $pad($BASE + $FIX + ['uj_sql_why' => ['form_name' => 'uv_justify_test', 'field_type' => 'sql',
-        'select_choices_or_calculations' => "select 1, 'Patient crying' union all select 2, 'Counted twice'"]]);
+    // after "Respiratory rate", as the sheet says: in its section, so on its survey page (JUS-5)
+    $withSql = [];
+    foreach ($BASE + $FIX as $f => $meta) {
+        $withSql[$f] = $meta;
+        if ($f === 'uj_rr') $withSql['uj_sql_why'] = ['form_name' => 'uv_justify_test', 'field_type' => 'sql',
+            'select_choices_or_calculations' => "select 1, 'Patient crying' union all select 2, 'Counted twice'"];
+    }
+    $DICT = $pad($withSql);
     $LABELS['uj_sql_why'] = 'Why the respiratory rate is right';
     $TYPES['uj_sql_why'] = ['type' => 'sql', 'validation' => '', 'choices' => '1, Patient crying | 2, Counted twice', 'branching' => ''];
     $p = $open('J4', 'sql');
@@ -719,7 +758,39 @@ namespace {
     $REASON['uj_rr'] = 'uj_sql_why';
     $m = $save('XE-1', ['uj_rr' => '70', 'uj_sql_why' => '2'], '20261026112500');
     $step('J4b', $m, [$J('uj_rr', 'range:hard-high')]);
-    check('J4b: no rule problem logged, the six refused tags left included', $problemsLogged() === $B1bProblems, $problemsLogged() - $B1bProblems);
+    check('J4b: no rule problem logged, the seven refused tags left included', $problemsLogged() === $B1bProblems, $problemsLogged() - $B1bProblems);
+
+    // ---- Section K: a reason stands for the value it was saved with (JUS-1) --------------------------
+    // K1: another broken weight under B2b's reason. The page asks for a new reason (JS replay); with it
+    // the save logs the new value with its reason.
+    $open('K1', 'sql');
+    $m = $save('XE-1', ['uj_wt' => '310.0', 'uj_wt_why' => 'Scale checked a third time'], '20261026113000');
+    $step('K1b', $m, [$J('uj_wt', 'range:hard-high'), $J('uj_wt2', 'delta:down')]);
+    $quiet('K1b', $m, ['Scale checked a third time']);
+    // K2: the Data Import Tool writes a weight alone: the saved reason is now older than the saved value
+    $import('XE-1', ['uj_wt' => '320.0'], '20261026113500');
+    $p = $open('K2', 'stale');
+    $stale = [];
+    foreach ($p['cfg']['rules'] as $r) if (isset($r['justifyStale'])) $stale[] = implode(',', $r['justifyStale']);
+    sort($stale);
+    check('K2: the page is told that the weight is newer than its reason', $stale === ['uj_code', 'uj_wt'], $stale);
+    $l = $legacy($D);
+    check('K2: the scan counts the weight open, its reason field filled or not', in_array('XE-1 uj_wt range:hard-high open', $l, true), $l);
+    $m = $save('XE-1', ['uj_wt_why' => 'Scale replaced'], '20261026114000');
+    $step('K2b', $m, [$J('uj_wt', 'range:hard-high')]);
+    // K3: a rule that never blocks lets the new value save under the old reason: the audit calls it open
+    $open('K3', 'sql');
+    $m = $save('XE-1', ['uj_off' => '80'], '20261026114500');
+    $step('K3', $m, [$O('uj_off', 'constraint:assert:[uj_off]>=90')]);
+    $e = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'invalid-id-saved' && $c[1]['field'] === 'uj_off'; }))[0][1] ?? [];
+    check('K3: the entry names the reason field as reason_stale and has no justified_by', ($e['reason_stale'] ?? null) === 'uj_off_why' && !isset($e['justified_by']), $e);
+    $quiet('K3', $m, ['Known lung disease']);
+    $m = $save('XE-1', ['uj_off_why' => 'Known lung disease, on oxygen'], '20261026115000');
+    $step('K3b', $m, [$J('uj_off', 'constraint:assert:[uj_off]>=90')]);
+    $m = $save('XE-1', [], '20261026115500');
+    $step('K3c', $m);
+    $single = array_filter(\ExternalModules\AbstractExternalModule::$queries, function ($q) { return strpos($q, 'message = ?') !== false && strpos($q, 'record = ?') !== false; });
+    check('JUS-7: no save of the run read the two kinds of entry of a finding in two queries', $single === [], array_values(array_unique($single)));
 
     // The labels, field types and sections the engine replay builds its page from.
     $pages['labels'] = $LABELS;
