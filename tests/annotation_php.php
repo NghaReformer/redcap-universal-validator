@@ -1033,6 +1033,52 @@ foreach ([['SK[1-5]-[0-9]{4}[0-9A-Z]', '[A-Z0-9-]+'], ['(SK|DT)[1-5]-[0-9]{4}[0-
         && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[0], $why, true), $ex)
         && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[1], $why, true), $ex));
 }
+
+// ---- review 2026-11-13, VAL-3: one search budget per rule, answers kept ----
+// Every request builds its rules again, and four wide formats beside four
+// asked 64 questions of up to 400,000 visits each: 1.1 s per request for one
+// accepted annotation. The budget is counted in product states visited, so
+// these checks hold on any machine.
+$wideK = function ($letter) { return '[A-Z0-9]{0,30}' . $letter . '[E-Z0-9]{0,30}'; };
+$wideF = function ($n) { return '[E-Z0-9]{0,31}[E-Z0-9]{0,' . $n . '}'; };
+$full = 1000000;
+$b1 = $full;
+$r1 = CheckCharacter::patternOverlap($wideK('A'), $wideF(31), 40, $b1);
+$cost = $full - $b1;
+check('VAL-3: a wide pair is proven disjoint, and the visits it took come off the caller\'s budget (' . $cost . ')',
+    $r1 === ['overlap' => false, 'example' => null] && $cost > 100 && $cost < CheckCharacter::OVERLAP_RULE_VISITS / 10);
+$b2 = $full;
+$r2 = CheckCharacter::patternOverlap($wideK('A'), $wideF(31), 40, $b2);
+check('VAL-3: the same question again gets the same answer and is charged the same', $r2 === $r1 && $full - $b2 === $cost);
+$b3 = $cost - 1;
+$r3 = CheckCharacter::patternOverlap($wideK('A'), $wideF(31), 40, $b3);
+check('VAL-3: a budget one visit short gives "unknown" and is spent, kept answer or not', $r3['overlap'] === null && $b3 === 0);
+$b4 = $cost;
+$r4 = CheckCharacter::patternOverlap($wideK('A'), $wideF(31), 40, $b4);
+check('VAL-3: a budget of exactly the cost is enough', $r4['overlap'] === false && $b4 === 0);
+$b5 = 10;
+$r5 = CheckCharacter::patternOverlap($wideK('B'), $wideF(31), 40, $b5);
+$r6 = CheckCharacter::patternOverlap($wideK('B'), $wideF(31), 40);
+check('VAL-3: a search that ran out is not kept as the answer to a caller with more visits',
+    $r5['overlap'] === null && $b5 === 0 && $r6['overlap'] === false);
+check('VAL-3: without a budget a question still has ' . CheckCharacter::OVERLAP_MAX_VISITS . ' visits of its own',
+    CheckCharacter::patternOverlap($wideK('C'), $wideF(31), 44)['overlap'] === false);
+$wideRule = function (array $lens) use ($wideK, $wideF, $MOD) {
+    $alts = [];
+    foreach (['A', 'B', 'C', 'D'] as $p) $alts[] = ['label' => 'K' . $p, 'pattern' => $wideK($p), 'algorithm' => $MOD, 'lengths' => $lens];
+    foreach ([31, 32, 33, 34] as $nF) $alts[] = ['label' => 'F' . $nF, 'pattern' => $wideF($nF), 'algorithm' => 'none', 'lengths' => $lens];
+    return $alts;
+};
+check('VAL-3: four wide formats beside four, at one length, fit the rule\'s budget', $altErr($wideRule([40])) === '');
+$past = $altErr($wideRule([40, 44, 48, 52]));
+check('VAL-3: at four lengths the 64 questions are past the rule\'s budget and the rule is refused, each question well inside it',
+    strpos($past, 'too complex to prove') !== false && 64 * $cost > CheckCharacter::OVERLAP_RULE_VISITS);
+check('VAL-3: validated again, with every answer in memory, the rule gets the same verdict',
+    $altErr($wideRule([40, 44, 48, 52])) === $past && $altErr($wideRule([40])) === '');
+// one pattern on four format-only alternates is one question per check-bearing sibling, not four
+$sameF = $wideRule([40, 44, 48, 52]);
+foreach ([4, 5, 6, 7] as $ix) $sameF[$ix]['pattern'] = $wideF(31);
+check('VAL-3: alternates that share a pattern share its questions (the reviewed 711-byte rule passes)', $altErr($sameF) === '');
 // ...and the guard now fires on all three shapes that bypassed it in round 1
 foreach (['(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]',
           'SK1-[0-9]{4}[0-9A-Z]|SK2-[0-9]{4}[0-9A-Z]',

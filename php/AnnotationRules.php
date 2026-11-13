@@ -2520,6 +2520,12 @@ class AnnotationRules
             // reader cannot model, or the search budget exhausted - the rule is
             // refused rather than assumed safe (H-1).
             if (!$errors && count($shapes) > 1) {
+                // One search budget for the whole rule, not one per question:
+                // eight alternates can ask 16 pairs at every shared length,
+                // and this runs each time the rule is built (VAL-3). A question
+                // two pairs share (alternates with one pattern) is asked once.
+                $ovBudget = CheckCharacter::OVERLAP_RULE_VISITS;
+                $ovAsked = [];
                 foreach ($shapes as $fi => $F) {
                     if (!$F['formatOnly']) continue;
                     foreach ($shapes as $ki => $K) {
@@ -2529,7 +2535,11 @@ class AnnotationRules
                         $ex = null;
                         $unknown = false;
                         foreach ($lens as $L) {
-                            $ov = CheckCharacter::patternOverlap($K['pattern'], $F['pattern'], $L);
+                            $q = $K['pattern'] . "\0" . $F['pattern'] . "\0" . ($L === null ? '' : $L);
+                            if (!isset($ovAsked[$q])) {
+                                $ovAsked[$q] = CheckCharacter::patternOverlap($K['pattern'], $F['pattern'], $L, $ovBudget);
+                            }
+                            $ov = $ovAsked[$q];
                             if ($ov['overlap'] === null) { $unknown = true; break; }
                             if ($ov['overlap']) { $ex = $ov['example']; break; }
                         }
@@ -2538,8 +2548,9 @@ class AnnotationRules
                                 . 'overlap ' . $F['name'] . ', which has no check character. If the two '
                                 . 'shapes do overlap, a mis-scanned ' . $K['name'] . ' ID that no longer fits '
                                 . $K['name'] . '\'s pattern could pass as a clean ' . $F['name'] . ' ID, '
-                                . 'its check character never tested. Write ' . $K['name'] . '\'s pattern with '
-                                . 'explicit character classes (no backreferences), or narrow '
+                                . 'its check character never tested. Write the patterns with explicit '
+                                . 'character classes and fixed lengths such as [A-Z]{2}[0-9]{6} (wide ranges '
+                                . 'such as {0,30} in several formats multiply the cases to compare), or narrow '
                                 . $F['name'] . '\'s so the two cannot overlap.';
                             break 2;
                         }

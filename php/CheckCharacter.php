@@ -971,10 +971,28 @@ class CheckCharacter
     /** Example characters, most ID-like first. */
     const OVERLAP_PREFERENCE = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-';
     const OVERLAP_MAX_STATES = 20000;   // NFA states per pattern
-    const OVERLAP_MAX_VISITS = 400000;  // product states visited per question
+    const OVERLAP_MAX_VISITS = 400000;  // product states visited for one question asked on its own
+    // Product states visited for ALL the questions of one rule: checkFragment
+    // hands one counter to each of them. Every request builds its rules again,
+    // so this is the most one rule's proof can cost a page (VAL-3): about
+    // 0.2 s where a visit takes 3 microseconds. The widest rule in the suites
+    // and the guide uses 2,600; the reviewed 711-byte rule of four formats
+    // beside four, each with two {0,30} runs, uses 17,000 and still passes.
+    const OVERLAP_RULE_VISITS = 60000;
+    const OVERLAP_MEMO_ANSWERS = 512;   // answers kept per process
+    const OVERLAP_MEMO_PATTERNS = 64;   // read patterns (automaton and closures) kept per process
 
     /** Set while reading a pattern: something was read as a superset. */
     private static $ovApprox = false;
+    /** @var array pattern => ['nfa' => array, 'closures' => array] or false (not modelled) */
+    private static $ovNfaMemo = [];
+    /**
+     * @var array "a NUL b NUL len" => ['overlap' => ?bool, 'example' => ?string,
+     *            'cost' => int, 'short' => bool]: the answer, the visits it
+     *            took, and whether it is unknown only because 'cost' visits
+     *            were not enough.
+     */
+    private static $ovMemo = [];
 
     /**
      * Do two patterns accept a common value? Returns
@@ -983,23 +1001,59 @@ class CheckCharacter
      *   ['overlap' => null,  'example' => null]   unknown - treat as unsafe
      * With $len, only values of exactly $len characters count (a pooled pair
      * competes only at the lengths both declare).
+     *
+     * $budget is the caller's count of product states it may still visit. The
+     * search takes what it uses from it and answers "unknown" when it runs out,
+     * so a caller with many questions (checkFragment: every check-bearing
+     * alternate against every format-only one, at every shared length) spends
+     * one budget on all of them. Without it each call has OVERLAP_MAX_VISITS
+     * of its own.
+     *
+     * Answers are kept for the process, and so is each pattern as read: the
+     * same rule is validated again by every caller in a request, and a rule
+     * of four formats beside four asked 64 questions that rebuilt 128
+     * automatons, 1.1 s for one accepted annotation on every request (VAL-3).
+     * An answer taken from memory is charged the visits it first took, so the
+     * budget runs out at the same question whether or not the work is redone,
+     * and a rule gets the same verdict each time it is validated.
      */
-    public static function patternOverlap($a, $b, $len = null)
+    public static function patternOverlap($a, $b, $len = null, &$budget = null)
     {
         $unknown = ['overlap' => null, 'example' => null];
-        self::$ovApprox = false;
+        if (!is_string($a) || !is_string($b)) return $unknown;
+        $avail = ($budget === null) ? self::OVERLAP_MAX_VISITS : max(0, (int) $budget);
+        $key = $a . "\0" . $b . "\0" . ($len === null ? '' : (int) $len);
+        $m = isset(self::$ovMemo[$key]) ? self::$ovMemo[$key] : null;
+        // Kept answers that still stand: a full one these visits can pay for,
+        // or a search that already ran out with at least as many. A full one
+        // they cannot pay for runs out again, as the search itself would.
+        if ($m !== null && !$m['short'] && $m['cost'] > $avail) $m = ['overlap' => null, 'example' => null, 'cost' => $avail, 'short' => true];
+        if ($m === null || ($m['short'] && $m['cost'] < $avail)) {
+            $m = self::patternOverlapOf($a, $b, $len, $avail);
+            if (count(self::$ovMemo) >= self::OVERLAP_MEMO_ANSWERS) self::$ovMemo = [];
+            self::$ovMemo[$key] = $m;
+        }
+        if ($budget !== null) $budget = $m['short'] ? 0 : max(0, $avail - $m['cost']);
+        return ['overlap' => $m['overlap'], 'example' => $m['example']];
+    }
+
+    /** patternOverlap's answer, worked out: its keys plus 'cost' and 'short' (see $ovMemo). */
+    private static function patternOverlapOf($a, $b, $len, $avail)
+    {
+        $visits = 0;
+        $unknown = ['overlap' => null, 'example' => null, 'cost' => 0, 'short' => false];
         $na = self::ovNfa($a);
         $nb = self::ovNfa($b);
         if ($na === null || $nb === null) return $unknown;
-        $approx = self::$ovApprox;
-        $ex = self::ovSearch($na, $nb, $len);
-        if ($ex === null) return $unknown;                   // search budget exceeded
-        if ($ex === false) return ['overlap' => false, 'example' => null];
+        $ex = self::ovSearch($na, $nb, $len, $avail, $visits);
+        if ($ex === null) return ['overlap' => null, 'example' => null, 'cost' => $avail, 'short' => true];   // visits ran out
+        $unknown['cost'] = $visits;
+        if ($ex === false) return ['overlap' => false, 'example' => null, 'cost' => $visits, 'short' => false];
         $why = '';
         $ra = self::gatePattern($a, $why, true);
         $rb = self::gatePattern($b, $why, true);
         if ($ra !== null && $rb !== null && self::patTest($ra, $ex) && self::patTest($rb, $ex)) {
-            return ['overlap' => true, 'example' => $ex];
+            return ['overlap' => true, 'example' => $ex, 'cost' => $visits, 'short' => false];
         }
         // An overlap of the supersets that the real patterns do not share. With
         // no approximation in play this would be a reader bug; either way the
@@ -1007,10 +1061,24 @@ class CheckCharacter
         return $unknown;
     }
 
-    /** Pattern -> ['eps' => [], 'tr' => [], 'start' => s, 'accept' => s], or null. */
+    /**
+     * Pattern -> ['nfa' => ['eps' => [], 'tr' => [], 'start' => s, 'accept' => s],
+     * 'closures' => ovClosures of it], or null. Kept per pattern (VAL-3).
+     */
     private static function ovNfa($pattern)
     {
         if (!is_string($pattern)) return null;
+        if (isset(self::$ovNfaMemo[$pattern])) {
+            return self::$ovNfaMemo[$pattern] === false ? null : self::$ovNfaMemo[$pattern];
+        }
+        if (count(self::$ovNfaMemo) >= self::OVERLAP_MEMO_PATTERNS) self::$ovNfaMemo = [];
+        $read = self::ovNfaOf($pattern);
+        self::$ovNfaMemo[$pattern] = ($read === null) ? false : $read;
+        return $read;
+    }
+
+    private static function ovNfaOf($pattern)
+    {
         $p = preg_replace('/^\^/', '', $pattern);
         $p = preg_replace('/\$$/', '', $p);
         $i = 0;
@@ -1021,7 +1089,7 @@ class CheckCharacter
         if ($frag === null) return null;
         $nfa['start'] = $frag[0];
         $nfa['accept'] = $frag[1];
-        return $nfa;
+        return ['nfa' => $nfa, 'closures' => self::ovClosures($nfa)];
     }
 
     private static function ovAlt($p, &$i, $depth)
@@ -1327,7 +1395,13 @@ class CheckCharacter
         return null;
     }
 
-    /** Epsilon closure of every state, as sorted state lists. */
+    /**
+     * Epsilon closure of every state, as state lists. Only a state a
+     * character can leave, or the accepting one, is listed: the rest are the
+     * joints of the construction, about two in three of all states, and each
+     * one carried through the product made every question several times its
+     * size (VAL-3).
+     */
     private static function ovClosures(array $nfa)
     {
         $out = [];
@@ -1340,7 +1414,11 @@ class CheckCharacter
                     if (!isset($seen[$y])) { $seen[$y] = true; $stack[] = $y; }
                 }
             }
-            $out[$s] = array_keys($seen);
+            $keep = [];
+            foreach ($seen as $y => $_) {
+                if ($nfa['tr'][$y] || $y === $nfa['accept']) $keep[] = $y;
+            }
+            $out[$s] = $keep;
         }
         return $out;
     }
@@ -1348,19 +1426,27 @@ class CheckCharacter
     /**
      * Breadth-first search of the product automaton. Returns the shortest
      * common value (of exactly $len characters when $len is set), false when
-     * there is none, or null when the visit budget runs out.
+     * there is none, or null when it would visit more than $maxVisits product
+     * states. $ra and $rb are ovNfa's answers; $visits is how many it visited.
      */
-    private static function ovSearch(array $A, array $B, $len)
+    private static function ovSearch(array $ra, array $rb, $len, $maxVisits, &$visits)
     {
-        $ca = self::ovClosures($A);
-        $cb = self::ovClosures($B);
-        $key = function ($x, $y, $d) { return $x . ',' . $y . ',' . $d; };
+        $A = $ra['nfa'];
+        $B = $rb['nfa'];
+        $ca = $ra['closures'];
+        $cb = $rb['closures'];
+        // A product state (x, y, depth) as one integer, and the character two
+        // transitions share kept per pair of bitmaps: string keys and a scan of
+        // the alphabet at every step were most of what a question cost (VAL-3).
+        $nb = $B['n'];
+        $depths = ($len === null) ? 2 : (int) $len + 1;
         $frontier = [];
         $parent = [];
+        $picks = [];
         foreach ($ca[$A['start']] as $x) {
             foreach ($cb[$B['start']] as $y) {
-                $k = $key($x, $y, 0);
-                if (!isset($parent[$k])) { $parent[$k] = null; $frontier[] = [$x, $y]; }
+                $k = ($x * $nb + $y) * $depths;
+                if (!array_key_exists($k, $parent)) { $parent[$k] = null; $frontier[] = [$x, $y]; }
             }
         }
         $depth = 0;
@@ -1368,24 +1454,30 @@ class CheckCharacter
         $maxDepth = $len === null ? PHP_INT_MAX : $len;
         while ($frontier && $depth < $maxDepth) {
             $next = [];
+            // Without a length only two depths matter - nothing consumed yet,
+            // or something - so a pair is visited at most twice and an
+            // empty-string accept at the start cannot hide a real one.
+            $dFrom = ($len === null) ? min($depth, 1) : $depth;
+            $dTo   = ($len === null) ? 1 : $depth + 1;
             foreach ($frontier as $pair) {
                 list($x, $y) = $pair;
+                $from = ($x * $nb + $y) * $depths + $dFrom;
                 foreach ($A['tr'][$x] as $ta) {
                     foreach ($B['tr'][$y] as $tb) {
-                        $ch = self::ovPick($ta[0], $tb[0]);
-                        if ($ch === null) continue;
+                        $pk = $ta[0] . $tb[0];
+                        if (!isset($picks[$pk])) {
+                            $ch = self::ovPick($ta[0], $tb[0]);
+                            $picks[$pk] = ($ch === null) ? false : $ch;
+                        }
+                        $ch = $picks[$pk];
+                        if ($ch === false) continue;
                         foreach ($ca[$ta[1]] as $x2) {
                             foreach ($cb[$tb[1]] as $y2) {
-                                // Without a length every depth is the same
-                                // state, so a pair is visited once in total.
-                                // Without a length only two depths matter -
-                                // nothing consumed yet, or something - so a pair
-                                // is visited at most twice and an empty-string
-                                // accept at the start cannot hide a real one.
-                                $k = $key($x2, $y2, $len === null ? 1 : $depth + 1);
-                                if (isset($parent[$k]) || array_key_exists($k, $parent)) continue;
-                                if (++$visits > self::OVERLAP_MAX_VISITS) return null;
-                                $parent[$k] = [$key($x, $y, $len === null ? min($depth, 1) : $depth), $ch];
+                                $k = ($x2 * $nb + $y2) * $depths + $dTo;
+                                if (isset($parent[$k])) continue;
+                                if ($visits >= $maxVisits) return null;
+                                $visits++;
+                                $parent[$k] = [$from, $ch];
                                 $done = ($x2 === $A['accept'] && $y2 === $B['accept'])
                                     && ($len === null || $depth + 1 === $len);
                                 if ($done) {
