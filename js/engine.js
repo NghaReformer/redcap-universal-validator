@@ -4134,8 +4134,10 @@ function QRID_answerStale(entry){
    (refuse the BROWSER save until fixed — it cannot stop API/import writes;
    the server audit is the net for those). Guards real form submits, REDCap's
    save buttons (which submit programmatically and never fire a submit event)
-   and every call of REDCap's dataEntrySubmit, which the Enter key in a text
-   field makes (QRID_guardDataEntrySubmit). Native alert/confirm are used
+   and every save REDCap's dataEntrySubmit is called for, which the Enter key
+   in a text field makes (QRID_guardDataEntrySubmit). Cancel and the Delete
+   actions go through that function too and are let through (QRID_notASave).
+   Native alert/confirm are used
    deliberately: they are modal and announced by assistive tech without
    custom focus management. */
 /* A control the person cannot edit: @READONLY, or a disabled input. What the

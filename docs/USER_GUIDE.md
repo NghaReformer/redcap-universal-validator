@@ -672,8 +672,14 @@ stopped an unquoted condition at the first space.
 > field whose row is hidden, by branching logic or `@HIDDEN`, never holds the
 > save. `@UVREQUIRED` goes further: a hidden field is not required at all, on
 > the page, in the audit and in the scan (which read the field's branching
-> logic in this same condition dialect). Reach for `when` when the *validation
-> itself* should depend on another field's value.
+> logic in this same condition dialect, and its `@HIDDEN` tags). Two limits
+> apply off the page. `@HIDDEN-FORM` and `@HIDDEN-SURVEY` hide a field on one
+> kind of page, so the scan still lists a blank field that the other page
+> shows. And where REDCap may read the branching logic differently from the
+> dialect (a blank compared with `<` or `>`, text that differs only by letter
+> case), the audit and the scan leave the field unchecked and log why. Reach
+> for `when` when the *validation itself* should depend on another field's
+> value.
 
 ---
 
