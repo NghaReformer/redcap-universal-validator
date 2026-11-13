@@ -418,8 +418,8 @@ for (const order of ['lock first', 'lock last']) {
   const env = boot([k, h], { rules: [WO(['kk']),
     { type: 'constraint', fields: ['kk'], assert: '[kk]<[kh]', blockSave: 'hard', lockReads: { kk: ['kh'] } }] });
   check('a locked box REDCap disabled: read-only by the lock, and marked so', k.readOnly === true && k.__qridLockSetRO === true);
-  check('... and no other rule on it gets a guard item, the disabled state being REDCap\'s', !env.NS.guard.items.some((it) => it.__qridFieldName === 'kk' && it.__qridMode === 'constraint'),
-    env.NS.guard.items.map((it) => it.__qridFieldName + ':' + it.__qridMode));
+  // the other rule's guard item exists, as every field's does (REQ-5); the guard asks at save whether the box can be edited
+  check('... and another rule on it never holds the save, the disabled state being REDCap\'s', save(env) === 'saved', env.win._alerts);
 }
 {
   // a radio: the lock disables the buttons, which must not count as @READONLY for the choices filter

@@ -497,15 +497,48 @@ the two things it lacks: a **condition** and a **real block**:
   fields. Not calc — the person entering data cannot fill a calc, so requiring
   one would trap them (the same reasoning as the read-only exemption: a
   read-only field, a `@READONLY` radio or autocomplete dropdown included, shows
-  the notice but never blocks the save).
+  the notice but never blocks the save). Whether a field can be edited is asked
+  when Save is pressed, so a field that was read-only when the form opened and
+  can be changed later is held like any other.
+- **Not on checkbox, file upload or signature fields**, nor on descriptive
+  fields: the tag there is a configuration error shown under the field, and
+  nothing is required. Use REDCap's own Required flag for those types.
+- **A read-only field is still reported.** The page never holds the save for
+  it, but the audit logs its blank and the scan lists it: both judge the saved
+  record, and a `@READONLY` field is normally filled by `@DEFAULT`, `@SETVALUE`
+  or another page. Leave `@UVREQUIRED` off a read-only field that is meant to
+  stay empty.
+- **Do not also tick REDCap's own Required flag** on the field. The module
+  does not read that flag, so with `"blockSave":"confirm"` the person is asked
+  twice about the same empty field: once by the module, once by REDCap.
 - **A field REDCap hides is not required.** While branching logic or `@HIDDEN`
   hides the field's row there is no notice and the save goes through, as with
   REDCap's own required flag; the notice comes back as soon as the row is shown.
+  The audit and the scan skip a field with `@HIDDEN` too. `@HIDDEN-FORM` and
+  `@HIDDEN-SURVEY` hide the field on one kind of page: the audit skips it when
+  the save came from that page, and the scan, which has no page, skips it only
+  when no page of its instrument shows it (both tags, or `@HIDDEN-FORM` on an
+  instrument that is not a survey).
   The audit and the scan read the field's branching logic in the condition
   dialect above and skip a blank field while that logic is false. Branching
   logic outside the dialect (functions, smart variables, `[event][field]`
   prefixes) leaves a blank field unchecked there and is logged as a rule
-  problem, never as a missing value.
+  problem, never as a missing value. So does logic REDCap may read differently
+  from the dialect: REDCap compares text with its letter case and answers an
+  ordered comparison when one side is blank (`[age] < 18` with no age), where
+  the dialect folds case and has no answer. While the two readings differ for
+  a record, the field is not checked there and the log says why; write
+  `[age] <> '' and [age] < 18` to have it decided either way.
+- **A condition that reads another form** is judged when that form is saved
+  too, on the form the required field lives on, whether or not anyone has
+  opened it: "an adverse event happened" is when the adverse event form is
+  due. The scan lists the same field. A standing blank is logged once, not on
+  every save, and a survey page turn of an open response logs none.
+- **Cancel and Delete are never held.** A blank required field, like any
+  broken rule, holds the saves only (the buttons REDCap names
+  `submit-btn-save...`). REDCap's Cancel button and its "delete data for this
+  form" and "delete this event" actions go through. A save message names at
+  most 12 fields and counts the rest.
 - Several `@UVREQUIRED` tags with different `when` conditions **branch**; two
   conditions true at once is a visible conflict that never blocks.
 - **On a survey shown one section per page**, a condition over a field of
@@ -524,6 +557,19 @@ the two things it lacks: a **condition** and a **real block**:
   a value check (`@UVALIDATE`, `@UVASSERT`, ...) still holds them, because the
   page's values are saved either way. The button names and the modes that wait
   are listed in `php/modes.json` (`partialSaveButtons`, `"surveySave"`).
+- **What this relies on inside REDCap.** None of it is a documented API, so
+  each read is guarded and has a stated fallback. In the browser the module
+  wraps REDCap's `dataEntrySubmit()` (every save goes through it, the Enter
+  key included) and `doBranching()` (it shows and hides rows without an
+  event). Without `dataEntrySubmit()` the save buttons and form submits are
+  still checked, and a staff form says once that the Enter key is not; without
+  `doBranching()` a hidden row is noticed at the next change or at Save. On
+  the server, a survey shown one section per page is recognised from
+  `$_GET['__page__']`, the form's `survey_id` and the survey's
+  `question_by_section`, and the pages are split at section headers as REDCap
+  splits them. If any of these is missing the instrument is treated as one
+  page, and a condition over a field of another page then reads blank in the
+  browser until the audit judges the saved response.
 
 ## No duplicates across records — the `@UVUNIQUE` tag
 

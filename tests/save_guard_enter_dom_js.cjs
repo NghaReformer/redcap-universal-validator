@@ -37,7 +37,17 @@
  *   - a held Enter save cancels that Enter's keydown and keypress, so the
  *     browser presses no type-less "Today" button (LIVE-D4); a save that goes
  *     on, another key, a textarea's Enter and an Enter of an earlier task are
- *     left alone.
+ *     left alone,
+ *   - Cancel and the Delete actions, which REDCap also sends through
+ *     dataEntrySubmit, are never held or asked "Save anyway?", as an element,
+ *     a jQuery object or a string, and they drop a save kept back for a
+ *     lookup; a call with no action name, or one REDCap does not name, is
+ *     still judged as a save; a string action counts as a partial survey save
+ *     (REQ-1),
+ *   - a blocking rule on a loaded REDCap form without dataEntrySubmit says so
+ *     once, on a staff form and in the console, never on a survey page; a
+ *     function defined after the page loaded is wrapped at the next Enter
+ *     key; the guard's state is not published on a page (FRM-12).
  *
  * Run:  node tests/save_guard_enter_dom_js.cjs
  */
@@ -85,7 +95,10 @@ function makeSubmit(calls) {
   return function dataEntrySubmit(ob) { calls.push({ ob, self: this, argc: arguments.length }); return 'redcap-result'; };
 }
 
-/* opts.submit: put a dataEntrySubmit on window before the engine loads.
+/* opts.form: the page holds REDCap's own form (form#form).
+   opts.pageScript: run the file as a page runs a script, with no CommonJS
+   "module" in scope, instead of require().
+   opts.submit: put a dataEntrySubmit on window before the engine loads.
    opts.winListeners: give window an addEventListener. opts.confirm: the
    answer window.confirm gives. opts.readyState: the document's (default
    "complete"). */
@@ -103,6 +116,7 @@ function boot(els, config, opts) {
     allEls.push(el, holder);
     holders[el.name] = holder;
   }
+  if (opts.form) { const form = makeEl('form'); form.id = 'form'; body.appendChild(form); allEls.push(form); }
   const doc = {
     body, readyState: opts.readyState || 'complete', _handlers: {},
     createElement(t) { const e = makeEl(t); allEls.push(e); return e; },
@@ -127,7 +141,10 @@ function boot(els, config, opts) {
   }
   global.document = doc; global.window = win;
   let bootError = null;
-  try { require(enginePath); } catch (e) { bootError = e; }
+  try {
+    if (opts.pageScript) (new Function(require('fs').readFileSync(enginePath, 'utf8')))();
+    else require(enginePath);
+  } catch (e) { bootError = e; }
   return { doc, win, holders, calls, bootError, NS: win.INSPIREUniversalValidator, makeSubmit };
 }
 
@@ -454,6 +471,137 @@ const HEAVIER = { type: 'constraint', fields: ['weight'], assert: '[weight]<[hei
     check('10 an Enter noted in an earlier task is not cancelled later', !stale._prevented);
     resolve();
   }, 0)));
+}
+// ---- 11) Cancel and Delete go through dataEntrySubmit and save nothing (REQ-1) ----
+// REDCap's Cancel button and its Delete actions call dataEntrySubmit with their own
+// names. Before this fix the wrapper judged every call, so a blank hard-required field
+// kept a person from leaving or deleting the form, and "confirm" asked "Save anyway?".
+{
+  const NOT_SAVES = ['submit-btn-cancel', 'submit-btn-deleteform', 'submit-btn-deleteevent'];
+  const REQ = (mode) => ({ singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['phone'], blockSave: mode }] });
+  const phoneInput = () => { const el = makeEl('input'); el.name = 'phone'; el.type = 'text'; return el; };
+  for (const mode of ['hard', 'confirm']) {
+    for (const nm of NOT_SAVES) {
+      const env = boot([phoneInput()], REQ(mode), { confirm: false });
+      const btn = saveButton(nm);
+      check('11 ' + mode + ' ' + nm + ': the button reaches REDCap', env.win.dataEntrySubmit(btn) === 'redcap-result'
+        && env.calls.length === 1 && env.calls[0].ob === btn);
+      check('11 ' + mode + ' ' + nm + ': a jQuery object holding it too',
+        env.win.dataEntrySubmit({ jquery: '3.6.0', 0: btn, length: 1 }) === 'redcap-result' && env.calls.length === 2);
+      check('11 ' + mode + ' ' + nm + ': and the action as a string', env.win.dataEntrySubmit(nm) === 'redcap-result' && env.calls.length === 3);
+      check('11 ' + mode + ' ' + nm + ': no alert and no "Save anyway?"', env.win._alerts.length === 0 && env.win._confirms.length === 0);
+      const ev = clickEv(null); ev.submitter = btn;
+      env.doc.fire('submit', ev);
+      check('11 ' + mode + ' ' + nm + ': a form submit from that button is not held', ev._prevented === false && env.win._alerts.length === 0);
+    }
+  }
+  {
+    const env = boot([phoneInput()], REQ('hard'));
+    check('11 a save is still held', env.win.dataEntrySubmit(saveButton('submit-btn-saverecord')) === false && env.calls.length === 0);
+    check('11 a save named by a string is still held', env.win.dataEntrySubmit('submit-btn-savecontinue') === false && env.calls.length === 0);
+    check('11 a call with no action is judged as a save', env.win.dataEntrySubmit() === false && env.calls.length === 0);
+    check('11 an empty jQuery object is judged as a save',
+      env.win.dataEntrySubmit({ jquery: '3.6.0', length: 0 }) === false && env.calls.length === 0);
+    check('11 a name REDCap gives no action is judged as a save',
+      env.win.dataEntrySubmit(saveButton('my-own-button')) === false && env.win.dataEntrySubmit('cancel') === false && env.calls.length === 0);
+    const el = makeEl('button'); el.id = 'submit-btn-cancel';
+    check('11 a Cancel button known by its id passes', env.win.dataEntrySubmit(el) === 'redcap-result' && env.calls.length === 1);
+  }
+  {
+    // a survey: Previous Page named by a string is a partial save, as the button is
+    const PARTIAL = { buttons: ['submit-btn-saveprevpage', 'submit-btn-savereturnlater'], types: ['required'] };
+    const env = boot([phoneInput()], Object.assign(REQ('hard'), { context: 'survey', partialSave: PARTIAL }));
+    check('11 survey: Previous Page as a string action is not held by a blank required field',
+      env.win.dataEntrySubmit('submit-btn-saveprevpage') === 'redcap-result' && env.calls.length === 1 && env.win._alerts.length === 0);
+    check('11 survey: Next as a string action is held', env.win.dataEntrySubmit('submit-btn-saverecord') === false && env.calls.length === 1);
+  }
+  {
+    // a save kept back for a lookup does not go on after Cancel
+    const input = idInput();
+    const env = boot([input], CHECK_RULE('hard'));
+    input.value = validId(env.NS);
+    input.fire('change');
+    env.NS.guard.items.push({ __qridPending: true, __qridInvalid: false, __qridBlockMode: 'hard', __qridFieldLabel: 'Specimen ID' });
+    check('11 Enter waits for the lookup', pressEnter(env, input, saveButton('submit-btn-saverecord')) === false && env.calls.length === 0);
+    const cancel = saveButton('submit-btn-cancel');
+    check('11 Cancel goes through while a save waits', env.win.dataEntrySubmit(cancel) === 'redcap-result' && env.calls.length === 1);
+    pending.push(new Promise((resolve) => setTimeout(() => {
+      check('11 the save that waited does not follow the Cancel', env.calls.length === 1 && env.calls[0].ob === cancel);
+      resolve();
+    }, 2000)));
+  }
+}
+
+// ---- 12) a page where dataEntrySubmit cannot be wrapped says so (FRM-12) -----------
+{
+  const NOTICE = 'uvalidate-config-errors';
+  const noticeText = (env) => {
+    const box = env.doc.getElementById(NOTICE);
+    return box ? box.children.map((c) => c.innerHTML).join('\n') : null;
+  };
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (m) => warns.push(String(m));
+  try {
+    let env = boot([idInput()], CHECK_RULE('hard'), { submit: false, form: true });
+    check('12 a loaded staff form without dataEntrySubmit shows one notice',
+      /dataEntrySubmit/.test(noticeText(env) || '') && /Enter key/.test(noticeText(env)) && env.doc.getElementById(NOTICE).children.length === 1);
+    check('12 and one console line', warns.length === 1 && /dataEntrySubmit/.test(warns[0]));
+
+    // defined after the page loaded: the next Enter key wraps it before REDCap's handler reads it
+    const input = env.doc.getElementsByName('study_id')[0];
+    env.win.dataEntrySubmit = env.makeSubmit(env.calls);
+    input.value = '0ABC00001X';
+    input.fire('change');
+    env.doc.fire('keydown', { type: 'keydown', key: 'Enter', keyCode: 13, target: input, preventDefault() {} });
+    check('12 a function defined later is wrapped at the Enter key', env.win.dataEntrySubmit.__qridGuarded === true);
+    check('12 and that Enter is held', pressEnter(env, input, saveButton('submit-btn-saverecord')) === false && env.calls.length === 0);
+    check('12 nothing is said a second time', warns.length === 1 && env.doc.getElementById(NOTICE).children.length === 1);
+
+    warns.length = 0;
+    env = boot([idInput()], Object.assign(CHECK_RULE('hard'), { context: 'survey' }), { submit: false, form: true });
+    check('12 a survey page shows no notice, the console still says it', noticeText(env) === null && warns.length === 1);
+
+    warns.length = 0;
+    env = boot([idInput()], CHECK_RULE('off'), { submit: false, form: true });
+    check('12 a warn-only rule says nothing', noticeText(env) === null && warns.length === 0);
+    env = boot([idInput()], CHECK_RULE('hard'), { form: true });
+    check('12 a wrapped page says nothing', noticeText(env) === null && warns.length === 0);
+    env = boot([idInput()], CHECK_RULE('hard'), { submit: false });
+    check('12 a page without REDCap\'s form says nothing', noticeText(env) === null && warns.length === 0);
+
+    // a page still loading: nothing is said before load
+    env = boot([idInput()], CHECK_RULE('hard'), { submit: false, form: true, winListeners: true, readyState: 'loading' });
+    env.doc.fire('DOMContentLoaded', {});
+    check('12 nothing is said while the page loads', noticeText(env) === null && warns.length === 0);
+    env.win.fire('load');
+    check('12 load without the function says it', /dataEntrySubmit/.test(noticeText(env) || '') && warns.length === 1);
+    warns.length = 0;
+    env = boot([idInput()], CHECK_RULE('hard'), { submit: false, form: true, winListeners: true, readyState: 'loading' });
+    env.doc.fire('DOMContentLoaded', {});
+    env.win.dataEntrySubmit = env.makeSubmit(env.calls);
+    env.win.fire('load');
+    check('12 load with the function wraps it and says nothing',
+      env.win.dataEntrySubmit.__qridGuarded === true && noticeText(env) === null && warns.length === 0);
+  } finally { console.warn = origWarn; }
+
+  // The guard's state: read by these suites, not published on a page. A page loads the file as a
+  // plain script, where there is no CommonJS "module"; new Function gives the source that scope.
+  {
+    const env = boot([idInput()], CHECK_RULE('hard'));
+    check('12 the suites read the guard', !!env.NS.guard && Array.isArray(env.NS.guard.items));
+    const page = boot([idInput()], CHECK_RULE('hard'), { pageScript: true });
+    const NS = page.win.INSPIREUniversalValidator;
+    check('12 the engine loaded as a page script', !!NS && typeof NS.singleInit === 'function'
+      && page.win.dataEntrySubmit.__qridGuarded === true);
+    check('12 a page script cannot reach the guard', NS.guard === undefined);
+    try { NS.guard = { clickPass: true }; } catch (e) { /* a getter without a setter */ }
+    const input = page.doc.getElementsByName('study_id')[0];
+    input.value = '0ABC00001X';
+    input.fire('change');
+    check('12 and cannot set its pass flag', NS.guard === undefined
+      && pressEnter(page, input, saveButton('submit-btn-saverecord')) === false && page.calls.length === 0);
+  }
 }
 // The values the other fields opened with are taken in a timer, after REDCap's start-up (review W4-2),
 // so each page is booted, left to start, and checked before the next one is booted, once the timers

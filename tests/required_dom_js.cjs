@@ -21,7 +21,13 @@
  *     required, and doBranching() showing the row brings the notice back at
  *     once (REQ-1); an embedded field is judged by the row it sits in,
  *   - a @READONLY radio (options disabled, mirror enabled) or autocomplete
- *     dropdown never holds the save, asked again at save (REQ-2).
+ *     dropdown never holds the save, asked again at save (REQ-2),
+ *   - review 2026-11-13: a field read-only or disabled when the rule bound
+ *     holds the save once the person can change it (REQ-5); an autocomplete
+ *     dropdown's text box carries the notice, the outline and the aria state
+ *     (REQ-6); a doBranching() pass reads every row before it writes any
+ *     notice, and a held save names at most 12 fields and counts the rest
+ *     (REQ-7).
  *
  * Run:  node tests/required_dom_js.cjs
  */
@@ -468,6 +474,108 @@ function radioField(name, value, disabled) {
   env.doc.fire('submit', submitEv());
   check('REQ-13: with a failed check in the list it still says "Validation FAILED for:"',
     asked.length === 2 && /^Validation FAILED for:/.test(asked[1]));
+}
+
+// ---- review 2026-11-13, REQ-5: locked when the rule bound, editable at save ---------
+// The factory asked whether the field could be edited once, as it bound, and gave a
+// locked field no guard item: a field REDCap enables later, or one whose Missing Data
+// Code is cleared, was never held. The guard asks when the save is pressed.
+for (const lock of ['readOnly', 'disabled']) {
+  const phone = makeEl('input'); phone.name = 'phone'; phone.type = 'text'; phone.value = ''; phone[lock] = true;
+  const env = boot([phone], { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['phone'], blockSave: 'hard' }] },
+    { rows: true });
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('REQ-5 ' + lock + ' at bind: the notice shows and the save is not held', /blank/.test(rMsg(env, 'phone').innerHTML)
+    && ev._prevented === false && env.win._alerts.length === 0);
+  phone[lock] = false;                       // REDCap makes it editable, with no event
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('REQ-5 ' + lock + ' at bind, editable at save: the hard block holds', ev._prevented === true && env.win._alerts.length === 1);
+  phone.value = '677001122'; phone.fire('change');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('REQ-5 ' + lock + ': answered, the save goes through', ev._prevented === false);
+  phone.value = ''; phone[lock] = true; phone.fire('change');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('REQ-5 ' + lock + ': locked again, a blank no longer holds', ev._prevented === false);
+}
+{
+  // the same for a value rule, whose factory had the same test
+  const dose = makeEl('input'); dose.name = 'dose'; dose.type = 'text'; dose.value = '50'; dose.readOnly = true;
+  const env = boot([dose], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['dose'], assert: '[dose]<=10', blockSave: 'hard' }] }, { rows: true });
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('REQ-5 constraint, read-only at bind: not held', ev._prevented === false);
+  dose.readOnly = false;
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('REQ-5 constraint, editable at save: held', ev._prevented === true);
+}
+
+// ---- REQ-6: an autocomplete dropdown's visible text box ------------------------------
+// REDCap hides the select and draws a text input (id rc-ac-input_<field>) right after
+// it. The notice sat between the two and the outline and aria state went to the hidden
+// select only.
+{
+  const sel = makeEl('select'); sel.name = 'site'; sel.value = '';
+  const wrap = makeEl('span');
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_site'; ac.type = 'text';
+  wrap.appendChild(ac);
+  const env = boot([sel], { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: ['site'], blockSave: 'hard' }] },
+    { rows: true });
+  const row = env.doc.getElementById('site-tr');
+  const msg = rMsg(env, 'site');
+  check('REQ-6: before the text box renders, the notice follows the select', row.children.indexOf(msg) === row.children.indexOf(sel) + 1);
+  // REDCap's widget renders the box after the engine bound the field
+  row.insertBefore(wrap, sel.nextSibling); env.allEls.push(wrap, ac);
+  sel.fire('change');
+  // (this stub's insertBefore adds the node without taking it from its old place, so the last one counts)
+  const at = (x) => row.children.lastIndexOf(x);
+  check('REQ-6: the notice moves after the text box, which stays next to the select (select ' + at(sel) + ', box ' + at(wrap) + ', notice ' + at(msg) + ')',
+    at(wrap) === at(sel) + 1 && at(msg) > at(wrap));
+  check('REQ-6: the text box is described by the notice', (ac.getAttribute('aria-describedby') || '').split(' ').indexOf(msg.id) >= 0);
+  check('REQ-6: the text box carries aria-invalid and the outline of a blank required field',
+    ac.getAttribute('aria-invalid') === 'true' && !!ac.style.outline);
+  sel.value = '3'; sel.fire('change');
+  check('REQ-6: answered, the text box is cleared of both', ac.getAttribute('aria-invalid') === null && !ac.style.outline);
+}
+
+// ---- REQ-7: one doBranching() pass reads every row, then writes ----------------------
+{
+  const N = 40, els = [], names = [];
+  const log = [];
+  for (let i = 0; i < N; i++) { const e = makeEl('input'); e.name = 'f' + i; e.type = 'text'; e.value = ''; els.push(e); names.push(e.name); }
+  const env = boot(els, { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: names, blockSave: 'hard' }] },
+    { rows: true, before(w) {
+      w.doBranching = function () {};
+      w.getComputedStyle = function (el) { log.push('r'); return { display: el.style.display || 'block' }; };
+    } });
+  // a write: the notice's style is set (cssText or display)
+  for (const name of names) {
+    const st = rMsg(env, name).style;
+    let css = st.cssText, disp = st.display;
+    Object.defineProperty(st, 'cssText', { get() { return css; }, set(v) { css = v; log.push('w'); } });
+    Object.defineProperty(st, 'display', { get() { return disp; }, set(v) { disp = v; log.push('w'); } });
+  }
+  log.length = 0;
+  env.doc.getElementById('f3-tr').style.display = 'none';
+  env.win.doBranching('f0');
+  const firstWrite = log.indexOf('w'), lastRead = log.lastIndexOf('r');
+  check('REQ-7: the pass read the rows and wrote the notices (' + log.filter((x) => x === 'r').length + ' reads, '
+    + log.filter((x) => x === 'w').length + ' writes)', lastRead >= 0 && firstWrite >= 0);
+  check('REQ-7: every read comes before the first write', lastRead < firstWrite);
+  check('REQ-7: and the pass still judges: the hidden row lost its notice', rMsg(env, 'f3').style.display === 'none'
+    && /blank/.test(rMsg(env, 'f4').innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  const lines = (env.win._alerts[0] || '').split('\n');
+  check('REQ-7: a held save names 12 fields and counts the rest (got ' + lines.length + ' lines, last ' + JSON.stringify(lines[lines.length - 1]) + ')',
+    ev._prevented === true && lines.length === 14 && lines[lines.length - 1] === '… and ' + (N - 1 - 12) + ' more');
+}
+{
+  // twelve or fewer: every field is named, nothing is counted
+  const els = [], names = [];
+  for (let i = 0; i < 12; i++) { const e = makeEl('input'); e.name = 'g' + i; e.type = 'text'; e.value = ''; els.push(e); names.push(e.name); }
+  const env = boot(els, { singleFields: [], pooledFields: [], rules: [{ type: 'required', fields: names, blockSave: 'hard' }] });
+  env.doc.fire('submit', submitEv());
+  const lines = (env.win._alerts[0] || '').split('\n');
+  check('REQ-7: twelve blank fields are all named', lines.length === 13 && !/more$/.test(lines[12]));
 }
 
 console.log(`required_dom_js: ${n} checks, ${fail} failure(s)`);

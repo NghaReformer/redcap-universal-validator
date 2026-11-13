@@ -875,6 +875,8 @@
     UV_validators[f] = out;
   }
   var UV_guard = { items: [], armed: false };
+  /* True only where this file was loaded with require() (the test suites). */
+  var QRID_UNDER_TEST = (typeof module === "object" && !!module && typeof module.exports === "object" && typeof require === "function");
   /* Fields @UVWRITEONCE holds on this page: field => true, set as each lock
      is bound. The save guard reads it when the save is pressed, so another
      mode's guard item on such a field does not hold the save, whatever order
@@ -1853,15 +1855,23 @@ function QRID_fieldHidden(anchor){
 }
 /* REDCap shows and hides rows in doBranching(), which fires no DOM event. A
    factory whose notice depends on whether its row is shown subscribes here and
-   runs again after each call, and once more when a fade has had time to end. */
-var QRID_BRANCHING = { fns: [], armed: false, timer: null };
+   runs again after each call, and once more when a fade has had time to end.
+   $probe, when given, reads what $fn needs from the page (whether a row is
+   shown). Every probe runs before any $fn: a pass that read one row's
+   computed style, wrote its notice and went on to the next row made the
+   browser work the styles out again for each field, on every doBranching()
+   call (REQ-7). */
+var QRID_BRANCHING = { fns: [], probes: [], armed: false, timer: null };
 var QRID_BRANCHING_SETTLE_MS = 450;
-function QRID_onBranching(fn){
+function QRID_onBranching(fn, probe){
   QRID_BRANCHING.fns.push(fn);
+  if(typeof probe === "function") QRID_BRANCHING.probes.push(probe);
   if(QRID_BRANCHING.armed) return;
   QRID_BRANCHING.armed = true;
   function run(){
-    for(var i = 0; i < QRID_BRANCHING.fns.length; i++){ try { QRID_BRANCHING.fns[i](); } catch(e){} }
+    var i;
+    for(i = 0; i < QRID_BRANCHING.probes.length; i++){ try { QRID_BRANCHING.probes[i](); } catch(e){} }
+    for(i = 0; i < QRID_BRANCHING.fns.length; i++){ try { QRID_BRANCHING.fns[i](); } catch(e2){} }
   }
   function wrap(){
     var orig = window.doBranching;
@@ -4135,12 +4145,34 @@ var QRID_SAVE_HOLD_MS = (function(){
    milliseconds shows nothing). */
 var QRID_SAVE_HOLD_TICK_MS = 25;
 var QRID_SAVE_HOLD_NOTE_MS = 300;
+/* How many fields a held save names before it counts the rest. */
+var QRID_SAVE_LIST_MAX = 12;
 var QRID_SAVE_BUTTON_PREFIX = "submit-btn-save";
+/* REDCap names every action of a form "submit-btn-...": the saves, and Cancel
+   and the Delete actions (submit-btn-cancel, submit-btn-deleteform,
+   submit-btn-deleteevent), which write no value of the form. */
+var QRID_ACTION_PREFIX = "submit-btn-";
+/* The action a save was asked with, as REDCap's dataEntrySubmit reads it: the
+   string itself, or the name (else the id) of the element, a jQuery object
+   standing for its first element. "" when there is none. */
+function QRID_actionName(by){
+  if(typeof by === "string") return by;
+  if(by && by.jquery) by = by[0];
+  if(!by) return "";
+  var nm = by.getAttribute ? (by.getAttribute("name") || by.id || "") : (by.name || by.id || "");
+  return typeof nm === "string" ? nm : "";
+}
+/* Whether that action is one of REDCap's that saves no data (REQ-1). Only a
+   name REDCap gives an action and that is not a save counts: with no name, or
+   one the module does not know, the call is judged as a save. */
+function QRID_notASave(by){
+  var nm = QRID_actionName(by);
+  return nm.indexOf(QRID_ACTION_PREFIX) === 0 && nm.indexOf(QRID_SAVE_BUTTON_PREFIX) !== 0;
+}
 /* The save button an event's target is, or sits in; null for any other. */
 function QRID_saveButtonOf(t){
   while(t && t.getAttribute){
-    var nm = (t.getAttribute("name") || t.id || "");
-    if(nm.indexOf(QRID_SAVE_BUTTON_PREFIX) === 0) return t;
+    if(QRID_actionName(t).indexOf(QRID_SAVE_BUTTON_PREFIX) === 0) return t;
     t = t.parentNode;
   }
   return null;
@@ -4195,8 +4227,10 @@ function QRID_answerStale(entry){
    (refuse the BROWSER save until fixed — it cannot stop API/import writes;
    the server audit is the net for those). Guards real form submits, REDCap's
    save buttons (which submit programmatically and never fire a submit event)
-   and every call of REDCap's dataEntrySubmit, which the Enter key in a text
-   field makes (QRID_guardDataEntrySubmit). Native alert/confirm are used
+   and every save REDCap's dataEntrySubmit is called for, which the Enter key
+   in a text field makes (QRID_guardDataEntrySubmit). Cancel and the Delete
+   actions go through that function too and are let through (QRID_notASave).
+   Native alert/confirm are used
    deliberately: they are modal and announced by assistive tech without
    custom focus management. */
 /* A control the person cannot edit: @READONLY, or a disabled input. What the
@@ -4310,12 +4344,15 @@ function QRID_lockReadsAfterStart(){
 function QRID_registerBlocker(input, fieldName, blockMode, mode){
   /* A field the user cannot edit must never trap the save: readonly/disabled
      inputs (e.g. @READONLY) keep their message but are exempt from blocking
-     (UX-003) — the server audit still sees the value. The test is the shared
-     one, which also reads a radio's or checkbox's options (REQ-2). A plain
-     guard item has no DOM: its factory asked the same test already, and a
-     @UVEXISTS item on a read-only field still registers on purpose, to hold
-     the save while a lookup that fills fields is on its way. */
-  if(input.getAttribute && QRID_fieldLocked(input, fieldName)) return;
+     (UX-003) — the server audit still sees the value. That is asked when the
+     save is pressed (QRID_itemHolds), with the shared test, which also reads
+     a radio's or checkbox's options (REQ-2), and not here: a field that was
+     read-only or disabled when its rule bound and that the person can change
+     later (REDCap enables it, a Missing Data Code is cleared) had no guard
+     item, and its hard block never held (REQ-5). The @UVUNIQUE factory still
+     asks at bind, as its item also carries a lookup's wait; a @UVEXISTS item
+     on a read-only field registers on purpose, to hold the save while a
+     lookup that fills fields is on its way. */
   input.__qridBlockMode = blockMode;
   input.__qridFieldName = fieldName;
   /* the mode the item speaks for (php/modes.json "mode"): the lock reads it */
@@ -4336,6 +4373,11 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
      response, and the rules that wait for a complete response (REQ-7,
      php/modes.json "surveySave") do not hold them. */
   function guard(e, by){
+    /* Cancel and the Delete actions reach REDCap through dataEntrySubmit too,
+       and save nothing the person entered: a broken rule does not hold them,
+       and "Save anyway?" is not asked of them (REQ-1). A save kept back for a
+       lookup is dropped, so it cannot go on after the person left the form. */
+    if(QRID_notASave(by)){ dropHold(); return true; }
     var partial = QRID_partialSave(by);
     /* the click guard runs before the programmatic submit it triggers; a
        user who already chose "Save anyway" must not be asked twice. The pass
@@ -4411,7 +4453,12 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
         ? label(el) + " (or give a " + (UV_JUSTIFY[el.__qridFieldName].stale() ? "new " : "") + "reason in \u201C"
             + UV_JUSTIFY[el.__qridFieldName].label() + "\u201D)" : label(el);
     }
-    var names = bad.map(badLabel).map(function(t){ return "\n• " + t; }).join("");
+    /* at most QRID_SAVE_LIST_MAX fields are named and the rest counted: a
+       form with hundreds of blank required fields made an alert of hundreds
+       of lines, taller than the screen (REQ-7) */
+    var listed = bad.length > QRID_SAVE_LIST_MAX ? bad.slice(0, QRID_SAVE_LIST_MAX) : bad;
+    var names = listed.map(badLabel).map(function(t){ return "\n• " + t; }).join("")
+      + (bad.length > listed.length ? "\n… and " + (bad.length - listed.length) + " more" : "");
     var hard = bad.some(function(el){ return el.__qridBlockMode === "hard"; });
     if(hard){
       e.preventDefault();
@@ -4518,8 +4565,7 @@ var QRID_PARTIAL_SAVE = (function(){
 /* Whether the element that asked for a save is one of those buttons. */
 function QRID_partialSave(by){
   if(!QRID_PARTIAL_SAVE.buttons.length || !by) return false;
-  var nm = (by.getAttribute ? (by.getAttribute("name") || by.id || "") : (by.name || by.id || ""));
-  return typeof nm === "string" && QRID_PARTIAL_SAVE.buttons.indexOf(nm) >= 0;
+  return QRID_PARTIAL_SAVE.buttons.indexOf(QRID_actionName(by)) >= 0;
 }
 /* REDCap's own way into a data-entry save (LIVE-1). Pressing Enter in a text
    field runs a keydown handler that blurs the field and then calls
@@ -4535,7 +4581,10 @@ function QRID_partialSave(by){
    returns false and the original never runs. REDCap defines the function in a
    script loaded before this one, on data-entry forms and surveys alike. On a
    page still loading, DOMContentLoaded and load try again for a function
-   defined later; a loaded page without it is left alone. */
+   defined later, and so does each Enter key, before REDCap's handler reads
+   the function (QRID_watchEnter). A loaded page without the function gets no
+   listener; a staff form is told, once, that the Enter key is not guarded
+   there (QRID_guardMissing, FRM-12). */
 function QRID_guardDataEntrySubmit(guard){
   function wrap(){
     var orig = window.dataEntrySubmit;
@@ -4548,7 +4597,7 @@ function QRID_guardDataEntrySubmit(guard){
            again with the same arguments, through this wrapper */
         var ev = { type: "dataEntrySubmit", preventDefault: function(){}, stopImmediatePropagation: function(){},
                    again: function(){ return window.dataEntrySubmit.apply(self, args); } };
-        if(!guard(ev, ob && ob.jquery ? ob[0] : ob)){
+        if(!guard(ev, ob)){
           QRID_cancelEnter();
           return false;
         }
@@ -4559,12 +4608,32 @@ function QRID_guardDataEntrySubmit(guard){
     window.dataEntrySubmit = guarded;
     return true;
   }
+  function settle(){ if(!wrap()) QRID_guardMissing(); }
+  UV_guard.wrapSubmit = wrap;
   QRID_watchEnter();
-  if(wrap() || document.readyState === "complete") return;
+  if(wrap()) return;
+  if(document.readyState === "complete"){ QRID_guardMissing(); return; }
   if(document.readyState === "loading" && typeof document.addEventListener === "function"){
     document.addEventListener("DOMContentLoaded", wrap);
   }
-  if(typeof window.addEventListener === "function") window.addEventListener("load", wrap);
+  if(typeof window.addEventListener === "function") window.addEventListener("load", settle);
+}
+/* A rule that can block is live and REDCap's dataEntrySubmit was not there to
+   wrap once the page had loaded: REDCap renamed it, or the page defines it
+   later. Save-button clicks and form submits are still judged, but a save
+   REDCap starts itself (the Enter key) is not. Said once: a line on a staff
+   form (QRID_configErrorNotice is muted on surveys) and one in the console.
+   Only where REDCap's own form (form#form) is on the page: without it there
+   is no REDCap save to guard. */
+var QRID_GUARD_MISSING_TEXT = "REDCap's save function (dataEntrySubmit) was not found when this page loaded, so a save " +
+  "started with the Enter key is not held by a blocking rule here. Save buttons are still checked. " +
+  "Tell the module's maintainer which REDCap version this is.";
+function QRID_guardMissing(){
+  if(UV_guard.missingSaid) return;
+  if(typeof document === "undefined" || !document.getElementById || !document.getElementById("form")) return;
+  UV_guard.missingSaid = true;
+  try { if(typeof console !== "undefined" && console.warn) console.warn("Universal Field Validator: " + QRID_GUARD_MISSING_TEXT); } catch(e){}
+  try { QRID_configErrorNotice(QRID_GUARD_MISSING_TEXT); } catch(e2){}
 }
 /* The Enter key that led to a held save (LIVE-D4, live run 2026-10-30).
    REDCap's keydown handler calls dataEntrySubmit and does not cancel the key,
@@ -4585,6 +4654,9 @@ function QRID_watchEnter(){
   UV_guard.enterEvents = [];
   function note(e){
     if(!e || !(e.key === "Enter" || e.keyCode === 13 || e.which === 13)) return;
+    /* a dataEntrySubmit defined since the page loaded is wrapped before
+       REDCap's own keydown handler looks it up (FRM-12) */
+    try { if(typeof UV_guard.wrapSubmit === "function") UV_guard.wrapSubmit(); } catch(_w){}
     var t = e.target;
     if(t && (t.tagName || "").toLowerCase() === "textarea") return;
     if(!UV_guard.enterEvents.length) setTimeout(function(){ UV_guard.enterEvents = []; }, 0);
@@ -5571,7 +5643,7 @@ function QRIDConstraintInit(QRID_CONFIG){
        shared flag. Readonly/disabled fields keep their message but never trap
        the save (the anchor's state is copied onto the wrapper). */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
+    if(ANY_BLOCK && !configError){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -5938,7 +6010,7 @@ function QRIDWindowInit(QRID_CONFIG){
        time, so a page left open past midnight is checked against the day it
        is saved on, not the day the value was typed. */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
+    if(ANY_BLOCK && !configError){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -7224,7 +7296,7 @@ function QRIDRangeInit(QRID_CONFIG){
     /* Own guard item (see QRIDConstraintInit). __qridRecheck re-judges at save
        time: the note waits for the field to be left, the guard does not. */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
+    if(ANY_BLOCK && !configError){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -7643,7 +7715,7 @@ function QRIDDeltaInit(QRID_CONFIG){
     /* Own guard item (see QRIDConstraintInit). __qridRecheck re-judges at save
        time: the note waits for the field to be left, the guard does not. */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
+    if(ANY_BLOCK && !configError){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -8175,7 +8247,7 @@ function QRIDRequiredInit(QRID_CONFIG){
     /* Own guard item (see QRIDConstraintInit): independent invalid/block state
        so required composes with any other mode on the same input. */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
+    if(ANY_BLOCK && !configError){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off", __qridType: QRID_CONFIG.type,
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -8187,12 +8259,21 @@ function QRIDRequiredInit(QRID_CONFIG){
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
     function clear(){ msg.style.display = "none"; QRID_setModeState(input, "r", null); setGuard(false); }
+    /* Whether the row is hidden, read ahead of one check by the branching
+       pass (QRID_onBranching's probe); null when the check reads it itself. */
+    var rowHidden = null;
     function check(){
+      /* an autocomplete dropdown's text box may render after the bind: the
+         notice goes beside it, and it carries the outline and the aria
+         state the hidden select would (REQ-6) */
+      QRID_followWidget(input, msg, fieldName);
       /* REDCap hides the row of a field whose branching logic is false (or
          that carries @HIDDEN), leaves it out of its own required check, and
          erases the value on save. Nobody can answer a field they cannot see,
          so it is not required while hidden (REQ-1). */
-      if(QRID_fieldHidden(input)){ clear(); return; }
+      var hidden = rowHidden === null ? QRID_fieldHidden(input) : rowHidden;
+      rowHidden = null;
+      if(hidden){ clear(); return; }
       var act = QRID_activeVariants(VS);
       if(!act.length){
         /* no requirement in force — unless no branch could be CHOSEN at all,
@@ -8245,7 +8326,7 @@ function QRIDRequiredInit(QRID_CONFIG){
       if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
     }
     /* the row is shown or hidden by REDCap's doBranching, with no event */
-    QRID_onBranching(function(){ check(); });
+    QRID_onBranching(function(){ check(); }, function(){ rowHidden = QRID_fieldHidden(input); });
     check();
     return true;
   }
@@ -8408,7 +8489,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
        hold the save (UX-003 applied to the inputs that actually matter). The
        test is the one every factory shares (QRID_fieldLocked). */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName, isCheckbox ? MANAGED : null)){
+    if(ANY_BLOCK && !configError){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -10739,7 +10820,10 @@ window.INSPIREUniversalValidator = {
   writeOnceInit: QRIDWriteOnceInit,     /* @UVWRITEONCE — locked by tests/writeonce_dom_js.cjs */
   justifyInit: QRIDJustifyInit,         /* @UVJUSTIFY — locked by tests/justify_dom_js.cjs */
   get validators(){ return UV_validators; },
-  get guard(){ return UV_guard; },
+  /* The save guard's state is not published on a page: a script there could
+     set its pass flags or empty its items (FRM-12). The Node test suites
+     load this file as a CommonJS module and read it here. */
+  get guard(){ return QRID_UNDER_TEST ? UV_guard : undefined; },
   get lastPooled(){ return UV_lastPooled; }
 };
 /* The verified core published itself as a global for the legacy Injector

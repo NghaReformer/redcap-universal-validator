@@ -220,7 +220,13 @@ const BAD_ID = '0ABC00001X'; // fails the mod37,36 check AND the FC[0-9]{4} form
     ] }],
   });
   check('readonly: verdict still renders', /check character/i.test(msgOf(env, 'sid').innerHTML));
-  check('readonly: blocker never armed (UX-003)', env.NS.guard.items.length === 0);
+  const roEv = { _prevented: false, preventDefault() { this._prevented = true; }, stopImmediatePropagation() {} };
+  env.doc.fire('submit', roEv);
+  check('readonly: the save is never held (UX-003)', roEv._prevented === false);
+  sid.readOnly = false;
+  const rwEv = { _prevented: false, preventDefault() { this._prevented = true; }, stopImmediatePropagation() {} };
+  env.doc.fire('submit', rwEv);
+  check('readonly at bind, editable at save: the active branch\'s hard block holds (REQ-5)', rwEv._prevented === true);
 }
 
 // ---- 7) the pooled factory branches identically ------------------------------
