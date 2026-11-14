@@ -566,6 +566,29 @@ final class RecordManifestSource
     }
 
     /**
+     * The rows a walk of the whole project reads, counted only as far as
+     * $limit + 1: on the record index one row per record and arm. A caller
+     * weighing a walk against another read pays at most $limit + 1 index
+     * entries to learn which is cheaper. PHP_INT_MAX when the count cannot be
+     * read, so a walk is never chosen on a failed read.
+     */
+    public function rowsUpTo($limit)
+    {
+        $sql = 'SELECT 1 FROM ' . $this->walkFrom() . ' WHERE project_id = ?';
+        $params = [$this->pid];
+        if ($this->pkField !== null) {
+            $sql .= ' AND field_name = ?';
+            $params[] = $this->pkField;
+        }
+        try {
+            $r = $this->db->select('SELECT COUNT(*) FROM (' . $sql . ' LIMIT ' . ((int) $limit + 1) . ') AS n', $params);
+        } catch (\Throwable $e) {
+            return PHP_INT_MAX;
+        }
+        return isset($r[0][0]) ? (int) $r[0][0] : PHP_INT_MAX;
+    }
+
+    /**
      * Can this source say which group a record is in?
      *
      * FALSE MUST REFUSE A GROUP-SCOPED SCAN rather than downgrade it. A scan

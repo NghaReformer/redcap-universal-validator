@@ -57,10 +57,17 @@ namespace ExternalModules {
             if (!$effective) return null;
             return isset($this->projectSettings[$key]) ? $this->projectSettings[$key] : null;
         }
+        /** key => values the next reads return, one each, before the stored one (another request writing meanwhile). */
+        public $systemSettingReads = [];
         public function getSystemSetting($key) {
+            if (!empty($this->systemSettingReads[$key])) return array_shift($this->systemSettingReads[$key]);
             return isset($this->systemSettings[$key]) ? $this->systemSettings[$key] : null;
         }
-        public function setSystemSetting($key, $value) { $this->systemSettings[$key] = $value; }
+        /** key => value another request writes just after this one, so its own write is lost. */
+        public $systemSettingRace = [];
+        public function setSystemSetting($key, $value) {
+            $this->systemSettings[$key] = array_key_exists($key, $this->systemSettingRace) ? $this->systemSettingRace[$key] : $value;
+        }
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
         public function log($message, $parameters = []) { $this->logCalls[] = [$message, $parameters]; return count($this->logCalls); }
@@ -107,8 +114,11 @@ namespace ExternalModules {
          */
         public $queryThrows = false;
         public $lastInsertIdUnreadable = false;
+        /** Whether GET_LOCK grants the lock; off, it answers nothing, as the stub always did. */
+        public $grantLocks = false;
         public function query($sql, $params = []) {
             $this->rateStatements[] = $sql;
+            if (strpos($sql, 'SELECT GET_LOCK(') === 0) return $this->grantLocks ? [['1']] : [];
             if ($this->queryThrows && strpos($sql, 'uv_rate_bucket') !== false) {
                 throw new \RuntimeException("Table 'redcap.uv_rate_bucket' doesn't exist");
             }
@@ -575,6 +585,27 @@ namespace {
     $before = $m->systemSettings['log-hmac-key'];
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
     check('HMAC key is stable across saves', $m->systemSettings['log-hmac-key'] === $before);
+    // Two first saves make a key at once and only the last write stays: the
+    // request whose write was lost hashes with the stored key, not its own.
+    $m = newModule($dialogRules, $dictionary, $classicData, 149);
+    $m->systemSettingRace['log-hmac-key'] = str_repeat('c7', 32);
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    $one = invalidLogs($m)[0][1];
+    check('a key another request stored first is the one used (hmacKey reads back)',
+        $one['value_hmac'] === hash_hmac('sha256', '1ABC-00002E', str_repeat('c7', 32) . '|149'));
+    // With the lock: the key is read again under it, and one another request
+    // made while this one waited is used as it is, not replaced.
+    $m = newModule($dialogRules, $dictionary, $classicData, 149);
+    $m->grantLocks = true;
+    // The first read is the parse cache's (loadParseCache, FRM-10), which never makes a key.
+    $m->systemSettingReads['log-hmac-key'] = [null, null, str_repeat('d4', 32)];
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    $one = invalidLogs($m)[0][1];
+    $sent = implode("\n", $m->rateStatements);
+    check('the key is made under a lock and read again inside it, so a key made meanwhile is kept',
+        $one['value_hmac'] === hash_hmac('sha256', '1ABC-00002E', str_repeat('d4', 32) . '|149')
+        && !isset($m->systemSettings['log-hmac-key'])
+        && strpos($sent, "GET_LOCK(CONCAT('uvhk'") !== false && strpos($sent, "RELEASE_LOCK(CONCAT('uvhk'") !== false);
 
     // strict ("none"): record as keyed HMAC, no value at all
     $m = newModule($dialogRules, $dictionary, $classicData, 149, false, ['log-values' => 'none']);
@@ -3210,15 +3241,31 @@ namespace {
     }));
     check('F6: enabling the module creates the throttle counter with the scan flag OFF',
         count($made) === 1);
-    // The lookup index's four tables are not the scan's either: the live
+    // The lookup index's five tables are not the scan's either: the live
     // lookups they serve run on every installation (Scan\LookupIndex).
     check('F6: and creates no scan table, so the scan stays opt-in',
         count(array_filter($inst->rateStatements, function ($q) {
             return stripos($q, 'CREATE TABLE') !== false && strpos($q, 'uv_rate_bucket') === false
-                && !preg_match('/uv_lookup_(key|field|sync|record) /', $q);
+                && !preg_match('/uv_lookup_(key|field|sync|record|def) /', $q);
         })) === 0);
     check('F6: and it is IF NOT EXISTS, so every save and enable is a no-op after the first',
         stripos($made[0], 'IF NOT EXISTS') !== false);
+    // The keyed-hash secret is made at enable and upgrade, outside any
+    // request's transaction (hmacKey()).
+    $madeKey = function ($m) {
+        $k = isset($m->systemSettings['log-hmac-key']) ? $m->systemSettings['log-hmac-key'] : null;
+        return is_string($k) && strlen($k) === 64 && ctype_xdigit($k);
+    };
+    check('hmacKey: enabling the module makes the keyed-hash secret', $madeKey($inst));
+    $up = newModule([], $f5Dict, $f5Data, 149);
+    $up->rateStatements = [];
+    $up->systemSettings['scan-system-enable-durable'] = '0';
+    $hadKey = isset($up->systemSettings['log-hmac-key']);
+    $up->redcap_module_system_change_version('2.5.0', '2.4.0');
+    check('hmacKey: upgrading the module makes it too', !$hadKey && $madeKey($up));
+    $kept = $up->systemSettings['log-hmac-key'];
+    $up->redcap_module_system_change_version('2.5.1', '2.5.0');
+    check('hmacKey: and a later upgrade keeps the one made', $up->systemSettings['log-hmac-key'] === $kept);
 
     // F7: A ROTATED SESSION IS NOT A FRESH BUDGET.
     //

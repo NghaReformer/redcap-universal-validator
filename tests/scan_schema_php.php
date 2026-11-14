@@ -433,7 +433,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v3: an installation at version 2 applies the as_of column',
             $r['ok'] === true && $r['from'] === 2 && $r['to'] === Schema::VERSION
             && $r['applied'] === count(Schema::statements(3)) + count(Schema::statements(4)) + count(Schema::statements(5))
-                + count(Schema::statements(6)) + count(Schema::statements(7)) + count(Schema::statements(8))
+                + count(Schema::statements(6)) + count(Schema::statements(7)) + count(Schema::statements(8)) + count(Schema::statements(9))
             && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE uv_finding ADD COLUMN as_of') === 0; }));
         check('v3: and records version 3', (bool) array_filter($m->sql, function ($q) {
             return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
@@ -443,7 +443,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $r = Schema::migrate($m);
         check('v3: a column already there is not added twice', $r['ok'] === true
             && $r['applied'] === count(Schema::statements(4)) + count(Schema::statements(5)) + count(Schema::statements(6))
-                + count(Schema::statements(7)) + count(Schema::statements(8))
+                + count(Schema::statements(7)) + count(Schema::statements(8)) + count(Schema::statements(9))
             && !array_filter($m->sql, function ($q) { return strpos($q, 'ADD COLUMN as_of') !== false; }));
         $m = new \FakeModule();
         $m->version = '2';
@@ -690,7 +690,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $have->columns = array_merge($have->columns, ['uv_unique_candidate.lookup', 'uv_finding.z_score', 'uv_finding.growth_reference']);
         $rh = Schema::migrate($have);
         check('v4: a column already there is not added again',
-            $rh['ok'] === true && $rh['applied'] === count(Schema::statements(6))
+            $rh['ok'] === true && $rh['applied'] === count(Schema::statements(6)) + count(Schema::statements(9))
             && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         $inert = new \FakeModule();
         $inert->version = '3';
@@ -731,7 +731,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $have->columns = array_merge($have->columns, ['uv_finding.z_score', 'uv_finding.growth_reference']);
         $rh = Schema::migrate($have);
         check('v5: a column already there is not added again',
-            $rh['ok'] === true && $rh['applied'] === count(Schema::statements(6))
+            $rh['ok'] === true && $rh['applied'] === count(Schema::statements(6)) + count(Schema::statements(9))
             && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         $half = new \FakeModule();
         $half->version = '4';
@@ -740,7 +740,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $rh = Schema::migrate($half);
         $alters = array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v5: with z_score there, only growth_reference is added (got ' . json_encode($alters) . ')',
-            $rh['ok'] === true && $rh['applied'] === 1 + count(Schema::statements(6))
+            $rh['ok'] === true && $rh['applied'] === 1 + count(Schema::statements(6)) + count(Schema::statements(9))
             && $alters === ['ALTER TABLE uv_finding ADD COLUMN growth_reference VARCHAR(64) NULL']);
         $inert = new \FakeModule();
         $inert->version = '4';
@@ -786,7 +786,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $r = Schema::migrate($m);
         check('v6: an installation at version 5 takes those four statements on its way to the current version',
             $r['ok'] === true && $r['from'] === 5 && $r['to'] === Schema::VERSION
-            && $r['applied'] === 4 + count(Schema::statements(7)) + count(Schema::statements(8))
+            && $r['applied'] === 4 + count(Schema::statements(7)) + count(Schema::statements(8)) + count(Schema::statements(9))
             && !array_diff($creates, $m->sql) && !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0; }));
         check('v6: and records version 6',
             (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
@@ -794,8 +794,8 @@ namespace INSPIRE\UniversalValidator\Scan {
             strpos(implode(' ;; ', Schema::plan(0)), 'CREATE TABLE IF NOT EXISTS uv_lookup_key') !== false);
         $e = new \FakeModule();
         $ok = Schema::ensureLookupIndex($e);
-        check('v6: ensureLookupIndex() runs the same four statements, and nothing else',
-            $ok === true && $e->sql === $creates);
+        check('v6: ensureLookupIndex() runs the same four statements, then version 9\'s, and nothing else',
+            $ok === true && $e->sql === array_merge($creates, array_map(function ($i) { return $i['sql']; }, Schema::statements(9))));
         $e = new \FakeModule();
         $e->failOn = 'uv_lookup_sync';
         check('v6: ensureLookupIndex() is false when a statement fails', Schema::ensureLookupIndex($e) === false);
@@ -829,7 +829,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $have->columns = array_merge($have->columns, ['uv_finding.justified', 'uv_scan_run.detail_justified']);
         $rh = Schema::migrate($have);
         check('v7: a column already there is not added again',
-            $rh['ok'] === true && $rh['applied'] === 0
+            $rh['ok'] === true && $rh['applied'] === count(Schema::statements(9))
             && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         $half = new \FakeModule();
         $half->version = '6';
@@ -838,7 +838,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $rh = Schema::migrate($half);
         $alters = array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v7: with the finding column there, only the run column is added (got ' . json_encode($alters) . ')',
-            $rh['ok'] === true && $rh['applied'] === 1
+            $rh['ok'] === true && $rh['applied'] === 1 + count(Schema::statements(9))
             && $alters === ['ALTER TABLE uv_scan_run ADD COLUMN detail_justified BIGINT UNSIGNED NOT NULL DEFAULT 0']);
         $inert = new \FakeModule();
         $inert->version = '6';
@@ -891,8 +891,8 @@ namespace INSPIRE\UniversalValidator\Scan {
         $m->version = '7';
         $r = Schema::migrate($m);
         $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
-        check('v8: an installation at version 7 moves to version 8',
-            $r['ok'] === true && $r['from'] === 7 && $r['to'] === 8 && Schema::VERSION === 8);
+        check('v8: an installation at version 7 moves past version 8',
+            $r['ok'] === true && $r['from'] === 7 && $r['to'] === Schema::VERSION && Schema::VERSION >= 8);
         check('v8: by adding each table\'s columns in one ALTER, then the index (got '
             . json_encode($alters) . ')', $alters === $v8);
         check('rvc1-3: and no default is set on the run counts, so a run the previous build starts mid-migration stays NULL',
@@ -903,8 +903,10 @@ namespace INSPIRE\UniversalValidator\Scan {
             && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $before = count($m->sql);
         $again = Schema::migrate($m);
+        // The fake keeps its version at 7 and no table list, so version 9's
+        // CREATE TABLE IF NOT EXISTS is sent again; nothing of version 8 is.
         check('v8: run again, it issues no ALTER: the columns and the index are there',
-            $again['ok'] === true && $again['applied'] === 0
+            $again['ok'] === true && $again['applied'] === count(Schema::statements(9))
             && !array_filter(array_slice($m->sql, $before), function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         $half = new \FakeModule();
         $half->version = '7';
@@ -912,7 +914,7 @@ namespace INSPIRE\UniversalValidator\Scan {
                           'uv_scan_record.stored_justified', 'uv_scan_record.unstored_justified'];
         $rh = Schema::migrate($half);
         check('v8: interrupted after the record columns, the resumed run adds the rest and nothing else',
-            $rh['ok'] === true && $rh['applied'] === 3
+            $rh['ok'] === true && $rh['applied'] === 3 + count(Schema::statements(9))
             && array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }))
                === [$v8[1], $v8[2], $v8[3]]);
         $odd = new \FakeModule();
@@ -1012,6 +1014,33 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
 
     /* =====================================================================
+     * V9  uv_lookup_def, the value index's composite entries
+     *
+     * One CREATE TABLE IF NOT EXISTS, which ensureLookupIndex() runs too, so
+     * an installation that never turns the scan on has it. No data step.
+     * ===================================================================== */
+    {
+        $v9 = array_map(function ($i) { return $i['sql']; }, Schema::statements(9));
+        check('v9: one CREATE TABLE IF NOT EXISTS uv_lookup_def, skipped by nothing',
+            count($v9) === 1 && strpos($v9[0], 'CREATE TABLE IF NOT EXISTS uv_lookup_def (') === 0
+            && Schema::statements(9)[0]['skipIf'] === null && in_array('uv_lookup_def', Schema::tables(), true));
+        check('v9: keyed by project and entry, with a definition and where a paused build stands',
+            strpos($v9[0], 'PRIMARY KEY (project_id, field_name)') !== false && strpos($v9[0], 'def MEDIUMBLOB NOT NULL') !== false
+            && strpos($v9[0], "build_cursor VARBINARY(401) NOT NULL DEFAULT ''") !== false
+            && strpos($v9[0], 'build_gen INT UNSIGNED NOT NULL DEFAULT 0') !== false);
+        $m = new \FakeModule();
+        $m->version = '8';
+        $r = Schema::migrate($m);
+        check('v9: an installation at version 8 takes that one statement and records version 9',
+            $r['ok'] === true && $r['from'] === 8 && $r['to'] === 9 && $r['applied'] === 1 && in_array($v9[0], $m->sql, true)
+            && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; })
+            && !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0 || strpos($q, 'ALTER TABLE') === 0; }));
+        $e = new \FakeModule();
+        $e->failOn = 'uv_lookup_def';
+        check('v9: ensureLookupIndex() is false when the definitions table cannot be made', Schema::ensureLookupIndex($e) === false);
+    }
+
+    /* =====================================================================
      * V2  a schema that already HAS DATA, migrating in place
      *
      * This repository has no analogue for it, and that absence is the finding.
@@ -1034,7 +1063,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v2: and applies only the versions after 1, not version 1 again',
             $r['applied'] === count(Schema::statements(2)) + count(Schema::statements(3))
                              + count(Schema::statements(4)) + count(Schema::statements(5))
-                             + count(Schema::statements(6)) + count(Schema::statements(7)) + count(Schema::statements(8)));
+                             + count(Schema::statements(6)) + count(Schema::statements(7)) + count(Schema::statements(8)) + count(Schema::statements(9)));
 
         foreach ($m->sql as $q) if (strpos($q, 'DELETE FROM uv_') === 0) $deletes++;
         // Four tables gain a project_id their existing rows cannot be given.
@@ -1081,7 +1110,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v2: and skips exactly the statements already applied',
             $rh['applied'] === count(Schema::statements(2)) - 3 + count(Schema::statements(3))
                                + count(Schema::statements(4)) + count(Schema::statements(5))
-                               + count(Schema::statements(6)) + count(Schema::statements(7)) + count(Schema::statements(8)));
+                               + count(Schema::statements(6)) + count(Schema::statements(7)) + count(Schema::statements(8)) + count(Schema::statements(9)));
 
         // THE VERIFICATION IS NOT DECORATION. migrate() used to report ok on the
         // strength of having executed statements without an error; with

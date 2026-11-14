@@ -112,8 +112,8 @@ $ok = (new LookupIndex($m))->forgetProject(7);
 $deletes = array_values(array_filter($m->log, function ($l) { return strpos($l[0], 'DELETE FROM') === 0; }));
 $tables = array_map(function ($l) { return preg_match('/^DELETE FROM (\w+) WHERE project_id = \?/', $l[0], $mm) ? $mm[1] : '?'; }, $deletes);
 sort($tables);
-check('forgetProject() deletes the project from the four tables (got ' . json_encode($tables) . ')',
-    $ok === true && $tables === ['uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync']);
+check('forgetProject() deletes the project from the five tables (got ' . json_encode($tables) . ')',
+    $ok === true && $tables === ['uv_lookup_def', 'uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync']);
 check('...each statement bound to that project and nothing else',
     count(array_filter($deletes, function ($l) { return $l[1] !== [7]; })) === 0);
 check('...the large tables a page at a time',

@@ -31,6 +31,23 @@ use INSPIRE\UniversalValidator\Logic;
  * the caller confirms them against the data table rows of those records
  * (FieldValues::recordsAmong) before it uses one.
  *
+ * COMPOSITE ENTRIES. Besides one entry per field, an entry can key a value
+ * together with other fields of the same entry of the record and, as asked,
+ * its event or its Data Access Group (compositeCandidates()). Its name starts
+ * with "#", which no REDCap field name does, and its definition (the fields,
+ * their number marks, the scope, which fields repeat in which event) is kept
+ * in uv_lookup_def, so the cron and the sync can derive its keys without the
+ * rule that asked for it. A value whose other parts all hold a few values (an
+ * arm code with a site) then narrows to one stratum: the records that share
+ * every part, and no others.
+ *
+ * A COMPOSITE BUILD CAN PAUSE. It goes through the records BATCH at a time,
+ * listing the first field's records or walking REDCap's record index
+ * (writeCompositeKeys()). A cron that reaches its deadline keeps its
+ * place in uv_lookup_def.build_cursor and the next run goes on from there.
+ * Meanwhile the sync keeps the records already indexed current, as it does for
+ * a build that runs (keptOf()), and a reset of the project starts it again.
+ *
  * BUILT ONCE, BY THE CRON WHEN LARGE. A field's first build reads all its
  * rows. A lookup builds a field of up to LIVE_BUILD_ROWS rows itself; a
  * larger one it marks as wanted (uv_lookup_field.wanted_at) and the module's
@@ -112,6 +129,8 @@ final class LookupIndex
      * by the next cron pass (maintain) and are built again when a lookup asks.
      */
     const KEY_VERSION = 2;
+    /** Fields a composite entry keys besides its first. */
+    const MAX_PARTS = 8;
     /** Seconds the log is read back behind the newest position. */
     const OVERLAP = 3600;
     /** A (time, position, count) sample is kept at most this often. */
@@ -162,6 +181,8 @@ final class LookupIndex
     const INSERT_ROWS = 2000;
     /** Rows per DELETE when keys are cleared. */
     const DELETE_ROWS = 20000;
+    /** Records a composite build lists from one read of the data table (recordsAfter()). */
+    const LIST_RECORDS = 50000;
 
     private $module;
     /** @var ModuleDb */
@@ -171,6 +192,8 @@ final class LookupIndex
     private $built = 0;
     /** @var int data rows a lookup builds a field of itself */
     private $liveBuildRows;
+    /** @var int records a composite build lists from one read */
+    private $listRecords;
     /** @var int when the cron last ran (Unix time), 0 when it never has */
     private $cronAt;
     /** @var array pid => the sync row, once this request synced that project */
@@ -191,6 +214,7 @@ final class LookupIndex
      * @param array $options 'liveBuildRows' => int, in place of LIVE_BUILD_ROWS;
      *                       'cronAt' => int, when the cron last ran;
      *                       'keySecret' => string, what the keys are hashed with (FRM-7)
+     *                       'listRecords' => int, in place of LIST_RECORDS
      */
     public function __construct($module, array $options = [])
     {
@@ -198,8 +222,15 @@ final class LookupIndex
         $this->db = new ModuleDb($module);
         $this->liveBuildRows = isset($options['liveBuildRows']) ? (int) $options['liveBuildRows'] : self::LIVE_BUILD_ROWS;
         $this->cronAt = isset($options['cronAt']) ? (int) $options['cronAt'] : 0;
+        $this->listRecords = isset($options['listRecords']) ? max(1, (int) $options['listRecords']) : self::LIST_RECORDS;
         $this->secret = (isset($options['keySecret']) && is_string($options['keySecret']) && strlen($options['keySecret']) >= self::SECRET_MIN)
             ? $options['keySecret'] : null;
+    }
+
+    /** Whether the index can work at all: a module to query and a secret to key with (FRM-7). */
+    private function usable()
+    {
+        return $this->secret !== null && is_object($this->module) && is_callable([$this->module, 'query']);
     }
 
     /**
@@ -222,6 +253,8 @@ final class LookupIndex
             $this->why = 'error';
             return null;
         }
+        $entries = [];
+        foreach ($fieldMarks as $f => $mark) $entries[(string) $f] = $this->plainEntry($mark);
         try {
             $src = $this->sources($pid);
             if ($src === null) {
@@ -233,7 +266,7 @@ final class LookupIndex
                 return null;
             }
             try {
-                if (!$this->prepare($pid, $src, $fieldMarks, false)) {
+                if (!$this->prepare($pid, $src, $entries, false)) {
                     if ($this->why === null) $this->why = 'building';
                     return null;
                 }
@@ -269,6 +302,75 @@ final class LookupIndex
     }
 
     /**
+     * The records of $pid whose entry of $def holds the key of $parts, in byte
+     * order, those after $after only, at most $limit of them (0: all). A
+     * superset the caller confirms, as candidates() returns. Null when the
+     * index cannot answer (lastProblem() says why), or $def is not one
+     * compositeDef() accepts. The
+     * caller vouches for 'rep': a field and event left out of it are read as
+     * the event's row, so instances above 1 there get no key.
+     *
+     * $def:   'slot' => the field the value is in; 'with' => the other fields
+     *         read from the same entry, in order; 'marks' => field => number
+     *         mark ('point', 'comma' or null); 'scope' => 'project', 'event'
+     *         or 'dag'; 'rep' => field => [event id => bucket] for each
+     *         event where the field repeats: its form's name when the form
+     *         repeats there, '' when the event repeats. Fields of one value
+     *         per entry only: a checkbox has a row per ticked option.
+     * $parts: 'value' => the value; 'with' => field => value (blank when
+     *         missing); 'event' => the event id (scope event); 'dag' => the
+     *         group id, '' for none (scope dag).
+     *
+     * The entries keyed are the ones the scan reads (ScanRuns::recordContexts()):
+     * the event's row, and each repeating instance merged over it. A "with"
+     * field is read from the entry, so from the event's row when it does not
+     * repeat, and blank in an entry of another bucket (compositeMaterials()).
+     *
+     * @return string[]|null
+     */
+    public function compositeCandidates($pid, array $def, array $parts, $after = '', $limit = 0)
+    {
+        $pid = (int) $pid;
+        $def = self::compositeDef($def);
+        $this->why = null;
+        if ($pid <= 0 || $def === null || !$this->usable()) {
+            $this->why = 'error';
+            return null;
+        }
+        $value = isset($parts['value']) && is_scalar($parts['value']) ? (string) $parts['value'] : '';
+        if (Logic::lookupTrim($value) === '') return [];
+        $with = isset($parts['with']) && is_array($parts['with']) ? $parts['with'] : [];
+        $event = isset($parts['event']) && is_scalar($parts['event']) ? (string) $parts['event'] : '';
+        $dag = isset($parts['dag']) && is_scalar($parts['dag']) ? (string) $parts['dag'] : '';
+        $name = self::compositeName($def);
+        try {
+            $src = $this->sources($pid);
+            if ($src === null) {
+                $this->why = 'tables';
+                return null;
+            }
+            if (!$this->lock($pid, self::LOCK_WAIT)) {
+                $this->why = 'lock';
+                return null;
+            }
+            try {
+                if (!$this->prepare($pid, $src, [$name => $this->compositeEntry($def)], false)) {
+                    if ($this->why === null) $this->why = 'building';
+                    return null;
+                }
+                $key = $this->compositeKeyHex($pid, $name, self::compositeMaterial($def, $value, $with, $event, $dag));
+                return $this->recordsOf($pid, $name, $key, (string) $after, (int) $limit);
+            } finally {
+                $this->unlock($pid);
+            }
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'LookupIndex::compositeCandidates');
+            $this->why = 'error';
+            return null;
+        }
+    }
+
+    /**
      * The cron's work, until the Unix time $until: build the fields lookups
      * wanted and could not build, rebuild a field REFRESH_BEFORE short of
      * REBUILD_AFTER, start again a build that died, and drop the keys of a
@@ -299,9 +401,9 @@ final class LookupIndex
         // A lock nobody holds: refused here, it is refused to every lookup.
         if (!$this->lock(0, 0)) $note('lock');
         else $this->unlock(0);
-        // A field keyed another way (an older key version, the MD5 keys of
+        // An entry keyed another way (an older key version, the MD5 keys of
         // version 1 among them, or another secret) is listed too, and dropped
-        // below with its keys ($mark === false), so no such key outlives the
+        // below with its keys (storedEntry() gives null), so no such key outlives the
         // next pass (FRM-7). LEFT() compares bytes, so no value is a pattern.
         $head = $this->specHead() . '|';
         $todo = $this->db->select('SELECT project_id, field_name, spec, asked_at FROM ' . Schema::table('lookup_field') . '
@@ -319,16 +421,20 @@ final class LookupIndex
             $field = (string) $t[1];
             try {
                 $src = $this->sources($pid);
-                $mark = $this->markOf((string) $t[2]);
-                if (!$this->lock($pid, self::CRON_LOCK_WAIT)) {
+                if (!$this->lock($pid, self::waitUntil($until))) {
                     $out['waiting']++;
                     $note('lock');
                     continue;
                 }
                 try {
-                    if ($src === null || $mark === false || (int) $t[3] < $now - self::UNUSED_AFTER) {
-                        $this->dropField($pid, $field);
-                        $out['dropped']++;
+                    // A spec this version cannot read, or a composite whose
+                    // definition is gone, cannot be built here: it goes, and
+                    // the next lookup that wants it starts it again. Keys left
+                    // at $until go on the next run, which finds the row again.
+                    $entry = $src === null ? null : $this->storedEntry($pid, $field, (string) $t[2]);
+                    if ($entry === null || (int) $t[3] < $now - self::UNUSED_AFTER) {
+                        if ($this->dropField($pid, $field, $until)) $out['dropped']++;
+                        else $out['left']++;
                         continue;
                     }
                     // Each field syncs afresh: the lock was free while the last one built.
@@ -336,7 +442,7 @@ final class LookupIndex
                     $this->builds = 0;
                     $before = $this->built;
                     $this->why = null;
-                    if (!$this->prepare($pid, $src, [$field => $mark], true)) {
+                    if (!$this->prepare($pid, $src, [$field => $entry], true, $until)) {
                         $out['waiting']++;
                         $note($this->why === null ? 'building' : $this->why);
                     } elseif ($this->built > $before) {
@@ -422,13 +528,14 @@ final class LookupIndex
     }
 
     /**
-     * Sync the project's index with its log, then build any field of
-     * $fieldMarks that is missing, stale or keyed another way, as far as this
-     * request may ($cron: the cron, which builds any size, lets the lock go
-     * while it reads, and rebuilds REFRESH_BEFORE early). False when the index
-     * cannot answer for all of them in this request.
+     * Sync the project's index with its log, then build any entry of $entries
+     * (name => plainEntry() or compositeEntry()) that is missing, stale or
+     * keyed another way, as far as this request may ($cron: the cron, which
+     * builds any size, lets the lock go while it reads, rebuilds
+     * REFRESH_BEFORE early, and pauses a composite build at $until). False
+     * when the index cannot answer for all of them in this request.
      */
-    private function prepare($pid, array $src, array $fieldMarks, $cron)
+    private function prepare($pid, array $src, array $entries, $cron, $until = 0)
     {
         $now = time();
         $states = null;
@@ -465,9 +572,9 @@ final class LookupIndex
         }
         if ($states === null) $states = $this->fieldStates($pid);
         $age = $cron ? self::REBUILD_AFTER - self::REFRESH_BEFORE : self::REBUILD_AFTER;
-        foreach ($fieldMarks as $f => $mark) {
+        foreach ($entries as $f => $entry) {
             $f = (string) $f;
-            $spec = $this->spec($mark);
+            $spec = $entry['spec'];
             $st = isset($states[$f]) ? $states[$f] : null;
             $answers = $st !== null && $st['ready'] && $st['spec'] === $spec;
             $building = $st !== null && self::building($st, $now);
@@ -480,12 +587,15 @@ final class LookupIndex
                 $this->why = 'building';
                 return false;
             }
-            if (!$cron && !$this->mayBuildNow($pid, $src, $f, $spec, $st, $now)) {
+            if (!$cron && !$this->mayBuildNow($pid, $src, $f, $entry, $st, $now)) {
                 $this->why = ($now - $this->cronAt >= self::CRON_GRACE) ? 'no-cron' : 'cron';
                 return false;
             }
             $this->builds++;
-            if (!$this->build($pid, $f, $spec, $mark, $st, $cron)) {
+            $ok = $entry['kind'] === 'plain'
+                ? $this->build($pid, $f, $spec, $entry['mark'], $st, $cron, $cron ? (int) $until : 0)
+                : $this->buildComposite($pid, $src, $f, $entry, $st, $cron, $cron ? (int) $until : 0);
+            if (!$ok) {
                 $this->why = 'building';
                 return false;
             }
@@ -499,21 +609,28 @@ final class LookupIndex
      * wanted for the cron, with its new spec; keys of another spec are
      * cleared before the build. A field already wanted stays the cron's
      * however long it has waited: a lookup built it after CRON_GRACE with no
-     * cron, a read with no bound inside a request (UNQ-3).
+     * cron, a read with no bound inside a request (UNQ-3). A new spec also raises the generation
+     * and ends any build marked on the row, so a build of the old spec still
+     * running (one past BUILD_STALE) cannot mark the field built under the
+     * new one. A composite entry is counted by the rows of all its fields,
+     * and its definition is stored first, so the cron can build it.
      */
-    private function mayBuildNow($pid, array $src, $field, $spec, $st, $now)
+    private function mayBuildNow($pid, array $src, $field, array $entry, $st, $now)
     {
+        $spec = $entry['spec'];
         $wanted = $st !== null ? $st['wanted'] : 0;
         if ($wanted > 0) return false;
-        // Counted only as far as the limit: a field of 400,000 rows costs 20,001 index entries.
-        $r = $this->db->select('SELECT COUNT(*) FROM (SELECT 1 FROM ' . $src['data'] . ' WHERE project_id = ? AND field_name = ? LIMIT '
-            . ($this->liveBuildRows + 1) . ') AS n', [$pid, $field]);
-        if (isset($r[0][0]) && (int) $r[0][0] <= $this->liveBuildRows) return true;
-        // MySQL applies these assignments in order, so ready and wipe read the old spec.
+        // A composite reads the rows of all its fields. Counted only as far as
+        // the limit: a field of 400,000 rows costs 20,001 index entries.
+        $fields = $entry['kind'] === 'plain' ? [$field] : self::compositeFields($entry['def']);
+        if ($this->rowsUpTo($src['data'], $pid, $fields, $this->liveBuildRows) <= $this->liveBuildRows) return true;
+        if ($entry['kind'] !== 'plain') $this->saveDef($pid, $field, self::defJson($entry['def']), null, null);
+        // MySQL applies these assignments in order, so all four read the old spec.
         $this->db->execNoCount('INSERT INTO ' . Schema::table('lookup_field') . '
             (project_id, field_name, spec, ready, built_at, gen, building_at, wanted_at, asked_at, wipe)
             VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?, 0)
             ON DUPLICATE KEY UPDATE ready = IF(spec = VALUES(spec), ready, 0), wipe = IF(spec = VALUES(spec), wipe, 1),
+                gen = IF(spec = VALUES(spec), gen, gen + 1), building_at = IF(spec = VALUES(spec), building_at, 0),
                 spec = VALUES(spec), wanted_at = IF(wanted_at = 0, VALUES(wanted_at), wanted_at), asked_at = VALUES(asked_at)',
             [$pid, $field, $spec, $now, $now]);
         return false;
@@ -583,9 +700,13 @@ final class LookupIndex
                 $row['meta'] = $win['meta'];
             }
         }
-        $kept = $reset ? [] : $this->keptOf($states, $now);
+        // Read when the log first names a change, so a sync with nothing new
+        // reads no definitions.
+        $kept = null;
         $overflow = false;
-        $read = function ($a, $b) use (&$overflow, $kept, $pid, $src) {
+        $read = function ($a, $b) use (&$overflow, &$kept, &$states, $reset, $pid, $src, $now) {
+            if ($reset || $overflow) return;
+            if ($kept === null) $kept = $this->keptOf($pid, $states, $now);
             if (!$kept || $overflow) return;
             $changed = $this->changedSince($src['log'], $pid, $a, $b, self::MAX_CHANGED + 1);
             $renamed = count($changed) > self::MAX_CHANGED ? [] : $this->renamedSince($src['log'], $pid, $a, $b);
@@ -618,7 +739,9 @@ final class LookupIndex
         }
         if (SourceFence::decCmp($top, $synced) > 0) {
             $open += $win['counts'][$last + 1];
-            $read($synced, $top);
+            // The log is shared by projects: none of this one's rows, nothing to
+            // read. A row that shows up late is counted in the open range.
+            if ($win['counts'][$last + 1] !== 0) $read($synced, $top);
             $synced = $top;
         }
         if ($samples[$last][0] <= $now - self::SAMPLE_EVERY && SourceFence::decCmp($synced, $lastId) > 0) {
@@ -680,21 +803,28 @@ final class LookupIndex
     /**
      * Index every row the data table holds for $field, as generation gen + 1.
      *
-     * Keys of another spec (or of a field marked to wipe) are cleared first,
-     * under the lock. Otherwise the old keys stay, a field that answered goes
-     * on answering from old and new, and the keys of older generations go at
-     * the end. $release (the cron) lets the project's lock go while the rows
-     * are read and written; the build then counts only if no reset or other
-     * build changed the field's generation meanwhile.
+     * The field answers during the build only when it answered under the
+     * same spec; then old and new keys answer together. Every delete takes
+     * only generations below this build's, so a delete never touches a key
+     * the build or a sync meanwhile writes, and runs outside the lock when
+     * $release (the cron) lets the project's lock go while the rows are read
+     * and written. The keys of a field marked to wipe (its spec changed while
+     * it waited for the cron, mayBuildNow()) go before any key is written, once the row says the field
+     * does not answer; a cron run out of time there stops the build, with
+     * wipe still set, and the next run goes on. Every other old key goes once
+     * the new ones are written, before the field answers from them alone; one
+     * a cron run has no time left for stays as part of a superset, until the
+     * next build. The build counts only if no reset or other build changed
+     * the field's generation meanwhile.
      */
-    private function build($pid, $field, $spec, $mark, $st, $release)
+    private function build($pid, $field, $spec, $mark, $st, $release, $until = 0)
     {
         $ft = Schema::table('lookup_field');
-        $kt = Schema::table('lookup_key');
         $now = time();
         $keep = $st !== null && $st['spec'] === $spec && !$st['wipe'];
+        // Generation 0 is a row no build has marked, so no key of it exists.
+        $old = $st !== null && $st['gen'] > 0;
         $gen = ($st !== null ? $st['gen'] : 0) + 1;
-        if (!$keep) $this->deleteKeys($pid, $field, null);
         $this->db->execNoCount('INSERT INTO ' . $ft . '
             (project_id, field_name, spec, ready, built_at, gen, building_at, wanted_at, asked_at, wipe)
             VALUES (?, ?, ?, ?, 0, ?, ?, 0, ?, 0)
@@ -703,7 +833,14 @@ final class LookupIndex
             // The cron is not a lookup: it leaves the field's last-asked time as it was.
             [$pid, $field, $spec, ($keep && $st['ready']) ? 1 : 0, $gen, $now, ($release && $st !== null) ? $st['asked'] : $now]);
         if ($release) $this->unlock($pid);
+        if ($old && $st['wipe'] && !$this->deleteKeys($pid, $field, $gen, $until)) {
+            if ($release && !$this->lock($pid, self::CRON_LOCK_WAIT)) return false;
+            $this->db->execNoCount('UPDATE ' . $ft . ' SET building_at = 0, wipe = 1, wanted_at = IF(wanted_at = 0, ?, wanted_at)
+                WHERE project_id = ? AND field_name = ? AND gen = ?', [$now, $pid, $field, $gen]);
+            return false;
+        }
         $ok = $this->writeKeys($pid, $field, $mark, $gen);
+        if ($ok && $old) $this->deleteKeys($pid, $field, $gen, $until);
         if ($release && !$this->lock($pid, self::CRON_LOCK_WAIT)) return false;
         $cur = $this->db->select('SELECT gen, building_at FROM ' . $ft . ' WHERE project_id = ? AND field_name = ?', [$pid, $field]);
         if (!isset($cur[0]) || (int) $cur[0][0] !== $gen || (int) $cur[0][1] !== $now) return false;
@@ -711,7 +848,6 @@ final class LookupIndex
             $this->db->execNoCount('UPDATE ' . $ft . ' SET building_at = 0 WHERE project_id = ? AND field_name = ? AND gen = ?', [$pid, $field, $gen]);
             return false;
         }
-        if ($keep) $this->deleteKeys($pid, $field, $gen);
         $this->db->execNoCount('UPDATE ' . $ft . ' SET ready = 1, built_at = ?, building_at = 0, wanted_at = 0
             WHERE project_id = ? AND field_name = ? AND gen = ?', [$now, $pid, $field, $gen]);
         $this->built++;
@@ -735,15 +871,257 @@ final class LookupIndex
         return true;
     }
 
-    /** $field's keys, all of them ($below null) or those of generations below $below, a page at a time. */
-    private function deleteKeys($pid, $field, $below)
+    /**
+     * Index a composite entry from the data table, as build() indexes a
+     * field, BATCH records at a time (writeCompositeKeys()).
+     *
+     * A build of the same definition and generation that paused (its cursor
+     * is set) goes on from its cursor; any other starts at generation gen + 1.
+     * Keys of older generations (an older build, another definition) go when
+     * the build has written its own, before the entry answers from them
+     * alone, so an entry that answered goes on answering from old and new
+     * keys meanwhile; one a cron run has no time left for stays as part of a
+     * superset, until the next build. No composite has keys of key version 1
+     * to wipe first: maintain() drops a composite of another version or
+     * secret. $until > 0 (the cron) pauses the build there: the cursor is
+     * saved, the entry is marked as wanted, so the next cron run picks it up,
+     * and false is returned. At least one batch is written per call, so every
+     * run moves it on.
+     */
+    private function buildComposite($pid, array $src, $name, array $entry, $st, $release, $until)
+    {
+        $ft = Schema::table('lookup_field');
+        $now = time();
+        $json = self::defJson($entry['def']);
+        $same = $st !== null && $st['spec'] === $entry['spec'] && !$st['wipe'];
+        $old = $st !== null && $st['gen'] > 0;
+        $saved = $this->defRow($pid, $name);
+        if ($same && $saved !== null && $saved['def'] === $json && $saved['cursor'] !== '' && $saved['gen'] === $st['gen']) {
+            $gen = $st['gen'];
+            $cursor = $saved['cursor'];
+        } else {
+            $gen = ($st !== null ? $st['gen'] : 0) + 1;
+            $cursor = '';
+        }
+        $this->saveDef($pid, $name, $json, $cursor, $gen);
+        $this->db->execNoCount('INSERT INTO ' . $ft . '
+            (project_id, field_name, spec, ready, built_at, gen, building_at, wanted_at, asked_at, wipe)
+            VALUES (?, ?, ?, ?, 0, ?, ?, 0, ?, 0)
+            ON DUPLICATE KEY UPDATE spec = VALUES(spec), ready = VALUES(ready), gen = VALUES(gen),
+                building_at = VALUES(building_at), wipe = 0, asked_at = GREATEST(asked_at, VALUES(asked_at))',
+            [$pid, $name, $entry['spec'], ($same && $st['ready']) ? 1 : 0, $gen, $now, ($release && $st !== null) ? $st['asked'] : $now]);
+        if ($release) $this->unlock($pid);
+        list($ok, $cursor) = $this->writeCompositeKeys($pid, $src['data'], $name, $entry['def'], $gen, $cursor, $until);
+        if ($ok && $cursor === '' && $old) $this->deleteKeys($pid, $name, $gen, $until);
+        if ($release && !$this->lock($pid, self::CRON_LOCK_WAIT)) return false;
+        $cur = $this->db->select('SELECT gen, building_at FROM ' . $ft . ' WHERE project_id = ? AND field_name = ?', [$pid, $name]);
+        if (!isset($cur[0]) || (int) $cur[0][0] !== $gen || (int) $cur[0][1] !== $now) return false;
+        if (!$ok || $cursor !== '') {
+            // Failed, or paused: a paused build keeps its place for the next run.
+            if ($ok) $this->saveDef($pid, $name, $json, $cursor, $gen);
+            $this->db->execNoCount('UPDATE ' . $ft . ' SET building_at = 0' . ($ok ? ', wanted_at = IF(wanted_at = 0, ?, wanted_at)' : '')
+                . ' WHERE project_id = ? AND field_name = ? AND gen = ?', $ok ? [$now, $pid, $name, $gen] : [$pid, $name, $gen]);
+            return false;
+        }
+        $this->saveDef($pid, $name, $json, '', $gen);
+        $this->db->execNoCount('UPDATE ' . $ft . ' SET ready = 1, built_at = ?, building_at = 0, wanted_at = 0
+            WHERE project_id = ? AND field_name = ? AND gen = ?', [$now, $pid, $name, $gen]);
+        $this->built++;
+        return true;
+    }
+
+    /**
+     * Write the keys of every record after $cursor that holds the entry's
+     * first field, as generation $gen: [ok, cursor], where the cursor is where
+     * the build paused at $until, '' when it ended.
+     *
+     * TWO WAYS THROUGH THE RECORDS, chosen when the build starts (walkOf())
+     * and kept in the cursor's first byte, so a paused build goes on the way
+     * it began.
+     * - 'l', listing: the records that hold the first field, LIST_RECORDS at a
+     *   time in byte order (recordsAfter()). Each listing reads all the
+     *   field's rows (the cursor's range cannot use an index), so a field
+     *   held by H records costs rows x ceil(H / LIST_RECORDS) reads; one read
+     *   when H is at most LIST_RECORDS.
+     * - 'w', walking: every record of the project from REDCap's record index
+     *   (RecordManifestSource), BATCH at a time in its collation's order; a
+     *   record without the field gets no key. Taken where it reads less than
+     *   the listings would, and only from an index RecordManifestSource
+     *   trusts: one REDCap reports complete, or one it keeps no status for
+     *   that holds rows for the project. A resume reads the records the
+     *   collation ties to its cursor again; keying a record twice writes the
+     *   same keys.
+     * A walk that cannot go on (the index is no longer trusted when it
+     * resumes, or a page cannot be read: a failed read, more ids than
+     * RecordManifestSource::TIE_CAP tied at its boundary, an index REDCap
+     * began rebuilding) lists the field from the start instead, in the same
+     * call, rather than failing at the same place on every run. A cursor that
+     * names neither way (written before the cursor named its way) starts
+     * again: read as a listing's, it could skip records.
+     *
+     * @return array{0: bool, 1: string}
+     */
+    private function writeCompositeKeys($pid, $dataTable, $name, array $def, $gen, $cursor, $until)
+    {
+        try {
+            $fields = self::compositeFields($def);
+            $write = function (array $chunk) use ($pid, $dataTable, $name, $def, $gen, $fields) {
+                $buf = [];
+                foreach ($this->compositeKeysOf($pid, $dataTable, [$name => $def], $chunk, $fields) as $rh => $byName) {
+                    foreach ($byName[$name] as $k => $_) $buf[$rh . ':' . $k] = true;
+                }
+                foreach (array_chunk($buf, self::INSERT_ROWS, true) as $part) $this->insertKeys($pid, $name, $part, $gen);
+            };
+            $way = $cursor === '' ? '' : $cursor[0];
+            if ($way !== 'l' && $way !== 'w') $cursor = '';
+            $walk = null;
+            if ($cursor === '') {
+                $walk = $this->walkOf($pid, $dataTable, $def['slot']);
+            } elseif ($way === 'w') {
+                $o = RecordManifestSource::open($this->db, $pid, []);
+                if (!empty($o['ok']) && $o['source']->via() === RecordManifestSource::VIA_INDEX) $walk = $o['source'];
+                else $cursor = '';
+            }
+            if ($walk !== null) {
+                $after = $cursor === '' ? null : (string) substr($cursor, 1);
+                $emitted = [];
+                while (true) {
+                    $page = $walk->page($after, $emitted, self::BATCH);
+                    if (empty($page['ok'])) {
+                        $cursor = '';
+                        break;
+                    }
+                    $ids = [];
+                    foreach ($page['rows'] as $r) $ids[] = (string) $r['id'];
+                    if ($ids) $write($ids);
+                    if ($page['done']) return [true, ''];
+                    $after = (string) $page['cursor'];
+                    $emitted = $page['emitted'];
+                    if ($until > 0 && time() >= $until) return [true, 'w' . $after];
+                }
+            }
+            $at = $cursor === '' ? '' : (string) substr($cursor, 1);
+            while (true) {
+                list($recs, $more) = $this->recordsAfter($pid, $dataTable, $def['slot'], $at, $this->listRecords);
+                $chunks = array_chunk($recs, self::BATCH);
+                foreach ($chunks as $i => $chunk) {
+                    $write($chunk);
+                    $at = (string) end($chunk);
+                    $done = !$more && $i === count($chunks) - 1;
+                    if ($until > 0 && !$done && time() >= $until) return [true, 'l' . $at];
+                }
+                if (!$more) return [true, ''];
+            }
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'LookupIndex::writeCompositeKeys');
+            return [false, ''];
+        }
+    }
+
+    /**
+     * REDCap's record index, for a composite build that starts to walk, or
+     * null when listing its first field $slot reads less (writeCompositeKeys()).
+     *
+     * The listings read the field's R rows once per listRecords of the H
+     * records that hold it: R x ceil(H / listRecords). A walk reads the
+     * project's N record ids, and the rows of the records without the field
+     * besides, taken here as one read each: 2N. So the walk is taken when
+     * 2N < R x ceil(H / listRecords). A field of at most listRecords rows is
+     * listed on a count that stops there; a larger one is counted (one read
+     * of its rows, which a listing would make anyway), and the project's
+     * records only as far as a walk would still be cheaper.
+     */
+    private function walkOf($pid, $dataTable, $slot)
+    {
+        if ($this->rowsUpTo($dataTable, $pid, [$slot], $this->listRecords) <= $this->listRecords) return null;
+        $o = RecordManifestSource::open($this->db, $pid, []);
+        if (empty($o['ok']) || $o['source']->via() !== RecordManifestSource::VIA_INDEX) return null;
+        $n = $this->db->select('SELECT COUNT(*), COUNT(DISTINCT CAST(record AS BINARY)) FROM ' . $dataTable
+            . ' WHERE project_id = ? AND field_name = ?', [$pid, $slot]);
+        if (!isset($n[0][1])) return null;
+        $listed = (int) $n[0][0] * intdiv((int) $n[0][1] + $this->listRecords - 1, $this->listRecords);
+        // 2N < listed, so N is at most (listed - 1) / 2.
+        $most = intdiv($listed - 1, 2);
+        return $o['source']->rowsUpTo($most) <= $most ? $o['source'] : null;
+    }
+
+    /**
+     * The first $limit records after $after, in byte order, that hold $field,
+     * and whether more follow: [records, more]. The server sorts and cuts the
+     * list (SQL compares a binary string byte by byte, as strcmp() does), so
+     * at most $limit + 1 record ids reach PHP.
+     *
+     * @return array{0: string[], 1: bool}
+     */
+    private function recordsAfter($pid, $dataTable, $field, $after, $limit)
+    {
+        $sql = 'SELECT DISTINCT CAST(record AS BINARY) AS r FROM ' . $dataTable . ' WHERE project_id = ? AND field_name = ?';
+        $params = [$pid, $field];
+        if ($after !== '') {
+            $sql .= ' AND CAST(record AS BINARY) > ?';
+            $params[] = $after;
+        }
+        $out = [];
+        foreach ($this->db->select($sql . ' ORDER BY r LIMIT ' . ((int) $limit + 1), $params) as $r) $out[] = (string) $r[0];
+        $more = count($out) > $limit;
+        if ($more) array_pop($out);
+        return [$out, $more];
+    }
+
+    /** The data rows of $fields in $pid, counted only as far as $limit + 1. */
+    private function rowsUpTo($dataTable, $pid, array $fields, $limit)
+    {
+        $r = $this->db->select('SELECT COUNT(*) FROM (SELECT 1 FROM ' . $dataTable . ' WHERE project_id = ? AND field_name IN ('
+            . implode(', ', array_fill(0, count($fields), '?')) . ') LIMIT ' . ((int) $limit + 1) . ') AS n',
+            array_merge([$pid], array_values($fields)));
+        return isset($r[0][0]) ? (int) $r[0][0] : PHP_INT_MAX;
+    }
+
+    /**
+     * The keys each composite entry of $defs (name => def) holds for the
+     * records of $chunk, from one read of their rows of $fields:
+     * recordHex => [name => [keyHex => true]], every record of $chunk present.
+     */
+    private function compositeKeysOf($pid, $dataTable, array $defs, array $chunk, array $fields)
+    {
+        $out = [];
+        $rows = [];
+        foreach ($chunk as $r) {
+            $out[bin2hex((string) $r)] = array_fill_keys(array_keys($defs), []);
+        }
+        foreach ($this->db->select('SELECT record, field_name, `value`, event_id, instance FROM ' . $dataTable . ' WHERE project_id = ? AND record IN ('
+                . implode(', ', array_fill(0, count($chunk), '?')) . ') AND field_name IN (' . implode(', ', array_fill(0, count($fields), '?')) . ')',
+                array_merge([$pid], array_map('strval', $chunk), $fields)) as $row) {
+            if (!isset($row[2]) || $row[2] === null) continue;
+            $rows[(string) $row[0]][] = [(string) $row[1], (string) $row[2], (string) $row[3], $row[4]];
+        }
+        foreach ($rows as $rec => $recRows) {
+            $rh = bin2hex((string) $rec);
+            // IN() compares by the data table's collation and may return a record
+            // of another letter case; that record is indexed in its own batch.
+            if (!isset($out[$rh])) continue;
+            foreach ($defs as $name => $def) {
+                foreach (self::compositeMaterials($recRows, $def) as $m => $_) $out[$rh][$name][$this->compositeKeyHex($pid, $name, $m)] = true;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Delete $field's keys, all of them ($below null) or those of generations
+     * below $below, DELETE_ROWS at a time; with $until > 0, no page is started
+     * at or after that Unix time. True when none is left.
+     */
+    private function deleteKeys($pid, $field, $below, $until = 0)
     {
         $sql = 'DELETE FROM ' . Schema::table('lookup_key') . ' WHERE project_id = ? AND field_name = ?'
             . ($below === null ? '' : ' AND gen < ?') . ' LIMIT ' . self::DELETE_ROWS;
         $params = $below === null ? [$pid, $field] : [$pid, $field, (int) $below];
-        do {
+        while (true) {
             $this->db->exec($sql, $params);
-        } while ($this->db->affected() >= self::DELETE_ROWS);
+            if ($this->db->affected() < self::DELETE_ROWS) return true;
+            if ($until > 0 && time() >= $until) return false;
+        }
     }
 
     /** One batch of "recordHex:keyHex" pairs of $field, as generation $gen (a key already there takes the higher). */
@@ -763,30 +1141,48 @@ final class LookupIndex
 
     /**
      * Index the records of $todo (record => log position) again for the
-     * fields of $kept (field => ['mark' => ?string, 'gen' => int]), from
-     * their rows in the data table. New keys go in before stale ones come
-     * out, so a lookup reading at the same time sees the old keys, the new
-     * ones or both: a superset. A key kept from an older generation is
-     * written again at the field's generation, so the end of a build running
-     * meanwhile does not clear it.
+     * entries of $kept (keptOf()), from their rows in the data table. New
+     * keys go in before stale ones come out, so a lookup reading at the same
+     * time sees the old keys, the new ones or both: a superset. A key kept
+     * from an older generation is written again at the entry's generation, so
+     * the end of a build running meanwhile does not clear it.
      */
     private function reindex($pid, $dataTable, array $kept, array $todo)
     {
-        $fields = array_map('strval', array_keys($kept));
+        $plain = [];
+        $defs = [];
+        foreach ($kept as $name => $k) {
+            if ($k['kind'] === 'plain') $plain[(string) $name] = true;
+            else $defs[(string) $name] = $k['def'];
+        }
+        $fields = array_map('strval', array_keys($plain));
         $fMarks = implode(', ', array_fill(0, count($fields), '?'));
+        $cFields = [];
+        foreach ($defs as $def) $cFields = array_merge($cFields, self::compositeFields($def));
+        $cFields = array_values(array_unique($cFields));
         $kt = Schema::table('lookup_key');
         foreach (array_chunk(array_keys($todo), self::BATCH) as $chunk) {
             $chunk = array_map('strval', $chunk);
-            $want = [];     // recordHex => [field => [keyHex => true]]
+            $want = [];     // recordHex => [entry => [keyHex => true]]
             foreach ($chunk as $r) $want[bin2hex($r)] = [];
-            $rows = $this->db->select('SELECT record, field_name, `value` FROM ' . $dataTable . ' WHERE project_id = ? AND record IN ('
+            $rows = !$fields ? [] : $this->db->select('SELECT record, field_name, `value` FROM ' . $dataTable . ' WHERE project_id = ? AND record IN ('
                 . implode(', ', array_fill(0, count($chunk), '?')) . ') AND field_name IN (' . $fMarks . ')',
                 array_merge([$pid], $chunk, $fields));
             foreach ($rows as $row) {
                 if (!isset($row[2]) || $row[2] === null) continue;
                 $f = (string) $row[1];
-                if (!array_key_exists($f, $kept)) continue;
-                $want[bin2hex((string) $row[0])][$f][$this->keyHex($pid, (string) $row[2], $kept[$f]['mark'])] = true;
+                $rh = bin2hex((string) $row[0]);
+                // IN() compares by the data table's collation and may return a
+                // record of another letter case, which is not in this chunk.
+                if (!isset($plain[$f]) || !isset($want[$rh])) continue;
+                $want[$rh][$f][$this->keyHex($pid, (string) $row[2], $kept[$f]['mark'])] = true;
+            }
+            if ($defs) {
+                foreach ($this->compositeKeysOf($pid, $dataTable, $defs, $chunk, $cFields) as $rh => $byName) {
+                    foreach ($byName as $name => $keys) {
+                        if ($keys) $want[$rh][$name] = $keys;
+                    }
+                }
             }
             $recHex = array_keys($want);
             $have = [];     // "recordHex:field:keyHex" => generation
@@ -1059,18 +1455,62 @@ final class LookupIndex
     }
 
     /**
-     * The fields a sync keeps current: those that answer or are being built,
-     * keyed by this version.
+     * The entries a sync keeps current: those that answer, have a build not
+     * ended (a dead one too, until the cron starts it again), or are
+     * composites whose build paused, keyed by this version and secret.
+     * The definitions are read only when the project has a composite entry.
      *
-     * @return array field => ['mark' => ?string, 'gen' => int]
+     * An entry that answers, is being built or paused its build, and cannot
+     * be kept current here (another key version or secret, a composite whose
+     * definition is gone) stops
+     * answering, in the table and in $states, and its build will not count:
+     * the sync is about to move past changes it would miss.
+     *
+     * @return array entry => ['kind' => 'plain', 'mark' => ?string, 'gen' => int]
+     *                      | ['kind' => 'c', 'def' => array, 'gen' => int]
      */
-    private function keptOf(array $states, $now)
+    private function keptOf($pid, array &$states, $now)
     {
         $out = [];
+        $stale = [];
+        $defs = null;
         foreach ($states as $f => $st) {
-            if (!$st['ready'] && !self::building($st, $now)) continue;
-            $mark = $this->markOf($st['spec']);
-            if ($mark !== false) $out[$f] = ['mark' => $mark, 'gen' => $st['gen']];
+            // Any build not ended, even one past BUILD_STALE: it may still end
+            // and mark the entry built, so the changes it missed must be in it.
+            $live = $st['ready'] || $st['building'] > 0;
+            $p = $this->parseSpec($st['spec']);
+            if ($p !== false && $p['kind'] === 'plain' && !self::isComposite($f)) {
+                if ($live) $out[$f] = ['kind' => 'plain', 'mark' => $p['mark'], 'gen' => $st['gen']];
+                continue;
+            }
+            $def = null;
+            $paused = false;
+            if (self::isComposite($f)) {
+                if ($defs === null) $defs = $this->defsOf($pid);
+                $d = isset($defs[$f]) ? $defs[$f] : null;
+                // A build paused under another key version or secret counts
+                // too: the sync row does not say which secret kept the
+                // project, so it stops here as a live entry does, or it would
+                // go on past the changes this sync moves beyond.
+                $paused = $d !== null && $d['cursor'] !== '' && $d['gen'] === $st['gen'];
+                if ($p !== false && $p['kind'] === 'c' && $d !== null && md5($d['def']) === $p['hash']) {
+                    $def = self::compositeDef(json_decode($d['def'], true));
+                }
+            }
+            if ($def !== null) {
+                if ($live || $paused) $out[$f] = ['kind' => 'c', 'def' => $def, 'gen' => $st['gen']];
+            } elseif ($live || $paused) {
+                $stale[] = (string) $f;
+            }
+        }
+        foreach (array_chunk($stale, 200) as $part) {
+            $this->db->execNoCount('UPDATE ' . Schema::table('lookup_field') . ' SET ready = 0, building_at = 0, gen = gen + 1
+                WHERE project_id = ? AND field_name IN (' . implode(', ', array_fill(0, count($part), '?')) . ')', array_merge([$pid], $part));
+            foreach ($part as $f) {
+                $states[$f]['ready'] = false;
+                $states[$f]['building'] = 0;
+                $states[$f]['gen']++;
+            }
         }
         return $out;
     }
@@ -1101,11 +1541,24 @@ final class LookupIndex
         } while ($this->db->affected() >= self::DELETE_ROWS);
     }
 
-    /** A field no lookup asks for any more, or of a project that is gone: its keys and its row. */
-    private function dropField($pid, $field)
+    /**
+     * A field no lookup asks for any more, or of a project that is gone: its
+     * keys and its row. It stops answering first, so a drop that fails part
+     * way leaves an entry that is built again, not one that answers from half
+     * its keys. With $until > 0 its keys go only until then: false when some
+     * are left, and the row is kept for the next run.
+     */
+    private function dropField($pid, $field, $until = 0)
     {
-        $this->deleteKeys($pid, $field, null);
+        $this->db->execNoCount('UPDATE ' . Schema::table('lookup_field') . ' SET ready = 0, building_at = 0, gen = gen + 1
+            WHERE project_id = ? AND field_name = ?', [$pid, $field]);
+        // Out of time: the row stays, with its spec, for the next run to finish.
+        if (!$this->deleteKeys($pid, $field, null, $until)) return false;
+        if (self::isComposite($field)) {
+            $this->db->execNoCount('DELETE FROM ' . Schema::table('lookup_def') . ' WHERE project_id = ? AND field_name = ?', [$pid, $field]);
+        }
         $this->db->execNoCount('DELETE FROM ' . Schema::table('lookup_field') . ' WHERE project_id = ? AND field_name = ?', [$pid, $field]);
+        return true;
     }
 
     private function touch($pid, $field, $now)
@@ -1132,6 +1585,12 @@ final class LookupIndex
     }
 
     /** One lock per project and database: only one request syncs a project at a time. */
+    /** Seconds the cron waits for a project's lock: CRON_LOCK_WAIT, never past the Unix time $until. */
+    private static function waitUntil($until)
+    {
+        return max(0, min(self::CRON_LOCK_WAIT, (int) $until - time()));
+    }
+
     private function lock($pid, $wait)
     {
         $r = $this->db->select("SELECT GET_LOCK(CONCAT('uvlk', MD5(CONCAT(COALESCE(DATABASE(), ''), '/', ?))), ?)",
@@ -1196,14 +1655,6 @@ final class LookupIndex
         return self::specOf($this->secret, $mark);
     }
 
-    /** The number mark a spec of this key version and secret stands for (null for text), or false for any other. */
-    private function markOf($spec)
-    {
-        $p = explode('|', (string) $spec, 2);
-        if (count($p) !== 2 || $p[0] !== $this->specHead()) return false;
-        return $p[1] === 'text' ? null : $p[1];
-    }
-
     /** keyOf() for this object's secret. */
     private function keyHex($pid, $value, $mark)
     {
@@ -1212,7 +1663,7 @@ final class LookupIndex
 
     /**
      * Everything the index holds for $pid: its keys, its fields, its records'
-     * positions and its sync row (FRM-7). Called when the module is disabled
+     * positions, its sync row and its composite definitions (FRM-7). Called when the module is disabled
      * in the project, so no hash of a value stays behind for a project that
      * no longer uses the module. Needs no secret. The keys go a page at a
      * time. True when every statement ran.
@@ -1227,7 +1678,7 @@ final class LookupIndex
                     $this->db->exec('DELETE FROM ' . Schema::table($t) . ' WHERE project_id = ? LIMIT ' . self::DELETE_ROWS, [$pid]);
                 } while ($this->db->affected() >= self::DELETE_ROWS);
             }
-            foreach (['lookup_field', 'lookup_sync'] as $t) {
+            foreach (['lookup_field', 'lookup_sync', 'lookup_def'] as $t) {
                 $this->db->execNoCount('DELETE FROM ' . Schema::table($t) . ' WHERE project_id = ?', [$pid]);
             }
             unset($this->rows[$pid], $this->sources[$pid]);
@@ -1236,5 +1687,253 @@ final class LookupIndex
             Faults::swallow($e, 'LookupIndex::forgetProject');
             return false;
         }
+    }
+
+    /**
+     * The records whose key in entry $name is $keyHex, after $after in byte
+     * order, at most $limit (0: all). One range of uv_lookup_key's primary
+     * key: rows read equal rows returned.
+     *
+     * @return string[]
+     */
+    private function recordsOf($pid, $name, $keyHex, $after, $limit)
+    {
+        $sql = 'SELECT HEX(record) FROM ' . Schema::table('lookup_key') . ' WHERE project_id = ? AND field_name = ? AND key_hash = UNHEX(?)';
+        $params = [$pid, $name, $keyHex];
+        if ($after !== '') {
+            $sql .= ' AND record > UNHEX(?)';
+            $params[] = bin2hex($after);
+        }
+        $out = [];
+        foreach ($this->db->select($sql . ' ORDER BY record' . ($limit > 0 ? ' LIMIT ' . $limit : ''), $params) as $r) {
+            $out[] = (string) hex2bin((string) $r[0]);
+        }
+        return $out;
+    }
+
+    /** The entry of one field's values in a field of number mark $mark (null for text). */
+    private function plainEntry($mark)
+    {
+        $mark = ($mark === 'point' || $mark === 'comma') ? $mark : null;
+        return ['kind' => 'plain', 'mark' => $mark, 'spec' => $this->spec($mark)];
+    }
+
+    /** A composite entry of a definition compositeDef() returned. */
+    private function compositeEntry(array $def)
+    {
+        return ['kind' => 'c', 'def' => $def, 'spec' => $this->specHead() . '|c|' . md5(self::defJson($def))];
+    }
+
+    /**
+     * What a spec says: ['kind' => 'plain', 'mark' => ?string] or
+     * ['kind' => 'c', 'hash' => md5 of the definition], or false for another
+     * key version or secret, or a spec this version cannot read.
+     */
+    private function parseSpec($spec)
+    {
+        $p = explode('|', (string) $spec);
+        if (count($p) < 2 || $p[0] !== $this->specHead()) return false;
+        if (count($p) === 2 && in_array($p[1], ['text', 'point', 'comma'], true)) {
+            return ['kind' => 'plain', 'mark' => $p[1] === 'text' ? null : $p[1]];
+        }
+        if (count($p) === 3 && $p[1] === 'c' && preg_match('/^[0-9a-f]{32}\z/', $p[2])) return ['kind' => 'c', 'hash' => $p[2]];
+        return false;
+    }
+
+    /** The entry a stored spec stands for, to build it again, or null when it cannot be built here. */
+    private function storedEntry($pid, $name, $spec)
+    {
+        $p = $this->parseSpec($spec);
+        if ($p === false) return null;
+        if ($p['kind'] === 'plain') return self::isComposite($name) ? null : $this->plainEntry($p['mark']);
+        if (!self::isComposite($name)) return null;
+        $d = $this->defRow($pid, $name);
+        if ($d === null || md5($d['def']) !== $p['hash']) return null;
+        $def = self::compositeDef(json_decode($d['def'], true));
+        if ($def === null || self::compositeName($def) !== $name) return null;
+        $entry = $this->compositeEntry($def);
+        return $entry['spec'] === $spec ? $entry : null;
+    }
+
+    private static function isComposite($name)
+    {
+        return isset($name[0]) && $name[0] === '#';
+    }
+
+    /**
+     * The hex key of composite $material in entry $name: keyed as keyOf()
+     * keys a field's value, with the secret and the project, and the entry
+     * in the message, so a key means nothing without the secret, in another
+     * project or in another entry.
+     */
+    private function compositeKeyHex($pid, $name, $material)
+    {
+        return substr(hash_hmac('sha256', (string) $name . "\0" . (string) $material,
+            (string) $this->secret . '|lookup|' . (int) $pid), 0, 32);
+    }
+
+    /**
+     * A composite definition in the one form its name, spec and keys are made
+     * from, or null when it is not one (bad field names, too many parts, an
+     * unknown scope, a repeat bucket that is not an event id and a form name
+     * or '').
+     */
+    private static function compositeDef($def)
+    {
+        if (!is_array($def)) return null;
+        $ok = function ($f) { return is_string($f) && preg_match('/^[a-z][a-z0-9_]{0,99}\z/', $f); };
+        $slot = isset($def['slot']) ? $def['slot'] : null;
+        $with = isset($def['with']) && is_array($def['with']) ? array_values($def['with']) : [];
+        $scope = isset($def['scope']) ? $def['scope'] : 'project';
+        if (!$ok($slot) || count($with) > self::MAX_PARTS || !in_array($scope, ['project', 'event', 'dag'], true)) return null;
+        foreach ($with as $w) {
+            if (!$ok($w) || $w === $slot) return null;
+        }
+        if (count(array_unique($with)) !== count($with)) return null;
+        $marks = [];
+        $rep = [];
+        foreach (array_merge([$slot], $with) as $f) {
+            $m = isset($def['marks'][$f]) ? $def['marks'][$f] : null;
+            $marks[$f] = ($m === 'point' || $m === 'comma') ? $m : null;
+            $byEvent = isset($def['rep'][$f]) ? $def['rep'][$f] : [];
+            if (!is_array($byEvent)) return null;
+            $buckets = [];
+            foreach ($byEvent as $e => $b) {
+                // '' is a repeating event; a form name, a form that repeats in the event.
+                if (!ctype_digit((string) $e) || (int) $e < 1 || !is_string($b) || ($b !== '' && !preg_match('/^[a-z0-9_]{1,100}\z/', $b))) return null;
+                $buckets[(string) (int) $e] = $b;
+            }
+            ksort($buckets, SORT_STRING);
+            if ($buckets) $rep[$f] = $buckets;
+        }
+        ksort($marks, SORT_STRING);
+        ksort($rep, SORT_STRING);
+        return ['slot' => $slot, 'with' => $with, 'marks' => $marks, 'scope' => $scope, 'rep' => $rep];
+    }
+
+    /** The entry's name: "#" and the MD5 of what the key is made of, which no REDCap field name can be. */
+    private static function compositeName(array $def)
+    {
+        return '#' . md5(json_encode([$def['slot'], $def['with'], $def['scope']]));
+    }
+
+    private static function defJson(array $def)
+    {
+        return json_encode($def);
+    }
+
+    /** The data table fields a composite entry's keys are read from. */
+    private static function compositeFields(array $def)
+    {
+        $out = array_merge([$def['slot']], $def['with']);
+        if ($def['scope'] === 'dag') $out[] = '__GROUPID__';
+        return $out;
+    }
+
+    /**
+     * The key material of one entry: the parts' lookup keys, hex, joined by
+     * ".", then the event (scope event) or the group (scope dag). A blank
+     * part is the lookup key of '' ("="), the same as one of only spaces.
+     */
+    private static function compositeMaterial(array $def, $value, array $with, $event, $dag)
+    {
+        $p = [bin2hex(Logic::lookupKey((string) $value, true, $def['marks'][$def['slot']]))];
+        foreach ($def['with'] as $w) {
+            $v = isset($with[$w]) && is_scalar($with[$w]) ? (string) $with[$w] : '';
+            $p[] = bin2hex(Logic::lookupKey($v, true, $def['marks'][$w]));
+        }
+        if ($def['scope'] === 'event') $p[] = 'e' . (string) $event;
+        if ($def['scope'] === 'dag') $p[] = 'd' . (string) $dag;
+        return implode('.', $p);
+    }
+
+    /**
+     * The key materials of one record, from its rows [field, value, event_id,
+     * instance] of compositeFields(): one per entry that holds the first field
+     * with a value, where the entries are the ones the scan reads
+     * (ScanRuns::recordContexts()). Each event has its row, and each instance
+     * of each repeat bucket (def['rep']: a form that repeats there, or '' for a
+     * repeating event) is merged over that row. So a field on the event's row
+     * is seen from every entry of the event, a field of a bucket only from that
+     * bucket's instances, and blank elsewhere. The data table stores instance
+     * 1 with no instance, as it stores the event's row; def['rep'] tells them
+     * apart. A row of a field that does not repeat there counts only when it
+     * is instance 1. A record's group is its __GROUPID__ row, '' when it has
+     * none or that row is blank.
+     *
+     * @return array material => true
+     */
+    private static function compositeMaterials(array $rows, array $def)
+    {
+        $cells = [];    // event => '-' (its row) or 'b:' . bucket => instance => field => value
+        $dag = '';
+        foreach ($rows as $r) {
+            if ($r[0] === '__GROUPID__') {
+                if ($dag === '' && $r[1] !== '') $dag = $r[1];
+                continue;
+            }
+            $evt = (string) $r[2];
+            $i = ($r[3] === null || $r[3] === '' || (int) $r[3] < 1) ? 1 : (int) $r[3];
+            if (isset($def['rep'][$r[0]][$evt])) $cells[$evt]['b:' . $def['rep'][$r[0]][$evt]][$i][$r[0]] = $r[1];
+            elseif ($i === 1) $cells[$evt]['-'][1][$r[0]] = $r[1];
+        }
+        $slot = $def['slot'];
+        $out = [];
+        foreach ($cells as $evt => $byBucket) {
+            $base = isset($byBucket['-'][1]) ? $byBucket['-'][1] : [];
+            $entries = [$base];
+            foreach ($byBucket as $b => $byInst) {
+                if ($b === '-') continue;
+                foreach ($byInst as $vals) $entries[] = array_merge($base, $vals);
+            }
+            foreach ($entries as $vals) {
+                if (!isset($vals[$slot]) || Logic::lookupTrim($vals[$slot]) === '') continue;
+                $with = [];
+                foreach ($def['with'] as $w) $with[$w] = isset($vals[$w]) ? $vals[$w] : '';
+                $out[self::compositeMaterial($def, $vals[$slot], $with, (string) $evt, $dag)] = true;
+            }
+        }
+        return $out;
+    }
+
+    /** @return array|null ['def' => json, 'cursor' => string, 'gen' => int] */
+    private function defRow($pid, $name)
+    {
+        $r = $this->db->select('SELECT def, build_cursor, build_gen FROM ' . Schema::table('lookup_def') . ' WHERE project_id = ? AND field_name = ?',
+            [$pid, $name]);
+        if (!isset($r[0])) return null;
+        return ['def' => (string) $r[0][0], 'cursor' => (string) $r[0][1], 'gen' => (int) $r[0][2]];
+    }
+
+    /** @return array name => ['def' => json, 'cursor' => string, 'gen' => int] */
+    private function defsOf($pid)
+    {
+        $out = [];
+        foreach ($this->db->select('SELECT field_name, def, build_cursor, build_gen FROM ' . Schema::table('lookup_def') . ' WHERE project_id = ?',
+                [$pid]) as $r) {
+            $out[(string) $r[0]] = ['def' => (string) $r[1], 'cursor' => (string) $r[2], 'gen' => (int) $r[3]];
+        }
+        return $out;
+    }
+
+    /**
+     * Store a composite entry's definition, with where its build stands
+     * ($cursor and $gen; null keeps them, unless the definition changed, which
+     * clears them). MySQL applies the assignments in order, so the cursor and
+     * generation read the old definition.
+     */
+    private function saveDef($pid, $name, $json, $cursor, $gen)
+    {
+        if ($cursor === null) {
+            $this->db->execNoCount('INSERT INTO ' . Schema::table('lookup_def') . ' (project_id, field_name, def, build_cursor, build_gen)
+                VALUES (?, ?, ?, \'\', 0)
+                ON DUPLICATE KEY UPDATE build_cursor = IF(def = VALUES(def), build_cursor, \'\'),
+                    build_gen = IF(def = VALUES(def), build_gen, 0), def = VALUES(def)', [$pid, $name, $json]);
+            return;
+        }
+        $this->db->execNoCount('INSERT INTO ' . Schema::table('lookup_def') . ' (project_id, field_name, def, build_cursor, build_gen)
+            VALUES (?, ?, ?, UNHEX(?), ?)
+            ON DUPLICATE KEY UPDATE def = VALUES(def), build_cursor = VALUES(build_cursor), build_gen = VALUES(build_gen)',
+            [$pid, $name, $json, bin2hex((string) $cursor), (int) $gen]);
     }
 }

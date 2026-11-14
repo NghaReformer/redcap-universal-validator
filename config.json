@@ -49,7 +49,7 @@
     },
     {
       "cron_name": "uv_lookup_index",
-      "cron_description": "Build the value index of the live @UVUNIQUE and @UVEXISTS lookups for fields too large to build during a lookup, refresh it weekly, and drop the index of fields no lookup has used in 30 days.",
+      "cron_description": "Build the value index of the live @UVUNIQUE and @UVEXISTS lookups for fields too large to build during a lookup, refresh it weekly, drop the index of fields no lookup has used in 30 days, and clear the keys an older version or another secret wrote.",
       "method": "uvLookupIndexCron",
       "cron_frequency": "300",
       "cron_max_run_time": "240"

@@ -2058,17 +2058,21 @@ REDCap keeps no index on saved values, so a lookup that reads the data table
 reads one row per record: 3 to 9 seconds at 100,000 records on a test server
 whose database had 128 MB of memory for its tables, and 33 to 39 seconds at
 400,000. The module therefore keeps its own index of the fields that
-`@UVUNIQUE` and `@UVEXISTS` search, in four tables (`uv_lookup_key`,
-`uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record`). They are created when
+`@UVUNIQUE` and `@UVEXISTS` search, in five tables (`uv_lookup_key`,
+`uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record`, `uv_lookup_def`). They are created when
 the module is enabled or upgraded and when its system settings are saved,
 whether or not the Validation scan is on. With `uv_rate_bucket`, the counter
-of the survey throttle, that makes 5 module tables on every installation: the live
+of the survey throttle, that makes 6 module tables on every installation: the live
 lookups and the throttle they serve run without the scan, and a table made by
 the first lookup would be made inside a person's request.
 
 - **Built once per field.** A build reads all the field's rows once and
-  stores one key per value and record: a hash of the value as lookups compare
-  it (trimmed, letter case folded, numbers by value). A field of up to 20,000
+  stores one key per value and record: a keyed hash of the value as lookups
+  compare it (trimmed, letter case folded, numbers by value), made with the
+  module's own secret and the project and field, so a stored key cannot be
+  turned back into the value with a dictionary and the same value has a
+  different key in another project. Without the secret the index answers
+  nothing and the lookups read the data table. A field of up to 20,000
   saved values is built by its first lookup (one field a request). A larger
   one is built by the module's cron *uv_lookup_index*, which runs every 5 minutes:
   the first lookup marks the field, and until the cron has built it a field
@@ -2124,6 +2128,19 @@ the first lookup would be made inside a person's request.
 - **When the index cannot work** (its tables cannot be read, or the database
   refuses its lock), the cron's summary line says so and the module log gets
   one `uv-lookup-index-unavailable` row a day.
+- **Keys of several fields.** Groundwork for the `@UVUNIQUE` count cap of
+  2.5.0, which no tag uses yet. A value can be kept as one key together with
+  other fields of the same entry (an arm code at one site, say), and with the
+  event or the Data Access Group, so a count reads the records of that stratum
+  and no others. The entries keyed are the ones the Validation scan reads: an
+  event's row, and each repeating instance with the event's row merged in.
+  The definition is kept in `uv_lookup_def`. The cron builds a large one in
+  steps: a build it cannot finish in one run keeps its place for the next (in
+  `uv_lookup_def.build_cursor`: a byte for how the build goes through the
+  records, then the id of the last record it wrote, in clear as record ids are
+  elsewhere in REDCap's tables), and the records already done are kept current
+  meanwhile. A build lists the records that hold the first field, or walks
+  REDCap's record index where that reads less.
 - **Off switch.** The system setting *Live lookups — turn OFF the value index*
   makes every lookup read the data table again. A field of more than 50,000
   saved values is then checked by the Validation scan only.

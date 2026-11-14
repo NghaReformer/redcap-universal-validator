@@ -172,14 +172,14 @@ The scan keeps its work in thirteen tables of its own, all prefixed `uv_`:
 saves the module's system configuration with `scan-system-enable-durable` on,
 and when the module is enabled or a new version installed while it is on.
 `uv_rate_bucket` is created in every case, even with the scan off, because the
-survey uniqueness throttle uses it. So are the four tables of the value index
+survey uniqueness throttle uses it. So are the five tables of the value index
 of the live lookups (`uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync`,
-`uv_lookup_record`), which the README's "Lookups on large projects: the value
-index" describes, unless that index is turned off.
+`uv_lookup_record`, `uv_lookup_def`), which the README's "Lookups on large
+projects: the value index" describes, unless that index is turned off.
 
 ### Every table the module creates, and when
 
-The module's own tables number 17 at most, all prefixed `uv_`. It writes to no table of
+The module's own tables number 18 at most, all prefixed `uv_`. It writes to no table of
 REDCap's, and creates none during data entry: a table is created only when an
 administrator enables the module, installs a new version or saves the module's
 system settings. Every statement is `CREATE TABLE IF NOT EXISTS`.
@@ -187,7 +187,7 @@ system settings. Every statement is `CREATE TABLE IF NOT EXISTS`.
 | Tables | Created | What they hold |
 |---|---|---|
 | `uv_rate_bucket` | Always | A counter per project and minute that limits `@UVUNIQUE` and `@UVEXISTS` lookups from surveys and into other projects. No value, no record. While it cannot be created or written, lookups from a survey are refused (the page shows nothing and the save goes through). |
-| `uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record` | Unless *Live lookups: turn OFF the value index* is checked | The value index. Empty until a project uses `@UVUNIQUE` or `@UVEXISTS`. A key is a keyed hash of a saved value (HMAC-SHA-256 with the module's secret and the project id) beside the record that holds it. |
+| `uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync`, `uv_lookup_record`, `uv_lookup_def` | Unless *Live lookups: turn OFF the value index* is checked | The value index. Empty until a project uses `@UVUNIQUE` or `@UVEXISTS`. A key is a keyed hash of a saved value (HMAC-SHA-256 with the module's secret and the project id) beside the record that holds it. |
 | The scan's other twelve | Only with `scan-system-enable-durable` on | Scan runs, findings and their audit rows. |
 
 To keep the module from creating anything but the counter table, check
@@ -228,7 +228,7 @@ has no `removeLogs()` nothing is removed.
 ### Upgrading to 2.5.0: the value index is rebuilt
 
 Up to 2.4.0 a key of the value index was a plain MD5 of the value. From this
-version it is a keyed hash. No table changes. The old keys stop being read at
+version it is a keyed hash. The keys' table does not change. The old keys stop being read at
 once, the `uv_lookup_index` cron deletes them at its next pass (every 5
 minutes) and builds each field again when a lookup next asks for it. Until a
 field is built the lookups read the data table, as they do on a new
@@ -304,7 +304,8 @@ php -r 'require "php/Scan/Schema.php"; foreach (INSPIRE\UniversalValidator\Scan\
 ```
 
 The number is the version the installation is at, which
-`SELECT MAX(version) FROM uv_schema_version` returns: `Schema::plan(6)` for
+`SELECT MAX(version) FROM uv_schema_version` returns: `Schema::plan(8)` for
+2.4.x, `Schema::plan(6)` for
 2.3.0-rc.3 and the 2.3 releases after it, `Schema::plan(5)` for an earlier
 2.3.0 release candidate, `Schema::plan(1)` for 1.9.x, `Schema::plan(0)` for an
 installation with no scan tables. Run the statements in order, then save the
@@ -312,10 +313,28 @@ system configuration once. The module finds the changes already made, skips
 them, runs the steps that are not DDL (the version-2 and version-8 data
 steps below), verifies the result and records the version.
 
+### Upgrading from 2.4 (schema version 9)
+
+Version 9 creates `uv_lookup_def`, the definitions of the value index's
+entries that key a value with other fields. That is one statement, a
+`CREATE TABLE IF NOT EXISTS`, and the module runs it on an installation
+without the scan too.
+
+The value index changes its keys from a plain MD5 to a keyed hash in the same
+release; "Upgrading to 2.5.0: the value index is rebuilt" above says what
+happens to the old keys. Nothing needs doing by hand.
+
+The module now makes its secret, if it has none yet, when it is enabled or
+upgraded, rather than on the first save that needs it.
+
+The scan page's health check reports the scan off until the installation is at
+version 9 with `uv_lookup_def` in place.
+
 ### Upgrading from 2.3 (schema versions 6 to 8)
 
-An installation at version 5 first gets version 6, which creates the four
-tables of the value index, each with `CREATE TABLE IF NOT EXISTS`.
+An installation at version 5 first gets version 6, which creates
+`uv_lookup_key`, `uv_lookup_field`, `uv_lookup_sync` and `uv_lookup_record`
+for the value index, each with `CREATE TABLE IF NOT EXISTS`.
 
 Version 7 is `@UVJUSTIFY`'s. `uv_finding` gains `justified`, 1 when a reason
 stands for the finding, and `uv_scan_run` gains `detail_justified`, how many

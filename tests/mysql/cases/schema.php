@@ -385,7 +385,7 @@ $A->query('INSERT INTO ' . Schema::table('scan_run') . '
             "partial", "complete", "none", "{}", 1, REPEAT("a", 64), NOW(), NOW(), 1)');
 $winRun = (int) $A->insert_id;
 $rWin = Schema::migrate($ca);
-check('rvc1-3 window: the migration then completes', $rWin['ok'] === true && Schema::currentVersion($ca) === 8);
+check('rvc1-3 window: the migration then completes', $rWin['ok'] === true && Schema::currentVersion($ca) === Schema::VERSION);
 $winStore = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
 $winRow = $winStore->run($PID, $winRun);
 check('rvc1-3 window: the run the version 7 build made keeps NULL on all four counts',
@@ -449,7 +449,7 @@ $provedOf = function ($id) use ($ca) {
 check('rvfix-N1: before the upgrade, a group run stopped after the summary began is withheld',
     $provedOf(13) === false && $provedOf(14) === false);
 $rN1 = Schema::migrate($ca);
-check('rvfix-N1: the upgrade completes', $rN1['ok'] === true && Schema::currentVersion($ca) === 8);
+check('rvfix-N1: the upgrade completes', $rN1['ok'] === true && Schema::currentVersion($ca) === Schema::VERSION);
 foreach ($n1runs as $name => $rr) {
     check('rvfix-N1: a run ' . $name . ' ends with catchup_dirty ' . $rr[6], $markOf($rr[0]) === $rr[6]);
 }

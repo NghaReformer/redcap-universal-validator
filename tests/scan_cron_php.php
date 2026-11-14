@@ -557,9 +557,9 @@ foreach ([[], ['lookup-index-system-off' => '1']] as $sys) {
         if (preg_match('/^DELETE FROM (uv_lookup_\w+) WHERE project_id = \?/', $b[0], $mm) && $b[1] === [149]) $cleared[$mm[1]] = true;
     }
     ksort($cleared);
-    check('FRM-7: project disable clears the project\'s rows of the four index tables' . ($sys ? ' (index turned off)' : '')
+    check('FRM-7: project disable clears the project\'s rows of the five index tables' . ($sys ? ' (index turned off)' : '')
         . ' (got ' . json_encode(array_keys($cleared)) . ')',
-        !$threw && array_keys($cleared) === ['uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync']);
+        !$threw && array_keys($cleared) === ['uv_lookup_def', 'uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync']);
     $said = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'lookup-index-project-cleared'; }));
     check('FRM-7: ...and says so in the log', count($said) === 1 && (int) $said[0][1]['project_id'] === 149 && $said[0][1]['cleared'] === '1');
 }
@@ -581,14 +581,14 @@ $made = function ($m) {
     ksort($t);
     return array_keys($t);
 };
-$FIVE = ['uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync', 'uv_rate_bucket'];
+$SIX = ['uv_lookup_def', 'uv_lookup_field', 'uv_lookup_key', 'uv_lookup_record', 'uv_lookup_sync', 'uv_rate_bucket'];
 foreach (['redcap_module_system_enable' => ['v1'], 'redcap_module_system_change_version' => ['v2', 'v1'],
           'redcap_module_save_configuration' => [null]] as $hook => $args) {
     $m = new UniversalValidator();
     $m->systemSettings = [];
     $m->$hook(...$args);
-    check("FRM-6: $hook with the scan off makes the counter table and the four index tables, and no other (got " . json_encode($made($m)) . ')',
-        $made($m) === $FIVE);
+    check("FRM-6: $hook with the scan off makes the counter table and the five index tables, and no other (got " . json_encode($made($m)) . ')',
+        $made($m) === $SIX);
     $m = new UniversalValidator();
     $m->systemSettings = ['lookup-index-system-off' => '1'];
     $m->$hook(...$args);
@@ -598,8 +598,41 @@ foreach (['redcap_module_system_enable' => ['v1'], 'redcap_module_system_change_
 $m = new UniversalValidator();
 $m->redcap_module_save_configuration(149);
 check('FRM-6: saving a project\'s settings makes no table', $made($m) === []);
-check('FRM-6: the module owns ' . count(Schema::tables()) . ' tables: these five and the scan\'s twelve',
-    count(Schema::tables()) === 17 && array_diff(array_map(function ($t) { return Schema::table($t); }, ['rate_bucket', 'lookup_key', 'lookup_field', 'lookup_sync', 'lookup_record']), Schema::tables()) === []);
+check('FRM-6: the module owns ' . count(Schema::tables()) . ' tables: these six and the scan\'s twelve',
+    count(Schema::tables()) === 18 && array_diff(array_map(function ($t) { return Schema::table($t); }, ['rate_bucket', 'lookup_key', 'lookup_field', 'lookup_sync', 'lookup_record', 'lookup_def']), Schema::tables()) === []);
+
+// A composite build lists a field's records with recordsAfter(): the server
+// compares and sorts the binary form and cuts the list, so PHP gets at most
+// one id more than asked for, and that one only says more follow.
+$fake = new class {
+    public $rows = [];
+    public $sql = [];
+    public function query($sql, $params = []) { $this->sql[] = [$sql, $params]; return $this->rows; }
+};
+$li = new \INSPIRE\UniversalValidator\Scan\LookupIndex($fake, ['keySecret' => str_repeat('a1', 32)]);
+$ra = new ReflectionMethod($li, 'recordsAfter');
+$ra->setAccessible(true);
+$fake->rows = [['10'], ['9'], ['A']];
+$cut = $ra->invoke($li, 1, 'redcap_data', 'arm', 'P0500', 2);
+$q = end($fake->sql);
+$fake->rows = [['10'], ['9']];
+$whole = $ra->invoke($li, 1, 'redcap_data', 'arm', '', 2);
+$q2 = end($fake->sql);
+check('lookup index: recordsAfter asks the server for one id more than the list, sorted by bytes after the cursor (got '
+    . json_encode([$cut, $whole, $q, $q2[0]]) . ')',
+    $cut === [['10', '9'], true] && $whole === [['10', '9'], false]
+    && strpos($q[0], 'CAST(record AS BINARY) > ?') !== false && end($q[1]) === 'P0500'
+    && strpos($q[0], 'ORDER BY r LIMIT 3') !== false && strpos($q2[0], 'CAST(record AS BINARY) >') === false);
+// A spec of another secret, or of another key version, is none this object can
+// keep current or build: maintain() drops it.
+$ps = new ReflectionMethod($li, 'parseSpec');
+$ps->setAccessible(true);
+$head = \INSPIRE\UniversalValidator\Scan\LookupIndex::specHeadOf(str_repeat('a1', 32));
+check('lookup index: a spec is read only for this key version and secret',
+    $ps->invoke($li, $head . '|point') === ['kind' => 'plain', 'mark' => 'point']
+    && $ps->invoke($li, '2.ffffffff|point') === false && $ps->invoke($li, '1|point') === false
+    && $ps->invoke($li, $head . '|c|' . md5('d')) === ['kind' => 'c', 'hash' => md5('d')]
+    && $ps->invoke($li, '2.ffffffff|c|' . md5('d')) === false && $ps->invoke($li, $head . '|c|nothex') === false);
 
 // ---- 9) the budget, and the cursor between passes ---------------------------
 //

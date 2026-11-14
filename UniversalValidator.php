@@ -5742,6 +5742,15 @@ class UniversalValidator extends AbstractExternalModule
      * enumerable offline and links the same value across projects; an
      * HMAC with a server-held key keeps within-project repeat correlation (the
      * stated purpose) without either property (SEC-004).
+     *
+     * Made when the module is enabled or upgraded (redcap_module_system_enable,
+     * redcap_module_system_change_version), outside any transaction, so a
+     * request makes it only where those hooks failed. The module opens
+     * transactions only in the scan's stores, which never hash with this key.
+     * A request inside a transaction REDCap opened could read past a key
+     * committed after that transaction began, and its own key would be
+     * committed after the lock went; making the key at enable and upgrade
+     * keeps requests out of that case.
      */
     private function hmacKey()
     {
@@ -5750,8 +5759,22 @@ class UniversalValidator extends AbstractExternalModule
         try {
             $key = $this->getSystemSetting('log-hmac-key');
             if (!is_string($key) || strlen($key) < 64) {
-                $key = bin2hex(random_bytes(32));
-                $this->setSystemSetting('log-hmac-key', $key);
+                // Made by one request at a time: two that each made a key would
+                // each hash with their own for the rest of the request. Without
+                // the lock (another server's database user may lack it) the
+                // stored key is read back, which narrows that to a moment.
+                $locked = $this->hmacKeyLock(true);
+                try {
+                    $key = $this->getSystemSetting('log-hmac-key');
+                    if (!is_string($key) || strlen($key) < 64) {
+                        $key = bin2hex(random_bytes(32));
+                        $this->setSystemSetting('log-hmac-key', $key);
+                        $stored = $this->getSystemSetting('log-hmac-key');
+                        if (is_string($stored) && strlen($stored) >= 64) $key = $stored;
+                    }
+                } finally {
+                    if ($locked) $this->hmacKeyLock(false);
+                }
             }
             $this->hmacKey = $key;
         } catch (\Throwable $e) {
@@ -5760,6 +5783,20 @@ class UniversalValidator extends AbstractExternalModule
             // than falling back to an unkeyed hash an attacker could enumerate.
         }
         return $this->hmacKey;
+    }
+
+    /** Take ($take) or let go of the lock under which hmacKey() makes the key; true when taken. */
+    private function hmacKeyLock($take)
+    {
+        try {
+            $sql = $take ? "SELECT GET_LOCK(CONCAT('uvhk', MD5(COALESCE(DATABASE(), ''))), 5)"
+                         : "SELECT RELEASE_LOCK(CONCAT('uvhk', MD5(COALESCE(DATABASE(), ''))))";
+            $r = (new Scan\ModuleDb($this))->select($sql, []);
+            return isset($r[0][0]) && (string) $r[0][0] === '1';
+        } catch (\Throwable $e) {
+            Faults::swallow($e, 'UniversalValidator::hmacKeyLock');
+            return false;
+        }
     }
 
     /** Project-scoped keyed hash of an identifier, or null when no key exists. */
@@ -12172,6 +12209,8 @@ class UniversalValidator extends AbstractExternalModule
         // table is not the scan's, and is installed either way.
         $this->ensureModuleTables();
         $this->installScanSchema();
+        // The keyed-hash secret, made here outside any request's work (hmacKey()).
+        $this->hmacKey();
         $missing = $this->missingPhpExtensions();
         if ($missing) $this->logMissingExtensions($missing, 'enable');
     }
@@ -12222,6 +12261,7 @@ class UniversalValidator extends AbstractExternalModule
     {
         $this->ensureModuleTables();
         $this->installScanSchema();
+        $this->hmacKey();
         $missing = $this->missingPhpExtensions();
         if ($missing) $this->logMissingExtensions($missing, 'upgrade');
     }
@@ -12619,9 +12659,10 @@ class UniversalValidator extends AbstractExternalModule
         // also keeps the module log from growing without end (FRM-11).
         $this->pruneOperationalLog();
         try {
+            $until = time() + self::LOOKUP_CRON_SECONDS;
             $idx = $this->lookupIndex();
             if ($idx === null) return 'the lookup index is turned off here; nothing to do';
-            $r = $idx->maintain(time() + self::LOOKUP_CRON_SECONDS);
+            $r = $idx->maintain($until);
             // A lookup that waits for the cron says so when none has run
             // (LookupIndex::CRON_GRACE). Written on every pass on purpose: it
             // is the one sign a lookup has that a cron is alive, and it is one
