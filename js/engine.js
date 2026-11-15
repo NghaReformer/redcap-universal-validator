@@ -10840,7 +10840,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "deltaVs", "deltaVsOp", "deltaVsLabel", "deltaVsFound", "deltaVsComma",
                       "deltaMax", "deltaMaxPct", "deltaDirection", "deltaUnit", "deltaText",
                       "deltaGroup", "deltaComputed", "deltaUnvalidated", "writeonceRolesUnread",
-                      "writeonceSaved", "writeonceValuesUnread", "justifyReason", "justifyStale"];
+                      "writeonceSaved", "writeonceValuesUnread", "justifyReason",
+                      "justifyStale"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
