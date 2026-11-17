@@ -545,11 +545,15 @@ MUTATIONS = [
     ('saved values that could not be read: the note shown to a survey respondent', ENGINE,
      '      if(!QRID_IS_SURVEY){\n        var um',
      '      if(true){\n        var um', DOM),
+    # The lookups register their guard item at bind whatever the field's state,
+    # and ask at save whether it can be edited (QRID_itemHolds, QRID_itemWaits,
+    # REQ-5). Each mutant puts back a bind-time read-only test, which the
+    # lock's own read-only would fail.
     ('a lookup on a locked box the lock made read-only gets no item', ENGINE,
-     'var EDITABLE = !QRID_fieldLocked(input, fieldName);',
-     'var EDITABLE = !input.readOnly && !input.disabled;', DOM),
+     'if(!configError && (ANY_BLOCK || OWNED_ANY)){',
+     'if(!configError && ((ANY_BLOCK && !input.readOnly && !input.disabled) || OWNED_ANY)){', DOM),
     ('a unique rule on a locked box the lock made read-only gets no item', ENGINE,
-     '    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){\n      GITEM = { __qridInvalid: false, __qridBlockMode: "off",\n                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,\n                readOnly: false, disabled: false,\n                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} } };\n      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "unique");',
+     '    if(ANY_BLOCK && !configError){\n      GITEM = { __qridInvalid: false, __qridBlockMode: "off",\n                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,\n                readOnly: false, disabled: false,\n                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} } };\n      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "unique");',
      '    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){\n      GITEM = { __qridInvalid: false, __qridBlockMode: "off",\n                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,\n                readOnly: false, disabled: false,\n                focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} } };\n      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "unique");', DOM),
     ("an autocomplete box the lock made read-only left unmarked", ENGINE,
      '      if(comp && !comp.readOnly){ comp.readOnly = true; comp.__qridLockSetRO = true; }',

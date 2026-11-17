@@ -1983,6 +1983,21 @@ function QRID_fieldLocked(anchor, fieldName, codes){
   var ac = document.getElementById ? document.getElementById("rc-ac-input_" + fieldName) : null;
   return !!(ac && QRID_cannotEdit(ac));
 }
+/* Whether a field's anchor is a box the person types in: a textarea, or an
+   input that is not a box to tick and not the input that carries a radio's
+   answer. That input is told by the buttons named <field>___radio beside it,
+   never by its type: REDCap 17 draws it as <input type="text"> hidden by a
+   style, older versions as type="hidden" (CHO-2). The lookups ask this
+   before they count typing in a "with" or "when" field. */
+function QRID_typedAnchor(el, fieldName){
+  if(!el) return false;
+  var tag = (el.tagName || "").toLowerCase();
+  if(tag === "textarea") return true;
+  if(tag !== "input") return false;
+  var ty = (el.type || "").toLowerCase();
+  if(ty === "hidden" || ty === "radio" || ty === "checkbox") return false;
+  return !(document.getElementsByName && document.getElementsByName(fieldName + "___radio").length);
+}
 /* Whether REDCap hides the field from the person (REQ-1): branching logic
    that is false, or @HIDDEN, sets display:none on the field's row
    (#<field>-tr). The walk starts above the anchor, which is itself hidden for
@@ -4560,8 +4575,21 @@ function QRID_justified(el){
    reason would release a hold. */
 function QRID_itemHolds(el){
   if(!el.__qridInvalid || el.__qridBlockMode === "off") return false;
+  return QRID_itemOpen(el);
+}
+/* Whether the person can change and see a guard item's field now. */
+function QRID_itemOpen(el){
   var anchor = el.__qridLabelEl || (el.getAttribute ? el : null);
   return !(anchor && (QRID_fieldLocked(anchor, el.__qridFieldName) || QRID_fieldHidden(anchor)));
+}
+/* Whether a save waits for the lookup a guard item has on its way. A lookup
+   whose answer could only block waits while its field can hold the save
+   (QRID_itemOpen): on a field the person cannot change or see the answer
+   holds nothing, so the save does not wait for it (REQ-5). A lookup that
+   fills fields from its answer (__qridPendingFill, @UVEXISTS "return") waits
+   wherever its field is, as the values come with the answer. */
+function QRID_itemWaits(el){
+  return !!el.__qridPending && (el.__qridPendingFill === true || QRID_itemOpen(el));
 }
 /* Take the bases after REDCap's start-up. REDCap prints the engine above
    the form, and works out its calcs, branching and action tags (@NOW,
@@ -4588,10 +4616,9 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
      a radio's or checkbox's options (REQ-2), and not here: a field that was
      read-only or disabled when its rule bound and that the person can change
      later (REDCap enables it, a Missing Data Code is cleared) had no guard
-     item, and its hard block never held (REQ-5). The @UVUNIQUE factory still
-     asks at bind, as its item also carries a lookup's wait; a @UVEXISTS item
-     on a read-only field registers on purpose, to hold the save while a
-     lookup that fills fields is on its way. */
+     item, and its hard block never held (REQ-5). The lookups (@UVUNIQUE,
+     @UVEXISTS) register the same way, and whether a save waits for one on
+     its way is asked at save too (QRID_itemWaits). */
   input.__qridBlockMode = blockMode;
   input.__qridFieldName = fieldName;
   /* the mode the item speaks for (php/modes.json "mode"): the lock reads it */
@@ -4664,7 +4691,7 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
        answer (@UVEXISTS "return"), set __qridPending. A save that already
        waited does not wait again: a lookup still out is given up. */
     var pend = live.filter(function(el){
-      return el.__qridPending && bad.indexOf(el) < 0 && !(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0);
+      return QRID_itemWaits(el) && bad.indexOf(el) < 0 && !(partial && QRID_PARTIAL_SAVE.types.indexOf(el.__qridType) >= 0);
     });
     /* inside the pass the save was already decided once: it does not wait again */
     if(passing) pend = [];
@@ -4759,7 +4786,7 @@ function QRID_registerBlocker(input, fieldName, blockMode, mode){
     if(UV_guard.hold){ UV_guard.hold.again = again; return; }
     var h = UV_guard.hold = { again: again, from: Date.now(), dropped: false };
     function out(){
-      return UV_guard.items.some(function(el){ return !!el.__qridPending && QRID_guardSpeaks(el); });
+      return UV_guard.items.some(function(el){ return QRID_itemWaits(el) && QRID_guardSpeaks(el); });
     }
     function tick(){
       if(h.dropped) return;
@@ -9483,8 +9510,12 @@ function QRIDUniqueInit(QRID_CONFIG){
       var ast = Object.prototype.hasOwnProperty.call(v.localAsts, fieldName) ? v.localAsts[fieldName] : null;
       return ast ? QRID_WHEN.gateFor("1=1",ast,QRID_BLANK_PASSES,true) : null;
     });
+    /* Whether the field can be edited is asked at save, for the hold
+       (QRID_itemHolds) and for the wait on a lookup (QRID_itemWaits), not
+       here: a field read-only when the rule bound and editable later had no
+       guard item, and a value already recorded saved through "hard" (REQ-5). */
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !QRID_fieldLocked(input, fieldName)){
+    if(ANY_BLOCK && !configError){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
@@ -9696,11 +9727,7 @@ function QRIDUniqueInit(QRID_CONFIG){
         /* typing in a text "with" field is typing too */
         if(!Object.prototype.hasOwnProperty.call(dirty, wname)){
           var wel = QRID_findAnchor(wname);
-          var wtag = wel ? (wel.tagName || "").toLowerCase() : "";
-          var wty = wel ? (wel.type || "").toLowerCase() : "";
-          if(wtag === "textarea" || (wtag === "input" && wty !== "hidden" && wty !== "radio" && wty !== "checkbox")){
-            dirty[wname] = false; watchTyping(wname, wel);
-          }
+          if(QRID_typedAnchor(wel, wname)){ dirty[wname] = false; watchTyping(wname, wel); }
         }
       }
     }
@@ -9805,21 +9832,23 @@ function QRIDExistsInit(QRID_CONFIG){
     var GITEM = null;
     /* A rule that fills fields holds the save while its answer is on the way,
        even with "blockSave":"off": the values come with the answer. A field
-       the user cannot edit (@READONLY) never blocks the save (UX-003, see
-       QRID_registerBlocker), but a rule that fills fields still holds it
-       while its answer is on the way, and no longer than QRID_SAVE_HOLD_MS. */
-    var EDITABLE = !QRID_fieldLocked(input, fieldName);
-    if(!configError && ((ANY_BLOCK && EDITABLE) || OWNED_ANY)){
+       the user cannot edit (@READONLY) never blocks the save (UX-003), and
+       that is asked when the save is pressed, not here (QRID_itemHolds,
+       REQ-5); a save does not wait for a lookup on such a field either,
+       unless the lookup fills fields (QRID_itemWaits), and then no longer
+       than QRID_SAVE_HOLD_MS. */
+    if(!configError && (ANY_BLOCK || OWNED_ANY)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName), __qridLabelEl: input,
                 readOnly: false, disabled: false,
                 focus: function(){ try { QRID_focusTarget(input, fieldName).focus(); } catch(e){} } };
-      QRID_registerBlocker(GITEM, fieldName, EDITABLE ? VS.firstBlock : "off", "exists");
+      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock, "exists");
     }
-    function setGuard(invalid, mode){ if(GITEM && EDITABLE){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
     /* pending: a lookup is on its way, and a save waits for it a short
-       while (QRID_SAVE_HOLD_MS) */
-    function setPending(on){ if(GITEM){ GITEM.__qridPending = !!on; } }
+       while (QRID_SAVE_HOLD_MS). fill: its answer fills fields, so the save
+       waits for it on a field the person cannot edit too (QRID_itemWaits). */
+    function setPending(on, fill){ if(GITEM){ GITEM.__qridPending = !!on; GITEM.__qridPendingFill = !!on && fill === true; } }
     function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); setPending(false); QRID_setModeState(input, "x", null); }
     /* On a form the person may only read, or a locked one, nothing is filled
        (QRID_writeReturned), and the person is told when what the lookup
@@ -10109,7 +10138,7 @@ function QRIDExistsInit(QRID_CONFIG){
       msg.innerHTML = "&#8230; checking&hellip;";
       QRID_setModeState(input, "x", "info");
       setGuard(false);
-      setPending((V.blockSave !== "off" && EDITABLE) || returnsOf(V).length > 0);
+      setPending(V.blockSave !== "off" || returnsOf(V).length > 0, returnsOf(V).length > 0);
       var lapse = function(){
         if(my === seq && pendingKey === key){
           ++seq; pendingKey = null; setPending(false);
@@ -10177,11 +10206,7 @@ function QRIDExistsInit(QRID_CONFIG){
           var gname = grefs[gr][0];
           if(grefs[gr][1] !== null || typeof gname !== "string" || Object.prototype.hasOwnProperty.call(dirty, gname)) continue;
           var gel = QRID_findAnchor(gname);
-          var gtag = gel ? (gel.tagName || "").toLowerCase() : "";
-          var gty = gel ? (gel.type || "").toLowerCase() : "";
-          if(gtag === "textarea" || (gtag === "input" && gty !== "hidden" && gty !== "radio" && gty !== "checkbox")){
-            dirty[gname] = false; watchTyping(gname, gel);
-          }
+          if(QRID_typedAnchor(gel, gname)){ dirty[gname] = false; watchTyping(gname, gel); }
         }
       }
       var watched = VS.all[vi].locals.slice();
